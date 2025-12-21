@@ -8,9 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { BankSettings } from "@/components/settings/BankSettings";
 import { ReceiptSettings } from "@/components/settings/ReceiptSettings";
 import { EmployeeRoleSettings } from "@/components/settings/EmployeeRoleSettings";
+import { TaxDiscountSettings } from "@/components/settings/TaxDiscountSettings";
+import { useTheme } from "@/hooks/use-theme";
 import { Settings as SettingsIcon, Building2, Bell, Shield, Database, Globe, Palette, Save, Users } from "lucide-react";
 
 export default function Settings() {
+  const { theme, toggleTheme } = useTheme();
   return (
     <MainLayout>
       <div className="space-y-4 md:space-y-6">
@@ -38,7 +41,7 @@ export default function Settings() {
             <div className="bg-card rounded-xl border p-4 md:p-6 space-y-4 md:space-y-6 animate-fade-in">
               <div className="flex items-center gap-3 pb-4 border-b"><div className="p-2.5 rounded-lg bg-info/10"><Palette className="w-5 h-5 text-info" /></div><div><h3 className="font-semibold">Tampilan</h3><p className="text-sm text-muted-foreground">Kustomisasi tema dan tampilan</p></div></div>
               <div className="space-y-4">
-                <div className="flex items-center justify-between"><div><p className="font-medium">Mode Gelap</p><p className="text-sm text-muted-foreground">Gunakan tema gelap</p></div><Switch defaultChecked /></div>
+                <div className="flex items-center justify-between"><div><p className="font-medium">Mode Gelap</p><p className="text-sm text-muted-foreground">Gunakan tema gelap</p></div><Switch checked={theme === "dark"} onCheckedChange={toggleTheme} /></div>
                 <div className="flex items-center justify-between"><div><p className="font-medium">Sidebar Compact</p><p className="text-sm text-muted-foreground">Sidebar dalam mode kecil</p></div><Switch /></div>
                 <div className="flex items-center justify-between"><div><p className="font-medium">Animasi</p><p className="text-sm text-muted-foreground">Aktifkan animasi transisi</p></div><Switch defaultChecked /></div>
               </div>
@@ -57,6 +60,7 @@ export default function Settings() {
               </div>
             </div>
             <ReceiptSettings />
+            <TaxDiscountSettings />
             <BankSettings />
           </TabsContent>
 
