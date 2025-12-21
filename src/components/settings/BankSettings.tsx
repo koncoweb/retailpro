@@ -33,12 +33,13 @@ interface Bank {
   type: string;
   accountNumber: string;
   accountName: string;
+  feePercentage: number;
 }
 
 const initialBanks: Bank[] = [
-  { id: "1", name: "BCA", type: "Debit & Kredit", accountNumber: "1234567890", accountName: "PT RetailPro" },
-  { id: "2", name: "Mandiri", type: "Debit & Kredit", accountNumber: "0987654321", accountName: "PT RetailPro" },
-  { id: "3", name: "BNI", type: "Debit", accountNumber: "5678901234", accountName: "PT RetailPro" },
+  { id: "1", name: "BCA", type: "Debit & Kredit", accountNumber: "1234567890", accountName: "PT RetailPro", feePercentage: 1.5 },
+  { id: "2", name: "Mandiri", type: "Debit & Kredit", accountNumber: "0987654321", accountName: "PT RetailPro", feePercentage: 1.8 },
+  { id: "3", name: "BNI", type: "Debit", accountNumber: "5678901234", accountName: "PT RetailPro", feePercentage: 1.2 },
 ];
 
 export function BankSettings() {
@@ -50,6 +51,7 @@ export function BankSettings() {
     type: "Debit & Kredit",
     accountNumber: "",
     accountName: "",
+    feePercentage: "",
   });
 
   const handleSave = () => {
@@ -61,21 +63,21 @@ export function BankSettings() {
     if (editingBank) {
       setBanks((prev) =>
         prev.map((b) =>
-          b.id === editingBank.id ? { ...b, ...formData } : b
+          b.id === editingBank.id ? { ...b, ...formData, feePercentage: parseFloat(formData.feePercentage) || 0 } : b
         )
       );
       toast.success("Bank berhasil diperbarui");
     } else {
       setBanks((prev) => [
         ...prev,
-        { id: Date.now().toString(), ...formData },
+        { id: Date.now().toString(), ...formData, feePercentage: parseFloat(formData.feePercentage) || 0 },
       ]);
       toast.success("Bank berhasil ditambahkan");
     }
 
     setIsDialogOpen(false);
     setEditingBank(null);
-    setFormData({ name: "", type: "Debit & Kredit", accountNumber: "", accountName: "" });
+    setFormData({ name: "", type: "Debit & Kredit", accountNumber: "", accountName: "", feePercentage: "" });
   };
 
   const handleEdit = (bank: Bank) => {
@@ -85,6 +87,7 @@ export function BankSettings() {
       type: bank.type,
       accountNumber: bank.accountNumber,
       accountName: bank.accountName,
+      feePercentage: bank.feePercentage.toString(),
     });
     setIsDialogOpen(true);
   };
@@ -108,7 +111,10 @@ export function BankSettings() {
         </div>
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
-            <Button size="sm" className="gap-2" onClick={() => setEditingBank(null)}>
+            <Button size="sm" className="gap-2" onClick={() => {
+              setEditingBank(null);
+              setFormData({ name: "", type: "Debit & Kredit", accountNumber: "", accountName: "", feePercentage: "" });
+            }}>
               <Plus className="w-4 h-4" />
               Tambah Bank
             </Button>
@@ -151,6 +157,16 @@ export function BankSettings() {
                 />
               </div>
               <div className="space-y-2">
+                <Label>Biaya Transaksi (%)</Label>
+                <Input
+                  type="number"
+                  step="0.1"
+                  placeholder="Contoh: 1.5"
+                  value={formData.feePercentage}
+                  onChange={(e) => setFormData({ ...formData, feePercentage: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
                 <Label>Nama Pemilik Rekening</Label>
                 <Input
                   placeholder="Contoh: PT RetailPro"
@@ -179,6 +195,7 @@ export function BankSettings() {
               <TableHead>Tipe</TableHead>
               <TableHead>No. Rekening</TableHead>
               <TableHead>Nama Rekening</TableHead>
+              <TableHead className="text-center">Biaya (%)</TableHead>
               <TableHead className="w-24"></TableHead>
             </TableRow>
           </TableHeader>
@@ -189,6 +206,7 @@ export function BankSettings() {
                 <TableCell>{bank.type}</TableCell>
                 <TableCell className="font-mono">{bank.accountNumber}</TableCell>
                 <TableCell>{bank.accountName}</TableCell>
+                <TableCell className="text-center font-medium text-warning">{bank.feePercentage}%</TableCell>
                 <TableCell>
                   <div className="flex gap-1">
                     <Button variant="ghost" size="iconSm" onClick={() => handleEdit(bank)}>

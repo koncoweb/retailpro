@@ -3,12 +3,14 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { ThemeProvider } from "@/hooks/use-theme";
 import Index from "./pages/Index";
 import POS from "./pages/POS";
 import POSTransactions from "./pages/POSTransactions";
 import Branches from "./pages/Branches";
 import Inventory from "./pages/Inventory";
 import Employees from "./pages/Employees";
+import EmployeeReports from "./pages/EmployeeReports";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
@@ -17,8 +19,8 @@ const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <div className="dark">
+    <ThemeProvider defaultTheme="dark" storageKey="erp-theme">
+      <TooltipProvider>
         <Toaster />
         <Sonner />
         <BrowserRouter>
@@ -38,17 +40,16 @@ const App = () => (
             <Route path="/finance/cashflow" element={<Reports />} />
             <Route path="/finance/expenses" element={<Reports />} />
             <Route path="/hr/employees" element={<Employees />} />
-            <Route path="/hr/attendance" element={<Employees />} />
+            <Route path="/hr/attendance" element={<EmployeeReports />} />
             <Route path="/hr/schedule" element={<Employees />} />
-            <Route path="/hr/payroll" element={<Employees />} />
+            <Route path="/hr/payroll" element={<EmployeeReports />} />
             <Route path="/reports" element={<Reports />} />
             <Route path="/settings" element={<Settings />} />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
-      </div>
-    </TooltipProvider>
+      </TooltipProvider>
+    </ThemeProvider>
   </QueryClientProvider>
 );
 

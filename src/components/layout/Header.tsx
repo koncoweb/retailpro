@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useState } from "react";
+import { useTheme } from "@/hooks/use-theme";
 
 const branches = [
   { id: 1, name: "Cabang Pusat Jakarta" },
@@ -20,12 +21,7 @@ const branches = [
 
 export function Header() {
   const [selectedBranch, setSelectedBranch] = useState(branches[0]);
-  const [darkMode, setDarkMode] = useState(true);
-
-  const toggleDarkMode = () => {
-    setDarkMode(!darkMode);
-    document.documentElement.classList.toggle("dark");
-  };
+  const { theme, toggleTheme } = useTheme();
 
   return (
     <header className="h-16 border-b border-border bg-card/50 backdrop-blur-sm px-4 lg:px-6 flex items-center justify-between gap-4">
@@ -68,10 +64,9 @@ export function Header() {
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {/* Actions */}
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="icon" onClick={toggleDarkMode}>
-          {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+        <Button variant="ghost" size="icon" onClick={toggleTheme}>
+          {theme === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
         </Button>
 
         <DropdownMenu>
