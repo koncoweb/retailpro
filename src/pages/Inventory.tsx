@@ -39,8 +39,23 @@ import {
   Eye,
   BarChart3,
 } from "lucide-react";
+import { ProductImportExport } from "@/components/inventory/ProductImportExport";
 
-const products = [
+interface Product {
+  id: number;
+  sku: string;
+  name: string;
+  category: string;
+  price: number;
+  cost: number;
+  stock: number;
+  minStock: number;
+  branches: Record<string, number>;
+  lastRestock: string;
+  supplier: string;
+}
+
+const initialProducts: Product[] = [
   {
     id: 1,
     sku: "PRD-001",
@@ -132,9 +147,65 @@ function formatCurrency(value: number) {
 }
 
 export default function Inventory() {
+  const [products, setProducts] = useState<Product[]>(initialProducts);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Semua");
   const [stockFilter, setStockFilter] = useState("all");
+
+  const handleImport = (importedProducts: Array<{
+    sku: string;
+    name: string;
+    category: string;
+    price: number;
+    cost: number;
+    stock: number;
+    minStock: number;
+    supplier: string;
+  }>) => {
+    const newProducts = importedProducts.map((p, index) => {
+      // Check if product with same SKU exists
+      const existingProduct = products.find(ep => ep.sku === p.sku);
+      if (existingProduct) {
+        // Update existing product
+        return {
+          ...existingProduct,
+          name: p.name,
+          category: p.category,
+          price: p.price,
+          cost: p.cost,
+          stock: p.stock,
+          minStock: p.minStock,
+          supplier: p.supplier,
+        };
+      }
+      // Create new product
+      return {
+        id: Date.now() + index,
+        sku: p.sku,
+        name: p.name,
+        category: p.category,
+        price: p.price,
+        cost: p.cost,
+        stock: p.stock,
+        minStock: p.minStock,
+        branches: { jakarta: p.stock },
+        lastRestock: new Date().toISOString().split("T")[0],
+        supplier: p.supplier,
+      };
+    });
+
+    // Merge: update existing, add new
+    const updatedProducts = products.map(p => {
+      const imported = newProducts.find(np => np.sku === p.sku);
+      return imported || p;
+    });
+
+    // Add truly new products (SKUs not in existing list)
+    const existingSKUs = products.map(p => p.sku);
+    const trulyNewProducts = newProducts.filter(np => !existingSKUs.includes(np.sku));
+    
+    setProducts([...updatedProducts, ...trulyNewProducts]);
+  };
 
   const filteredProducts = products.filter((product) => {
     const matchesSearch =
@@ -167,11 +238,20 @@ export default function Inventory() {
               Kelola stok produk di semua cabang
             </p>
           </div>
-          <div className="flex gap-2">
-            <Button variant="outline" className="gap-2">
-              <Download className="w-4 h-4" />
-              Export
-            </Button>
+          <div className="flex flex-wrap gap-2">
+            <ProductImportExport 
+              products={products.map(p => ({
+                sku: p.sku,
+                name: p.name,
+                category: p.category,
+                price: p.price,
+                cost: p.cost,
+                stock: p.stock,
+                minStock: p.minStock,
+                supplier: p.supplier,
+              }))} 
+              onImport={handleImport} 
+            />
             <Button className="gap-2">
               <Plus className="w-4 h-4" />
               Tambah Produk
