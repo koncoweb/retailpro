@@ -5,20 +5,20 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { PaymentModal } from "@/components/pos/PaymentModal";
 import { ShiftModal } from "@/components/pos/ShiftModal";
-import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock } from "lucide-react";
+import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package } from "lucide-react";
 import { toast } from "sonner";
 
 interface CartItem { id: string; name: string; price: number; quantity: number; sku: string; }
 
 const products = [
-  { id: "1", name: "Indomie Goreng", price: 3500, sku: "PRD-001", category: "Makanan", stock: 150 },
-  { id: "2", name: "Susu Ultra 1L", price: 18500, sku: "PRD-002", category: "Minuman", stock: 45 },
-  { id: "3", name: "Aqua 600ml", price: 4000, sku: "PRD-003", category: "Minuman", stock: 200 },
-  { id: "4", name: "Roti Tawar Sari Roti", price: 16000, sku: "PRD-004", category: "Makanan", stock: 30 },
-  { id: "5", name: "Sabun Lifebuoy 100g", price: 5500, sku: "PRD-005", category: "Personal Care", stock: 80 },
-  { id: "6", name: "Kopi Kapal Api Sachet", price: 2000, sku: "PRD-006", category: "Minuman", stock: 120 },
-  { id: "7", name: "Teh Botol Sosro 450ml", price: 5000, sku: "PRD-007", category: "Minuman", stock: 95 },
-  { id: "8", name: "Oreo Original 133g", price: 12500, sku: "PRD-008", category: "Snack", stock: 55 },
+  { id: "1", name: "Indomie Goreng", price: 3500, sku: "PRD-001", category: "Makanan", stock: 150, minStock: 50 },
+  { id: "2", name: "Susu Ultra 1L", price: 18500, sku: "PRD-002", category: "Minuman", stock: 8, minStock: 20 },
+  { id: "3", name: "Aqua 600ml", price: 4000, sku: "PRD-003", category: "Minuman", stock: 200, minStock: 50 },
+  { id: "4", name: "Roti Tawar Sari Roti", price: 16000, sku: "PRD-004", category: "Makanan", stock: 5, minStock: 15 },
+  { id: "5", name: "Sabun Lifebuoy 100g", price: 5500, sku: "PRD-005", category: "Personal Care", stock: 3, minStock: 20 },
+  { id: "6", name: "Kopi Kapal Api Sachet", price: 2000, sku: "PRD-006", category: "Minuman", stock: 120, minStock: 30 },
+  { id: "7", name: "Teh Botol Sosro 450ml", price: 5000, sku: "PRD-007", category: "Minuman", stock: 95, minStock: 25 },
+  { id: "8", name: "Oreo Original 133g", price: 12500, sku: "PRD-008", category: "Snack", stock: 10, minStock: 20 },
 ];
 
 const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
@@ -39,6 +39,9 @@ export default function POS() {
   const [isShiftActive, setIsShiftActive] = useState(false);
   const [shiftData, setShiftData] = useState<any>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
+  const [showLowStock, setShowLowStock] = useState(true);
+
+  const lowStockProducts = products.filter((p) => p.stock < p.minStock);
 
   const addToCart = (product: typeof products[0]) => {
     if (!isShiftActive) { toast.error("Buka shift terlebih dahulu"); return; }
@@ -50,6 +53,15 @@ export default function POS() {
   };
 
   const updateQuantity = (id: string, delta: number) => setCart((prev) => prev.map((item) => item.id === id ? { ...item, quantity: Math.max(0, item.quantity + delta) } : item).filter((item) => item.quantity > 0));
+  
+  const setQuantity = (id: string, qty: number) => {
+    if (qty <= 0) {
+      setCart((prev) => prev.filter((item) => item.id !== id));
+    } else {
+      setCart((prev) => prev.map((item) => item.id === id ? { ...item, quantity: qty } : item));
+    }
+  };
+
   const removeFromCart = (id: string) => setCart((prev) => prev.filter((item) => item.id !== id));
   const clearCart = () => { setCart([]); setDiscount(0); };
 
@@ -91,15 +103,49 @@ export default function POS() {
             <div className="flex gap-2 overflow-x-auto pb-1">{categories.map((category) => (<Button key={category} variant={selectedCategory === category ? "default" : "outline"} size="sm" onClick={() => setSelectedCategory(category)} className="whitespace-nowrap text-xs md:text-sm">{category}</Button>))}</div>
           </div>
           <div className="flex-1 overflow-y-auto p-3 md:p-4">
+            {/* Low Stock Alert */}
+            {showLowStock && lowStockProducts.length > 0 && (
+              <div className="mb-4 p-3 rounded-lg border border-warning/30 bg-warning/5">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-warning" />
+                    <span className="text-sm font-medium text-warning">Stok Minimum Alert ({lowStockProducts.length} produk)</span>
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => setShowLowStock(false)} className="h-6 w-6 p-0">
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {lowStockProducts.map((item) => (
+                    <div key={item.id} className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-md bg-warning/10 border border-warning/20">
+                      <Package className="w-4 h-4 text-warning" />
+                      <div>
+                        <p className="text-xs font-medium">{item.name}</p>
+                        <p className="text-xs text-muted-foreground">Stok: <span className="text-warning font-bold">{item.stock}</span> / {item.minStock}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 md:gap-3">
-              {filteredProducts.map((product) => (
-                <button key={product.id} onClick={() => addToCart(product)} className="p-3 md:p-4 rounded-xl bg-muted/50 hover:bg-primary/10 border border-transparent hover:border-primary/30 transition-all text-left group">
-                  <div className="aspect-square rounded-lg bg-gradient-to-br from-primary/20 to-info/20 mb-2 md:mb-3 flex items-center justify-center"><span className="text-2xl md:text-3xl">📦</span></div>
-                  <h4 className="font-medium text-xs md:text-sm line-clamp-2 group-hover:text-primary">{product.name}</h4>
-                  <p className="text-xs text-muted-foreground mt-1">{product.sku}</p>
-                  <div className="flex items-center justify-between mt-2"><span className="font-bold text-primary text-xs md:text-sm">{formatCurrency(product.price)}</span><Badge variant="secondary" className="text-xs">{product.stock}</Badge></div>
-                </button>
-              ))}
+              {filteredProducts.map((product) => {
+                const isLowStock = product.stock < product.minStock;
+                return (
+                  <button key={product.id} onClick={() => addToCart(product)} className={`p-3 md:p-4 rounded-xl bg-muted/50 hover:bg-primary/10 border transition-all text-left group ${isLowStock ? 'border-warning/50' : 'border-transparent hover:border-primary/30'}`}>
+                    <div className="aspect-square rounded-lg bg-gradient-to-br from-primary/20 to-info/20 mb-2 md:mb-3 flex items-center justify-center relative">
+                      <span className="text-2xl md:text-3xl">📦</span>
+                      {isLowStock && <div className="absolute top-1 right-1"><AlertTriangle className="w-4 h-4 text-warning" /></div>}
+                    </div>
+                    <h4 className="font-medium text-xs md:text-sm line-clamp-2 group-hover:text-primary">{product.name}</h4>
+                    <p className="text-xs text-muted-foreground mt-1">{product.sku}</p>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="font-bold text-primary text-xs md:text-sm">{formatCurrency(product.price)}</span>
+                      <Badge variant={isLowStock ? "destructive" : "secondary"} className="text-xs">{product.stock}</Badge>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -111,8 +157,22 @@ export default function POS() {
             {cart.length === 0 ? <div className="h-full flex flex-col items-center justify-center text-muted-foreground py-8"><QrCode className="w-12 h-12 md:w-16 md:h-16 mb-4 opacity-50" /><p className="font-medium">Keranjang kosong</p><p className="text-sm">Scan barcode atau pilih produk</p></div> : cart.map((item) => (
               <div key={item.id} className="flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-lg bg-muted/50">
                 <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg bg-gradient-to-br from-primary/20 to-info/20 flex items-center justify-center text-lg md:text-xl">📦</div>
-                <div className="flex-1 min-w-0"><p className="font-medium text-xs md:text-sm truncate">{item.name}</p><p className="text-xs md:text-sm text-primary font-semibold">{formatCurrency(item.price)}</p></div>
-                <div className="flex items-center gap-1"><Button variant="outline" size="iconSm" onClick={() => updateQuantity(item.id, -1)}><Minus className="w-3 h-3" /></Button><span className="w-6 md:w-8 text-center font-medium text-sm">{item.quantity}</span><Button variant="outline" size="iconSm" onClick={() => updateQuantity(item.id, 1)}><Plus className="w-3 h-3" /></Button></div>
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-xs md:text-sm truncate">{item.name}</p>
+                  <p className="text-xs md:text-sm text-primary font-semibold">{formatCurrency(item.price)}</p>
+                  <p className="text-xs text-muted-foreground">Total: {formatCurrency(item.price * item.quantity)}</p>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item.id, -1)}><Minus className="w-3 h-3" /></Button>
+                  <Input
+                    type="number"
+                    min="1"
+                    value={item.quantity}
+                    onChange={(e) => setQuantity(item.id, parseInt(e.target.value) || 0)}
+                    className="w-12 md:w-14 text-center font-medium text-sm h-8 px-1"
+                  />
+                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item.id, 1)}><Plus className="w-3 h-3" /></Button>
+                </div>
                 <Button variant="ghost" size="iconSm" onClick={() => removeFromCart(item.id)} className="text-destructive"><X className="w-4 h-4" /></Button>
               </div>
             ))}
