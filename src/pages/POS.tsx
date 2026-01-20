@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MainLayout } from "@/components/layout/MainLayout";
+import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -120,8 +120,8 @@ export default function POS() {
   const openShiftModal = (mode: "open" | "close") => { setShiftMode(mode); setIsShiftOpen(true); };
 
   return (
-    <MainLayout>
-      <div className="h-[calc(100vh-7rem)] flex flex-col lg:flex-row gap-4">
+    <POSLayout>
+      <div className="h-[calc(100vh-8rem)] md:h-[calc(100vh-6rem)] flex flex-col lg:flex-row gap-4">
         {/* Products */}
         <div className="flex-1 flex flex-col bg-card rounded-xl border overflow-hidden min-h-0">
           <div className="p-3 md:p-4 border-b space-y-3">
@@ -237,6 +237,6 @@ export default function POS() {
 
       <PaymentModal open={isPaymentOpen} onOpenChange={setIsPaymentOpen} total={total} onPaymentComplete={handlePaymentComplete} banks={banks} />
       <ShiftModal open={isShiftOpen} onOpenChange={setIsShiftOpen} mode={shiftMode} shiftData={shiftData ? { ...shiftData, transactions } : undefined} onShiftAction={handleShiftAction} />
-    </MainLayout>
+    </POSLayout>
   );
 }

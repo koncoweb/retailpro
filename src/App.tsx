@@ -2,11 +2,12 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/hooks/use-theme";
-import Index from "./pages/Index";
+import ModeSelect from "./pages/ModeSelect";
 import POS from "./pages/POS";
 import POSTransactions from "./pages/POSTransactions";
+import Dashboard from "./pages/Dashboard";
 import Branches from "./pages/Branches";
 import Inventory from "./pages/Inventory";
 import Employees from "./pages/Employees";
@@ -25,26 +26,34 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-            <Route path="/" element={<Index />} />
+            {/* Mode Selection */}
+            <Route path="/" element={<Navigate to="/mode-select" replace />} />
+            <Route path="/mode-select" element={<ModeSelect />} />
+
+            {/* POS Routes */}
             <Route path="/pos" element={<POS />} />
             <Route path="/pos/transactions" element={<POSTransactions />} />
             <Route path="/pos/shifts" element={<POS />} />
-            <Route path="/branches" element={<Branches />} />
-            <Route path="/branches/transfer" element={<Branches />} />
-            <Route path="/inventory/products" element={<Inventory />} />
-            <Route path="/inventory/stock-in" element={<Inventory />} />
-            <Route path="/inventory/opname" element={<Inventory />} />
-            <Route path="/inventory/po" element={<Inventory />} />
-            <Route path="/finance/journal" element={<Reports />} />
-            <Route path="/finance/ap-ar" element={<Reports />} />
-            <Route path="/finance/cashflow" element={<Reports />} />
-            <Route path="/finance/expenses" element={<Reports />} />
-            <Route path="/hr/employees" element={<Employees />} />
-            <Route path="/hr/attendance" element={<EmployeeReports />} />
-            <Route path="/hr/schedule" element={<Employees />} />
-            <Route path="/hr/payroll" element={<EmployeeReports />} />
-            <Route path="/reports" element={<Reports />} />
-            <Route path="/settings" element={<Settings />} />
+
+            {/* Back Office Routes */}
+            <Route path="/backoffice" element={<Dashboard />} />
+            <Route path="/backoffice/branches" element={<Branches />} />
+            <Route path="/backoffice/branches/transfer" element={<Branches />} />
+            <Route path="/backoffice/inventory/products" element={<Inventory />} />
+            <Route path="/backoffice/inventory/stock-in" element={<Inventory />} />
+            <Route path="/backoffice/inventory/opname" element={<Inventory />} />
+            <Route path="/backoffice/inventory/po" element={<Inventory />} />
+            <Route path="/backoffice/finance/journal" element={<Reports />} />
+            <Route path="/backoffice/finance/ap-ar" element={<Reports />} />
+            <Route path="/backoffice/finance/cashflow" element={<Reports />} />
+            <Route path="/backoffice/finance/expenses" element={<Reports />} />
+            <Route path="/backoffice/hr/employees" element={<Employees />} />
+            <Route path="/backoffice/hr/attendance" element={<EmployeeReports />} />
+            <Route path="/backoffice/hr/schedule" element={<Employees />} />
+            <Route path="/backoffice/hr/payroll" element={<EmployeeReports />} />
+            <Route path="/backoffice/reports" element={<Reports />} />
+            <Route path="/backoffice/settings" element={<Settings />} />
+
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

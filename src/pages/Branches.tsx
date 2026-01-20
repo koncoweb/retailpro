@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MainLayout } from "@/components/layout/MainLayout";
+import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -163,7 +163,7 @@ export default function Branches() {
   };
 
   return (
-    <MainLayout>
+    <BackOfficeLayout>
       <div className="space-y-4 md:space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -418,6 +418,6 @@ export default function Branches() {
       </div>
 
       <BranchDetailModal open={isDetailOpen} onOpenChange={setIsDetailOpen} branch={selectedBranch} />
-    </MainLayout>
+    </BackOfficeLayout>
   );
 }

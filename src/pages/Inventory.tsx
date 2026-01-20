@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocation } from "react-router-dom";
-import { MainLayout } from "@/components/layout/MainLayout";
+import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -332,7 +332,7 @@ export default function Inventory() {
     products.length;
 
   return (
-    <MainLayout>
+    <BackOfficeLayout>
       <div className="space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -657,6 +657,6 @@ export default function Inventory() {
         products={products}
         onSubmit={handlePO}
       />
-    </MainLayout>
+    </BackOfficeLayout>
   );
 }
