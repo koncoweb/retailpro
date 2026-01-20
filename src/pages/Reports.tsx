@@ -1,4 +1,4 @@
-import { MainLayout } from "@/components/layout/MainLayout";
+import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -97,7 +97,7 @@ const reportTypes = [
 
 export default function Reports() {
   return (
-    <MainLayout>
+    <BackOfficeLayout>
       <div className="space-y-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -321,6 +321,6 @@ export default function Reports() {
           </CardContent>
         </Card>
       </div>
-    </MainLayout>
+    </BackOfficeLayout>
   );
 }

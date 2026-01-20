@@ -1,4 +1,4 @@
-import { MainLayout } from "@/components/layout/MainLayout";
+import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,7 +15,7 @@ import { Settings as SettingsIcon, Building2, Bell, Shield, Database, Globe, Pal
 export default function Settings() {
   const { theme, toggleTheme } = useTheme();
   return (
-    <MainLayout>
+    <BackOfficeLayout>
       <div className="space-y-4 md:space-y-6">
         <div><h1 className="text-xl md:text-2xl lg:text-3xl font-bold">Pengaturan</h1><p className="text-muted-foreground text-sm md:text-base mt-1">Konfigurasi sistem dan preferensi aplikasi</p></div>
 
@@ -99,6 +99,6 @@ export default function Settings() {
 
         <div className="flex justify-end"><Button className="gap-2"><Save className="w-4 h-4" />Simpan Pengaturan</Button></div>
       </div>
-    </MainLayout>
+    </BackOfficeLayout>
   );
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MainLayout } from "@/components/layout/MainLayout";
+import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { SalesChart } from "@/components/dashboard/SalesChart";
 import { BranchPerformance } from "@/components/dashboard/BranchPerformance";
 import { RecentTransactions } from "@/components/dashboard/RecentTransactions";
@@ -38,7 +38,7 @@ export default function Dashboard() {
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
 
   return (
-    <MainLayout>
+    <BackOfficeLayout>
       <div className="space-y-4 md:space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -63,6 +63,6 @@ export default function Dashboard() {
       <TransactionDetailModal open={transactionModalOpen} onOpenChange={setTransactionModalOpen} />
       <ProductSalesModal open={productModalOpen} onOpenChange={setProductModalOpen} />
       <EmployeeDetailModal open={employeeModalOpen} onOpenChange={setEmployeeModalOpen} />
-    </MainLayout>
+    </BackOfficeLayout>
   );
 }
