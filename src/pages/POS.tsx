@@ -43,20 +43,50 @@ export default function POS() {
 
   const lowStockProducts = products.filter((p) => p.stock < p.minStock);
 
+  const getProductStock = (productId: string) => {
+    const product = products.find((p) => p.id === productId);
+    return product?.stock ?? 0;
+  };
+
   const addToCart = (product: typeof products[0]) => {
     if (!isShiftActive) { toast.error("Buka shift terlebih dahulu"); return; }
+    if (product.stock <= 0) { toast.error("Stok produk habis, tidak dapat dijual"); return; }
+    
     setCart((prev) => {
       const existing = prev.find((item) => item.id === product.id);
-      if (existing) return prev.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+      if (existing) {
+        if (existing.quantity >= product.stock) {
+          toast.error(`Stok tersedia hanya ${product.stock} unit`);
+          return prev;
+        }
+        return prev.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+      }
       return [...prev, { ...product, quantity: 1 }];
     });
   };
 
-  const updateQuantity = (id: string, delta: number) => setCart((prev) => prev.map((item) => item.id === id ? { ...item, quantity: Math.max(0, item.quantity + delta) } : item).filter((item) => item.quantity > 0));
+  const updateQuantity = (id: string, delta: number) => {
+    const stock = getProductStock(id);
+    setCart((prev) => prev.map((item) => {
+      if (item.id === id) {
+        const newQty = item.quantity + delta;
+        if (newQty > stock) {
+          toast.error(`Stok tersedia hanya ${stock} unit`);
+          return item;
+        }
+        return { ...item, quantity: Math.max(0, newQty) };
+      }
+      return item;
+    }).filter((item) => item.quantity > 0));
+  };
   
   const setQuantity = (id: string, qty: number) => {
+    const stock = getProductStock(id);
     if (qty <= 0) {
       setCart((prev) => prev.filter((item) => item.id !== id));
+    } else if (qty > stock) {
+      toast.error(`Stok tersedia hanya ${stock} unit`);
+      setCart((prev) => prev.map((item) => item.id === id ? { ...item, quantity: stock } : item));
     } else {
       setCart((prev) => prev.map((item) => item.id === id ? { ...item, quantity: qty } : item));
     }
@@ -131,17 +161,36 @@ export default function POS() {
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 md:gap-3">
               {filteredProducts.map((product) => {
                 const isLowStock = product.stock < product.minStock;
+                const isOutOfStock = product.stock <= 0;
                 return (
-                  <button key={product.id} onClick={() => addToCart(product)} className={`p-3 md:p-4 rounded-xl bg-muted/50 hover:bg-primary/10 border transition-all text-left group ${isLowStock ? 'border-warning/50' : 'border-transparent hover:border-primary/30'}`}>
+                  <button 
+                    key={product.id} 
+                    onClick={() => addToCart(product)} 
+                    disabled={isOutOfStock}
+                    className={`p-3 md:p-4 rounded-xl border transition-all text-left group relative ${
+                      isOutOfStock 
+                        ? 'bg-muted/30 opacity-60 cursor-not-allowed border-destructive/30' 
+                        : isLowStock 
+                          ? 'bg-muted/50 hover:bg-primary/10 border-warning/50' 
+                          : 'bg-muted/50 hover:bg-primary/10 border-transparent hover:border-primary/30'
+                    }`}
+                  >
+                    {isOutOfStock && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-background/60 rounded-xl z-10">
+                        <Badge variant="destructive" className="text-xs">HABIS</Badge>
+                      </div>
+                    )}
                     <div className="aspect-square rounded-lg bg-gradient-to-br from-primary/20 to-info/20 mb-2 md:mb-3 flex items-center justify-center relative">
                       <span className="text-2xl md:text-3xl">📦</span>
-                      {isLowStock && <div className="absolute top-1 right-1"><AlertTriangle className="w-4 h-4 text-warning" /></div>}
+                      {isLowStock && !isOutOfStock && <div className="absolute top-1 right-1"><AlertTriangle className="w-4 h-4 text-warning" /></div>}
                     </div>
-                    <h4 className="font-medium text-xs md:text-sm line-clamp-2 group-hover:text-primary">{product.name}</h4>
+                    <h4 className={`font-medium text-xs md:text-sm line-clamp-2 ${!isOutOfStock && 'group-hover:text-primary'}`}>{product.name}</h4>
                     <p className="text-xs text-muted-foreground mt-1">{product.sku}</p>
                     <div className="flex items-center justify-between mt-2">
                       <span className="font-bold text-primary text-xs md:text-sm">{formatCurrency(product.price)}</span>
-                      <Badge variant={isLowStock ? "destructive" : "secondary"} className="text-xs">{product.stock}</Badge>
+                      <Badge variant={isOutOfStock ? "destructive" : isLowStock ? "destructive" : "secondary"} className="text-xs">
+                        {isOutOfStock ? "0" : product.stock}
+                      </Badge>
                     </div>
                   </button>
                 );
