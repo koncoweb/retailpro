@@ -29,87 +29,8 @@ import {
   Wallet,
   Printer,
 } from "lucide-react";
-
-const transactions = [
-  {
-    id: "TRX-001",
-    date: "2024-01-15 14:30",
-    customer: "Walk-in Customer",
-    items: 5,
-    subtotal: 125000,
-    discount: 12500,
-    total: 112500,
-    payment: "cash",
-    cashier: "Andi Wijaya",
-    branch: "Jakarta",
-    status: "completed",
-  },
-  {
-    id: "TRX-002",
-    date: "2024-01-15 14:15",
-    customer: "Member - Budi S.",
-    items: 3,
-    subtotal: 85000,
-    discount: 8500,
-    total: 76500,
-    payment: "card",
-    cashier: "Maya Sari",
-    branch: "Surabaya",
-    status: "completed",
-  },
-  {
-    id: "TRX-003",
-    date: "2024-01-15 13:45",
-    customer: "Walk-in Customer",
-    items: 8,
-    subtotal: 245000,
-    discount: 0,
-    total: 245000,
-    payment: "e-wallet",
-    cashier: "Andi Wijaya",
-    branch: "Jakarta",
-    status: "completed",
-  },
-  {
-    id: "TRX-004",
-    date: "2024-01-15 13:20",
-    customer: "Member - Dewi L.",
-    items: 2,
-    subtotal: 48000,
-    discount: 4800,
-    total: 43200,
-    payment: "cash",
-    cashier: "Andi Wijaya",
-    branch: "Jakarta",
-    status: "completed",
-  },
-  {
-    id: "TRX-005",
-    date: "2024-01-15 12:55",
-    customer: "Walk-in Customer",
-    items: 6,
-    subtotal: 178000,
-    discount: 0,
-    total: 178000,
-    payment: "card",
-    cashier: "Maya Sari",
-    branch: "Surabaya",
-    status: "refunded",
-  },
-  {
-    id: "TRX-006",
-    date: "2024-01-15 12:30",
-    customer: "Walk-in Customer",
-    items: 4,
-    subtotal: 92000,
-    discount: 0,
-    total: 92000,
-    payment: "e-wallet",
-    cashier: "Andi Wijaya",
-    branch: "Jakarta",
-    status: "completed",
-  },
-];
+import { mockTransactions, mockBranches } from "@/data/mockData";
+import { Transaction } from "@/types";
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -123,6 +44,12 @@ const paymentIcons: Record<string, React.ElementType> = {
   cash: Banknote,
   card: CreditCard,
   "e-wallet": Wallet,
+  qris: Wallet,
+};
+
+const getBranchName = (branchId: string) => {
+  const branch = mockBranches.find((b) => b.id === branchId);
+  return branch ? branch.name : branchId;
 };
 
 export default function POSTransactions() {
@@ -130,16 +57,17 @@ export default function POSTransactions() {
   const [selectedPayment, setSelectedPayment] = useState("all");
   const [selectedBranch, setSelectedBranch] = useState("all");
 
-  const filteredTransactions = transactions.filter((trx) => {
+  const filteredTransactions = mockTransactions.filter((trx) => {
+    const branchName = getBranchName(trx.branch_id);
     const matchesSearch =
       trx.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      trx.customer.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesPayment = selectedPayment === "all" || trx.payment === selectedPayment;
-    const matchesBranch = selectedBranch === "all" || trx.branch === selectedBranch;
+      trx.invoice_number.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesPayment = selectedPayment === "all" || trx.payment_method === selectedPayment;
+    const matchesBranch = selectedBranch === "all" || trx.branch_id === selectedBranch;
     return matchesSearch && matchesPayment && matchesBranch;
   });
 
-  const totalSales = filteredTransactions.reduce((sum, trx) => sum + trx.total, 0);
+  const totalSales = filteredTransactions.reduce((sum, trx) => sum + trx.total_amount, 0);
   const totalTransactions = filteredTransactions.length;
 
   return (
@@ -198,7 +126,7 @@ export default function POSTransactions() {
                 <p className="text-sm text-muted-foreground">Via Kartu</p>
                 <p className="text-xl font-bold">
                   {formatCurrency(
-                    transactions.filter((t) => t.payment === "card").reduce((s, t) => s + t.total, 0)
+                    mockTransactions.filter((t) => t.payment_method === "card").reduce((s, t) => s + t.total_amount, 0)
                   )}
                 </p>
               </div>
@@ -210,10 +138,10 @@ export default function POSTransactions() {
                 <Wallet className="w-5 h-5 text-warning" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Via E-Wallet</p>
+                <p className="text-sm text-muted-foreground">Via E-Wallet/QRIS</p>
                 <p className="text-xl font-bold">
                   {formatCurrency(
-                    transactions.filter((t) => t.payment === "e-wallet").reduce((s, t) => s + t.total, 0)
+                    mockTransactions.filter((t) => t.payment_method === "ewallet" || t.payment_method === "qris").reduce((s, t) => s + t.total_amount, 0)
                   )}
                 </p>
               </div>
@@ -240,7 +168,8 @@ export default function POSTransactions() {
               <SelectItem value="all">Semua</SelectItem>
               <SelectItem value="cash">Tunai</SelectItem>
               <SelectItem value="card">Kartu</SelectItem>
-              <SelectItem value="e-wallet">E-Wallet</SelectItem>
+              <SelectItem value="ewallet">E-Wallet</SelectItem>
+              <SelectItem value="qris">QRIS</SelectItem>
             </SelectContent>
           </Select>
           <Select value={selectedBranch} onValueChange={setSelectedBranch}>
@@ -249,9 +178,11 @@ export default function POSTransactions() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Semua</SelectItem>
-              <SelectItem value="Jakarta">Jakarta</SelectItem>
-              <SelectItem value="Surabaya">Surabaya</SelectItem>
-              <SelectItem value="Bandung">Bandung</SelectItem>
+              {mockBranches.map((branch) => (
+                <SelectItem key={branch.id} value={branch.id}>
+                  {branch.name}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -273,41 +204,43 @@ export default function POSTransactions() {
             </TableHeader>
             <TableBody>
               {filteredTransactions.map((trx) => {
-                const PaymentIcon = paymentIcons[trx.payment] || Receipt;
+                const PaymentIcon = paymentIcons[trx.payment_method] || Receipt;
+                const totalItems = trx.items.reduce((sum, item) => sum + item.quantity, 0);
+                const branchName = getBranchName(trx.branch_id);
+                const date = new Date(trx.created_at);
+                
                 return (
                   <TableRow key={trx.id} className="group">
                     <TableCell>
                       <span className="font-mono font-medium text-primary">{trx.id}</span>
+                      <p className="text-xs text-muted-foreground">{trx.invoice_number}</p>
                     </TableCell>
                     <TableCell>
                       <div>
-                        <p className="font-medium">{trx.date.split(" ")[0]}</p>
-                        <p className="text-sm text-muted-foreground">{trx.date.split(" ")[1]}</p>
+                        <p className="font-medium">{date.toLocaleDateString('id-ID')}</p>
+                        <p className="text-sm text-muted-foreground">{date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</p>
                       </div>
                     </TableCell>
                     <TableCell>
                       <div>
-                        <p className="font-medium">{trx.customer}</p>
+                        <p className="font-medium">{trx.customer_id || "Walk-in Customer"}</p>
                         <p className="text-sm text-muted-foreground">
-                          {trx.cashier} • {trx.branch}
+                          {trx.cashier_id} • {branchName}
                         </p>
                       </div>
                     </TableCell>
                     <TableCell className="text-center">
-                      <Badge variant="secondary">{trx.items}</Badge>
+                      <Badge variant="secondary">{totalItems}</Badge>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <PaymentIcon className="w-4 h-4 text-muted-foreground" />
-                        <span className="capitalize">{trx.payment}</span>
+                        <span className="capitalize">{trx.payment_method}</span>
                       </div>
                     </TableCell>
                     <TableCell className="text-right">
                       <div>
-                        <p className="font-bold">{formatCurrency(trx.total)}</p>
-                        {trx.discount > 0 && (
-                          <p className="text-sm text-success">-{formatCurrency(trx.discount)}</p>
-                        )}
+                        <p className="font-bold">{formatCurrency(trx.total_amount)}</p>
                       </div>
                     </TableCell>
                     <TableCell className="text-center">
@@ -319,7 +252,7 @@ export default function POSTransactions() {
                             : ""
                         }
                       >
-                        {trx.status === "completed" ? "Selesai" : "Refund"}
+                        {trx.status === "completed" ? "Selesai" : "Void"}
                       </Badge>
                     </TableCell>
                     <TableCell>

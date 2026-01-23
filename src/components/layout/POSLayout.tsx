@@ -1,9 +1,11 @@
 import { ReactNode } from "react";
+// Layout component for Point of Sale pages
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { ShoppingCart, FileText, Clock, LogOut, Store, Moon, Sun } from "lucide-react";
+import { ShoppingCart, FileText, Clock, LogOut, Store, Moon, Sun, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
+import { mockBranches } from "@/data/mockData";
 
 interface POSLayoutProps {
   children: ReactNode;
@@ -18,6 +20,7 @@ const posNavItems = [
 export function POSLayout({ children }: POSLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
+  const currentBranch = mockBranches[0];
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -32,7 +35,12 @@ export function POSLayout({ children }: POSLayoutProps) {
             <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded-full">POS</span>
           </div>
           
-          <nav className="hidden md:flex items-center gap-1 ml-6">
+          <div className="hidden md:flex items-center gap-2 text-sm text-muted-foreground border-l pl-4 ml-2">
+            <MapPin className="w-4 h-4" />
+            <span>{currentBranch.name}</span>
+          </div>
+
+          <nav className="hidden md:flex items-center gap-1 ml-4">
             {posNavItems.map((item) => (
               <Link
                 key={item.path}

@@ -1,25 +1,18 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { PaymentModal } from "@/components/pos/PaymentModal";
 import { ShiftModal } from "@/components/pos/ShiftModal";
-import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package } from "lucide-react";
+import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package, MapPin } from "lucide-react";
 import { toast } from "sonner";
+import { Product, Branch, Transaction, CartItem } from "@/types";
+import { mockProducts, mockBranches } from "@/data/mockData";
 
-interface CartItem { id: string; name: string; price: number; quantity: number; sku: string; }
-
-const products = [
-  { id: "1", name: "Indomie Goreng", price: 3500, sku: "PRD-001", category: "Makanan", stock: 150, minStock: 50 },
-  { id: "2", name: "Susu Ultra 1L", price: 18500, sku: "PRD-002", category: "Minuman", stock: 8, minStock: 20 },
-  { id: "3", name: "Aqua 600ml", price: 4000, sku: "PRD-003", category: "Minuman", stock: 200, minStock: 50 },
-  { id: "4", name: "Roti Tawar Sari Roti", price: 16000, sku: "PRD-004", category: "Makanan", stock: 5, minStock: 15 },
-  { id: "5", name: "Sabun Lifebuoy 100g", price: 5500, sku: "PRD-005", category: "Personal Care", stock: 3, minStock: 20 },
-  { id: "6", name: "Kopi Kapal Api Sachet", price: 2000, sku: "PRD-006", category: "Minuman", stock: 120, minStock: 30 },
-  { id: "7", name: "Teh Botol Sosro 450ml", price: 5000, sku: "PRD-007", category: "Minuman", stock: 95, minStock: 25 },
-  { id: "8", name: "Oreo Original 133g", price: 12500, sku: "PRD-008", category: "Snack", stock: 10, minStock: 20 },
-];
+// Mock Session Data (In real app, this comes from Context/Auth)
+// Using first branch from mock data as current branch
+const currentBranch: Branch = mockBranches[0];
 
 const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
 const banks = [{ id: "bca", name: "BCA", type: "Debit & Kredit" }, { id: "mandiri", name: "Mandiri", type: "Debit & Kredit" }, { id: "bni", name: "BNI", type: "Debit" }];
@@ -38,25 +31,30 @@ export default function POS() {
   const [shiftMode, setShiftMode] = useState<"open" | "close">("open");
   const [isShiftActive, setIsShiftActive] = useState(false);
   const [shiftData, setShiftData] = useState<any>(null);
-  const [transactions, setTransactions] = useState<any[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [showLowStock, setShowLowStock] = useState(true);
 
-  const lowStockProducts = products.filter((p) => p.stock < p.minStock);
-
-  const getProductStock = (productId: string) => {
-    const product = products.find((p) => p.id === productId);
-    return product?.stock ?? 0;
+  // Helper to get stock for current branch
+  const getProductStock = (product: Product) => {
+    return product.stock_by_branch[currentBranch.id] || 0;
   };
 
-  const addToCart = (product: typeof products[0]) => {
+  const lowStockProducts = useMemo(() => 
+    mockProducts.filter((p) => getProductStock(p) < p.min_stock_alert),
+    []
+  );
+
+  const addToCart = (product: Product) => {
     if (!isShiftActive) { toast.error("Buka shift terlebih dahulu"); return; }
-    if (product.stock <= 0) { toast.error("Stok produk habis, tidak dapat dijual"); return; }
+    
+    const stock = getProductStock(product);
+    if (stock <= 0) { toast.error("Stok produk habis di cabang ini"); return; }
     
     setCart((prev) => {
       const existing = prev.find((item) => item.id === product.id);
       if (existing) {
-        if (existing.quantity >= product.stock) {
-          toast.error(`Stok tersedia hanya ${product.stock} unit`);
+        if (existing.quantity >= stock) {
+          toast.error(`Stok tersedia hanya ${stock} unit`);
           return prev;
         }
         return prev.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
@@ -66,7 +64,11 @@ export default function POS() {
   };
 
   const updateQuantity = (id: string, delta: number) => {
-    const stock = getProductStock(id);
+    const product = mockProducts.find(p => p.id === id);
+    if (!product) return;
+    
+    const stock = getProductStock(product);
+    
     setCart((prev) => prev.map((item) => {
       if (item.id === id) {
         const newQty = item.quantity + delta;
@@ -81,7 +83,11 @@ export default function POS() {
   };
   
   const setQuantity = (id: string, qty: number) => {
-    const stock = getProductStock(id);
+    const product = mockProducts.find(p => p.id === id);
+    if (!product) return;
+
+    const stock = getProductStock(product);
+    
     if (qty <= 0) {
       setCart((prev) => prev.filter((item) => item.id !== id));
     } else if (qty > stock) {
@@ -100,14 +106,33 @@ export default function POS() {
   const total = subtotal - discountAmount;
   const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  const filteredProducts = products.filter((product) => {
+  const filteredProducts = mockProducts.filter((product) => {
     const matchesSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = selectedCategory === "Semua" || product.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
 
-  const handlePaymentComplete = (method: string, details: any) => {
-    const trx = { id: `TRX-${Date.now()}`, time: new Date(), total, method, items: cart };
+  const handlePaymentComplete = (method: any, details: any) => {
+    const trx: Transaction = {
+      id: `TRX-${Date.now()}`,
+      tenant_id: currentBranch.tenant_id,
+      branch_id: currentBranch.id,
+      cashier_id: "user-001", // Mock user
+      invoice_number: `INV/${Date.now()}`,
+      created_at: new Date().toISOString(),
+      total_amount: total,
+      payment_method: method as any,
+      status: 'completed',
+      items: cart.map(item => ({
+        id: `ITEM-${Date.now()}-${item.id}`,
+        product_id: item.id,
+        product_name: item.name,
+        quantity: item.quantity,
+        unit_price: item.price,
+        subtotal: item.price * item.quantity
+      }))
+    };
+    
     setTransactions((prev) => [...prev, trx]);
     clearCart();
   };
@@ -125,6 +150,12 @@ export default function POS() {
         {/* Products */}
         <div className="flex-1 flex flex-col bg-card rounded-xl border overflow-hidden min-h-0">
           <div className="p-3 md:p-4 border-b space-y-3">
+            <div className="flex justify-between items-center">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1 rounded-full">
+                    <MapPin className="w-4 h-4" />
+                    <span>{currentBranch.name}</span>
+                </div>
+            </div>
             <div className="flex gap-2">
               <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Cari produk..." className="pl-10" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
               <Button variant="outline" size="icon"><Barcode className="w-5 h-5" /></Button>
@@ -146,22 +177,25 @@ export default function POS() {
                   </Button>
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-1">
-                  {lowStockProducts.map((item) => (
+                  {lowStockProducts.map((item) => {
+                    const stock = getProductStock(item);
+                    return (
                     <div key={item.id} className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-md bg-warning/10 border border-warning/20">
                       <Package className="w-4 h-4 text-warning" />
                       <div>
                         <p className="text-xs font-medium">{item.name}</p>
-                        <p className="text-xs text-muted-foreground">Stok: <span className="text-warning font-bold">{item.stock}</span> / {item.minStock}</p>
+                        <p className="text-xs text-muted-foreground">Stok: <span className="text-warning font-bold">{stock}</span> / {item.min_stock_alert}</p>
                       </div>
                     </div>
-                  ))}
+                  )})}
                 </div>
               </div>
             )}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 md:gap-3">
               {filteredProducts.map((product) => {
-                const isLowStock = product.stock < product.minStock;
-                const isOutOfStock = product.stock <= 0;
+                const stock = getProductStock(product);
+                const isLowStock = stock < product.min_stock_alert;
+                const isOutOfStock = stock <= 0;
                 return (
                   <button 
                     key={product.id} 
@@ -189,7 +223,7 @@ export default function POS() {
                     <div className="flex items-center justify-between mt-2">
                       <span className="font-bold text-primary text-xs md:text-sm">{formatCurrency(product.price)}</span>
                       <Badge variant={isOutOfStock ? "destructive" : isLowStock ? "destructive" : "secondary"} className="text-xs">
-                        {isOutOfStock ? "0" : product.stock}
+                        {isOutOfStock ? "0" : stock}
                       </Badge>
                     </div>
                   </button>

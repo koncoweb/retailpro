@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,8 +17,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Clock, DollarSign, Banknote, CreditCard, Wallet, Check } from "lucide-react";
+import { Clock, DollarSign, Banknote, CreditCard, Wallet, Check, QrCode } from "lucide-react";
 import { toast } from "sonner";
+import { Transaction } from "@/types";
 
 interface ShiftModalProps {
   open: boolean;
@@ -31,12 +32,7 @@ interface ShiftModalProps {
 interface ShiftData {
   openTime: Date;
   pettyCash: number;
-  transactions: {
-    id: string;
-    time: Date;
-    total: number;
-    method: string;
-  }[];
+  transactions: Transaction[];
 }
 
 function formatCurrency(value: number) {
@@ -76,18 +72,26 @@ export function ShiftModal({
     setActualCash("");
   };
 
-  // Calculate shift summary
-  const totalCash = shiftData?.transactions
-    .filter((t) => t.method === "cash")
-    .reduce((sum, t) => sum + t.total, 0) || 0;
-  const totalCard = shiftData?.transactions
-    .filter((t) => t.method === "card")
-    .reduce((sum, t) => sum + t.total, 0) || 0;
-  const totalEWallet = shiftData?.transactions
-    .filter((t) => t.method === "ewallet")
-    .reduce((sum, t) => sum + t.total, 0) || 0;
-  const totalSales = totalCash + totalCard + totalEWallet;
-  const expectedCash = (shiftData?.pettyCash || 0) + totalCash;
+  // Calculate shift summary using useMemo for performance
+  const summary = useMemo(() => {
+    const defaultSummary = { cash: 0, card: 0, ewallet: 0, qris: 0, total: 0 };
+    if (!shiftData?.transactions) return defaultSummary;
+
+    return shiftData.transactions.reduce((acc, t) => {
+      const amount = t.total_amount;
+      acc.total += amount;
+      
+      switch (t.payment_method) {
+        case 'cash': acc.cash += amount; break;
+        case 'card': acc.card += amount; break;
+        case 'ewallet': acc.ewallet += amount; break;
+        case 'qris': acc.qris += amount; break;
+      }
+      return acc;
+    }, { ...defaultSummary });
+  }, [shiftData?.transactions]);
+
+  const expectedCash = (shiftData?.pettyCash || 0) + summary.cash;
 
   if (mode === "open") {
     return (
@@ -200,7 +204,7 @@ export function ShiftModal({
                     Tunai
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    {formatCurrency(totalCash)}
+                    {formatCurrency(summary.cash)}
                   </TableCell>
                 </TableRow>
                 <TableRow>
@@ -209,7 +213,7 @@ export function ShiftModal({
                     Kartu (Debit/Kredit)
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    {formatCurrency(totalCard)}
+                    {formatCurrency(summary.card)}
                   </TableCell>
                 </TableRow>
                 <TableRow>
@@ -218,13 +222,22 @@ export function ShiftModal({
                     E-Wallet
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    {formatCurrency(totalEWallet)}
+                    {formatCurrency(summary.ewallet)}
+                  </TableCell>
+                </TableRow>
+                <TableRow>
+                  <TableCell className="flex items-center gap-2">
+                    <QrCode className="w-4 h-4 text-purple-500" />
+                    QRIS
+                  </TableCell>
+                  <TableCell className="text-right font-medium">
+                    {formatCurrency(summary.qris)}
                   </TableCell>
                 </TableRow>
                 <TableRow className="font-bold bg-muted/50">
                   <TableCell>Total Penjualan</TableCell>
                   <TableCell className="text-right text-primary">
-                    {formatCurrency(totalSales)}
+                    {formatCurrency(summary.total)}
                   </TableCell>
                 </TableRow>
               </TableBody>

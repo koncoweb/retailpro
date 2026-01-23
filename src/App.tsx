@@ -4,6 +4,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/hooks/use-theme";
+import Login from "./pages/auth/Login";
+import RegisterTenant from "./pages/auth/RegisterTenant";
 import ModeSelect from "./pages/ModeSelect";
 import POS from "./pages/POS";
 import POSTransactions from "./pages/POSTransactions";
@@ -26,8 +28,10 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
-            {/* Mode Selection */}
-            <Route path="/" element={<Navigate to="/mode-select" replace />} />
+            {/* Auth Routes */}
+            <Route path="/" element={<Navigate to="/login" replace />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register-tenant" element={<RegisterTenant />} />
             <Route path="/mode-select" element={<ModeSelect />} />
 
             {/* POS Routes */}
