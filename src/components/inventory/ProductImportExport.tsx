@@ -37,6 +37,25 @@ interface ProductImportExportProps {
   onImport: (products: Product[]) => void;
 }
 
+interface ImportRow {
+  "SKU"?: string;
+  sku?: string;
+  "Nama Produk"?: string;
+  name?: string;
+  "Kategori"?: string;
+  category?: string;
+  "Harga Jual"?: string | number;
+  price?: string | number;
+  "Harga Modal"?: string | number;
+  cost?: string | number;
+  "Stok"?: string | number;
+  stock?: string | number;
+  "Stok Minimum"?: string | number;
+  minStock?: string | number;
+  "Supplier"?: string;
+  supplier?: string;
+}
+
 export function ProductImportExport({ products, onImport }: ProductImportExportProps) {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importData, setImportData] = useState<Product[]>([]);
@@ -123,16 +142,19 @@ export function ProductImportExport({ products, onImport }: ProductImportExportP
         const worksheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json(worksheet);
 
-        const parsedProducts: Product[] = jsonData.map((row: any) => ({
-          sku: row["SKU"] || row["sku"] || "",
-          name: row["Nama Produk"] || row["name"] || "",
-          category: row["Kategori"] || row["category"] || "",
-          price: parseFloat(row["Harga Jual"] || row["price"] || 0),
-          cost: parseFloat(row["Harga Modal"] || row["cost"] || 0),
-          stock: parseInt(row["Stok"] || row["stock"] || 0),
-          minStock: parseInt(row["Stok Minimum"] || row["minStock"] || 0),
-          supplier: row["Supplier"] || row["supplier"] || "",
-        }));
+        const parsedProducts: Product[] = jsonData.map((row: unknown) => {
+          const r = row as ImportRow;
+          return {
+            sku: r["SKU"] || r["sku"] || "",
+            name: r["Nama Produk"] || r["name"] || "",
+            category: r["Kategori"] || r["category"] || "",
+            price: parseFloat(String(r["Harga Jual"] || r["price"] || 0)),
+            cost: parseFloat(String(r["Harga Modal"] || r["cost"] || 0)),
+            stock: parseInt(String(r["Stok"] || r["stock"] || 0)),
+            minStock: parseInt(String(r["Stok Minimum"] || r["minStock"] || 0)),
+            supplier: r["Supplier"] || r["supplier"] || "",
+          };
+        });
 
         // Validate data
         const invalidRows = parsedProducts.filter(

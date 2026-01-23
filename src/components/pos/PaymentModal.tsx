@@ -26,11 +26,20 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+export interface PaymentDetails {
+  method: string;
+  received?: number;
+  change?: number;
+  bank?: string;
+  cardType?: "debit" | "credit";
+  wallet?: string;
+}
+
 interface PaymentModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   total: number;
-  onPaymentComplete: (paymentMethod: string, paymentDetails: any) => void;
+  onPaymentComplete: (paymentMethod: string, paymentDetails: PaymentDetails) => void;
   banks: { id: string; name: string; type: string }[];
 }
 
@@ -67,7 +76,7 @@ export function PaymentModal({
   const change = cashReceived - total;
 
   const handlePayment = () => {
-    let paymentDetails: any = { method: paymentMethod };
+    let paymentDetails: PaymentDetails = { method: paymentMethod };
 
     if (paymentMethod === "cash") {
       if (cashReceived < total) {

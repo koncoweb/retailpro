@@ -3,8 +3,8 @@ import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { PaymentModal } from "@/components/pos/PaymentModal";
-import { ShiftModal } from "@/components/pos/ShiftModal";
+import { PaymentModal, PaymentDetails } from "@/components/pos/PaymentModal";
+import { ShiftModal, ShiftActionData } from "@/components/pos/ShiftModal";
 import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package, MapPin } from "lucide-react";
 import { toast } from "sonner";
 import { Product, Branch, Transaction, CartItem } from "@/types";
@@ -16,6 +16,12 @@ const currentBranch: Branch = mockBranches[0];
 
 const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
 const banks = [{ id: "bca", name: "BCA", type: "Debit & Kredit" }, { id: "mandiri", name: "Mandiri", type: "Debit & Kredit" }, { id: "bni", name: "BNI", type: "Debit" }];
+
+interface ShiftDataState {
+  openTime: Date;
+  pettyCash: number;
+  transactions: Transaction[];
+}
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(value);
@@ -30,7 +36,7 @@ export default function POS() {
   const [isShiftOpen, setIsShiftOpen] = useState(false);
   const [shiftMode, setShiftMode] = useState<"open" | "close">("open");
   const [isShiftActive, setIsShiftActive] = useState(false);
-  const [shiftData, setShiftData] = useState<any>(null);
+  const [shiftData, setShiftData] = useState<ShiftDataState | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [showLowStock, setShowLowStock] = useState(true);
 
@@ -112,7 +118,12 @@ export default function POS() {
     return matchesSearch && matchesCategory;
   });
 
-  const handlePaymentComplete = (method: any, details: any) => {
+  const handlePaymentComplete = (method: string, details: PaymentDetails) => {
+    let finalMethod = method;
+    if (method === 'card' && details.cardType) {
+      finalMethod = details.cardType;
+    }
+
     const trx: Transaction = {
       id: `TRX-${Date.now()}`,
       tenant_id: currentBranch.tenant_id,
@@ -121,7 +132,7 @@ export default function POS() {
       invoice_number: `INV/${Date.now()}`,
       created_at: new Date().toISOString(),
       total_amount: total,
-      payment_method: method as any,
+      payment_method: finalMethod as Transaction['payment_method'],
       status: 'completed',
       items: cart.map(item => ({
         id: `ITEM-${Date.now()}-${item.id}`,
@@ -137,8 +148,16 @@ export default function POS() {
     clearCart();
   };
 
-  const handleShiftAction = (data: any) => {
-    if (shiftMode === "open") { setIsShiftActive(true); setShiftData({ openTime: data.openTime, pettyCash: data.pettyCash, transactions: [] }); toast.success(`Shift dibuka dengan petty cash ${formatCurrency(data.pettyCash)}`); }
+  const handleShiftAction = (data: ShiftActionData) => {
+    if (shiftMode === "open") { 
+        setIsShiftActive(true); 
+        setShiftData({ 
+            openTime: data.openTime!, 
+            pettyCash: data.pettyCash!, 
+            transactions: [] 
+        }); 
+        toast.success(`Shift dibuka dengan petty cash ${formatCurrency(data.pettyCash!)}`); 
+    }
     else { setIsShiftActive(false); setShiftData(null); setTransactions([]); }
   };
 

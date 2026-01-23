@@ -21,12 +21,19 @@ import { Clock, DollarSign, Banknote, CreditCard, Wallet, Check, QrCode } from "
 import { toast } from "sonner";
 import { Transaction } from "@/types";
 
+export interface ShiftActionData {
+  pettyCash?: number;
+  openTime?: Date;
+  closeTime?: Date;
+  actualCash?: number;
+}
+
 interface ShiftModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mode: "open" | "close";
   shiftData?: ShiftData;
-  onShiftAction: (data: any) => void;
+  onShiftAction: (data: ShiftActionData) => void;
 }
 
 interface ShiftData {

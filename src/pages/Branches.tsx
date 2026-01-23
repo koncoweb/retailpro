@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -32,9 +33,10 @@ import {
   Phone,
   Edit,
 } from "lucide-react";
+import { query } from "@/lib/db";
 
 interface Branch {
-  id: number;
+  id: string; // Changed to string (UUID)
   name: string;
   code: string;
   address: string;
@@ -48,20 +50,13 @@ interface Branch {
   salesTarget: number;
 }
 
-const initialBranches: Branch[] = [
-  { id: 1, name: "Cabang Jakarta Pusat", code: "JKT-01", address: "Jl. Thamrin No. 45, Jakarta Pusat", phone: "021-5555-1234", email: "jakarta@retailpro.id", manager: "Budi Santoso", employees: 24, products: 1250, status: "active", salesThisMonth: 156000000, salesTarget: 180000000 },
-  { id: 2, name: "Cabang Surabaya", code: "SBY-01", address: "Jl. Basuki Rahmat No. 88, Surabaya", phone: "031-5555-5678", email: "surabaya@retailpro.id", manager: "Dewi Lestari", employees: 18, products: 980, status: "active", salesThisMonth: 98000000, salesTarget: 100000000 },
-  { id: 3, name: "Cabang Bandung", code: "BDG-01", address: "Jl. Asia Afrika No. 120, Bandung", phone: "022-5555-9012", email: "bandung@retailpro.id", manager: "Andi Wijaya", employees: 12, products: 750, status: "active", salesThisMonth: 72000000, salesTarget: 80000000 },
-  { id: 4, name: "Cabang Medan", code: "MDN-01", address: "Jl. Gatot Subroto No. 55, Medan", phone: "061-5555-3456", email: "medan@retailpro.id", manager: "Sari Rahmawati", employees: 10, products: 620, status: "active", salesThisMonth: 45000000, salesTarget: 60000000 },
-  { id: 5, name: "Cabang Semarang", code: "SMG-01", address: "Jl. Pandanaran No. 77, Semarang", phone: "024-5555-7890", email: "semarang@retailpro.id", manager: "Rudi Hartono", employees: 8, products: 480, status: "inactive", salesThisMonth: 0, salesTarget: 50000000 },
-];
-
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(value);
 }
 
 export default function Branches() {
-  const [branches, setBranches] = useState<Branch[]>(initialBranches);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [selectedBranch, setSelectedBranch] = useState<Branch | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
@@ -74,8 +69,55 @@ export default function Branches() {
     address: "",
     phone: "",
     email: "",
-    manager: "",
+    manager: "", // This will be manager name or email
+    createManagerUser: false,
+    managerEmail: "",
+    salesTarget: "50000000"
   });
+
+  const fetchBranches = async () => {
+    try {
+      setIsLoading(true);
+      // Fetch branches with real data from Neon DB
+      const res = await query(`
+        SELECT 
+          b.id, b.name, b.code, b.address, b.phone, b.email, b.status, b.sales_target,
+          (SELECT email FROM users WHERE assigned_branch_id = b.id AND role = 'store_manager' LIMIT 1) as manager_email,
+          (SELECT count(*) FROM users WHERE assigned_branch_id = b.id) as employees,
+          (SELECT count(DISTINCT product_id) FROM product_batches WHERE branch_id = b.id AND quantity_current > 0) as products,
+          (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE branch_id = b.id AND created_at >= date_trunc('month', CURRENT_DATE)) as sales_this_month
+        FROM branches b
+        ORDER BY b.name
+      `);
+      
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mappedBranches: Branch[] = res.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name,
+        code: row.code || "",
+        address: row.address || "",
+        phone: row.phone || "",
+        email: row.email || "",
+        manager: row.manager_email || "Belum ada manager",
+        employees: parseInt(row.employees) || 0,
+        products: parseInt(row.products) || 0,
+        status: row.status as "active" | "inactive",
+        salesThisMonth: parseFloat(row.sales_this_month) || 0,
+        salesTarget: parseFloat(row.sales_target) || 0
+      }));
+      
+      setBranches(mappedBranches);
+    } catch (error) {
+      console.error("Failed to fetch branches:", error);
+      toast.error("Gagal mengambil data cabang");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchBranches();
+  }, []);
 
   const totalSales = branches.reduce((sum, b) => sum + b.salesThisMonth, 0);
   const totalEmployees = branches.reduce((sum, b) => sum + b.employees, 0);
@@ -87,43 +129,123 @@ export default function Branches() {
     setIsDetailOpen(true);
   };
 
-  const handleToggleStatus = (e: React.MouseEvent, branchId: number) => {
+  const handleToggleStatus = async (e: React.MouseEvent, branch: Branch) => {
     e.stopPropagation();
-    setBranches(branches.map(b => {
-      if (b.id === branchId) {
-        const newStatus = b.status === "active" ? "inactive" : "active";
-        toast.success(`Cabang ${b.name} ${newStatus === "active" ? "diaktifkan" : "dinonaktifkan"}`);
-        return { ...b, status: newStatus };
-      }
-      return b;
-    }));
+    try {
+      const newStatus = branch.status === "active" ? "inactive" : "active";
+      await query(`UPDATE branches SET status = $1 WHERE id = $2`, [newStatus, branch.id]);
+      
+      setBranches(branches.map(b => {
+        if (b.id === branch.id) {
+          return { ...b, status: newStatus };
+        }
+        return b;
+      }));
+      
+      toast.success(`Cabang ${branch.name} ${newStatus === "active" ? "diaktifkan" : "dinonaktifkan"}`);
+    } catch (error) {
+      toast.error("Gagal mengubah status cabang");
+    }
   };
 
-  const handleAddBranch = () => {
+  const handleAddBranch = async () => {
     if (!formData.name || !formData.code) {
       toast.error("Nama dan kode cabang wajib diisi");
       return;
     }
 
-    const newBranch: Branch = {
-      id: Date.now(),
-      name: formData.name,
-      code: formData.code,
-      address: formData.address,
-      phone: formData.phone,
-      email: formData.email,
-      manager: formData.manager,
-      employees: 0,
-      products: 0,
-      status: "active",
-      salesThisMonth: 0,
-      salesTarget: 50000000,
-    };
+    try {
+      // 1. Insert Branch
+      const res = await query(
+        `INSERT INTO branches (name, code, address, phone, email, status, sales_target) 
+         VALUES ($1, $2, $3, $4, $5, 'active', $6) RETURNING id`,
+        [formData.name, formData.code, formData.address, formData.phone, formData.email, parseFloat(formData.salesTarget)]
+      );
+      
+      const newBranchId = res.rows[0].id;
 
-    setBranches([...branches, newBranch]);
-    toast.success("Cabang baru berhasil ditambahkan");
-    setIsAddDialogOpen(false);
-    setFormData({ name: "", code: "", address: "", phone: "", email: "", manager: "" });
+      // 2. Create Manager User if requested
+      if (formData.createManagerUser && formData.managerEmail) {
+        try {
+          // A. Create User via Neon Auth API
+          const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
+          if (!authUrl) throw new Error("Neon Auth URL not configured");
+
+          // Default password for new managers (should be changed later)
+          const defaultPassword = "ChangeMe123!"; 
+
+          const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: formData.managerEmail,
+              password: defaultPassword,
+              name: formData.managerEmail.split("@")[0],
+            }),
+          });
+
+          if (!signUpRes.ok) {
+            const errData = await signUpRes.json();
+            // If user already exists in Auth but not in DB, we might want to proceed
+            // But for now let's assume strict creation
+            console.warn("Neon Auth creation warning:", errData);
+            if (signUpRes.status !== 422 && signUpRes.status !== 409) { // 422/409 usually means exists
+               throw new Error(errData.message || "Gagal membuat akun Neon Auth");
+            }
+          }
+          
+          let userId: string;
+          if (signUpRes.ok) {
+             const authData = await signUpRes.json();
+             userId = authData.user?.id || authData.session?.userId;
+          } else {
+             // If failed (likely exists), try to find user in DB or just insert into public.users 
+             // assuming the ID matches if we had a way to get it. 
+             // Since we can't get ID of existing user easily without admin API, 
+             // we will try to just insert into public.users and rely on ON CONFLICT if ID is provided (which it isn't here).
+             // This is a limitation of client-side auth. 
+             // For now, let's assume we can't link existing users easily without their ID.
+             // We will skip inserting into public.users if we can't get ID.
+             // BUT, for this specific flow, let's try to be robust.
+             throw new Error("User email sudah terdaftar di sistem Auth. Silahkan tambahkan user tersebut secara manual.");
+          }
+
+          if (!userId) {
+             throw new Error("Gagal mendapatkan User ID dari Neon Auth");
+          }
+
+          // B. Insert into public.users
+          await query(
+            `INSERT INTO users (id, email, role, assigned_branch_id, is_active)
+             VALUES ($1, $2, 'store_manager', $3, true)
+             ON CONFLICT (id) DO UPDATE 
+             SET role = 'store_manager', assigned_branch_id = $3, is_active = true`,
+            [userId, formData.managerEmail, newBranchId]
+          );
+          
+          toast.success(`User manager (${formData.managerEmail}) berhasil dibuat dengan password default: ${defaultPassword}`);
+        } catch (authErr: any) {
+           console.error("Manager creation failed:", authErr);
+           toast.error(`Cabang dibuat, tapi gagal membuat user manager: ${authErr.message}`);
+        }
+      }
+
+      toast.success("Cabang baru berhasil ditambahkan");
+      setIsAddDialogOpen(false);
+      setFormData({ 
+        name: "", code: "", address: "", phone: "", email: "", 
+        manager: "", createManagerUser: false, managerEmail: "", salesTarget: "50000000" 
+      });
+      fetchBranches();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      console.error(error);
+      if (error.message?.includes('users_email_idx') || error.code === '23505') {
+        toast.error(`Email ${formData.managerEmail} sudah terdaftar. Gunakan email lain.`);
+      } else {
+        toast.error("Gagal menambahkan cabang: " + (error.message || "Unknown error"));
+      }
+    }
   };
 
   const handleEditBranch = (e: React.MouseEvent, branch: Branch) => {
@@ -136,30 +258,46 @@ export default function Branches() {
       phone: branch.phone,
       email: branch.email,
       manager: branch.manager,
+      createManagerUser: false,
+      managerEmail: "",
+      salesTarget: branch.salesTarget.toString()
     });
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingBranch) return;
 
-    setBranches(branches.map(b => {
-      if (b.id === editingBranch.id) {
-        return {
-          ...b,
-          name: formData.name,
-          code: formData.code,
-          address: formData.address,
-          phone: formData.phone,
-          email: formData.email,
-          manager: formData.manager,
-        };
-      }
-      return b;
-    }));
+    try {
+      await query(
+        `UPDATE branches SET name=$1, code=$2, address=$3, phone=$4, email=$5, sales_target=$6 WHERE id=$7`,
+        [formData.name, formData.code, formData.address, formData.phone, formData.email, parseFloat(formData.salesTarget), editingBranch.id]
+      );
 
-    toast.success("Cabang berhasil diupdate");
-    setEditingBranch(null);
-    setFormData({ name: "", code: "", address: "", phone: "", email: "", manager: "" });
+      // If manager creation requested during edit
+      if (formData.createManagerUser && formData.managerEmail) {
+        // Check if user exists or just insert
+         await query(
+          `INSERT INTO users (id, email, role, assigned_branch_id, is_active)
+           VALUES (gen_random_uuid(), $1, 'store_manager', $2, true)
+           ON CONFLICT (email) DO UPDATE SET assigned_branch_id = $2, role = 'store_manager'
+           WHERE users.role NOT IN ('platform_owner', 'tenant_owner')`, 
+          [formData.managerEmail, editingBranch.id]
+        );
+        toast.success(`User manager updated/created`);
+      }
+
+      toast.success("Cabang berhasil diupdate");
+      setEditingBranch(null);
+      setFormData({ 
+        name: "", code: "", address: "", phone: "", email: "", 
+        manager: "", createManagerUser: false, managerEmail: "", salesTarget: "50000000" 
+      });
+      fetchBranches();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      console.error(error);
+      toast.error("Gagal update cabang: " + (error.message || "Unknown error"));
+    }
   };
 
   return (
@@ -174,7 +312,7 @@ export default function Branches() {
             <DialogTrigger asChild>
               <Button className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" />Tambah Cabang</Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-[500px]">
+            <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Tambah Cabang Baru</DialogTitle></DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
@@ -212,7 +350,7 @@ export default function Branches() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Email</Label>
+                  <Label>Email Cabang</Label>
                   <Input 
                     type="email" 
                     placeholder="yogyakarta@retailpro.id" 
@@ -221,12 +359,36 @@ export default function Branches() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Manager</Label>
+                  <Label>Target Penjualan (Bulanan)</Label>
                   <Input 
-                    placeholder="Nama Manager" 
-                    value={formData.manager}
-                    onChange={(e) => setFormData({ ...formData, manager: e.target.value })}
+                    type="number"
+                    placeholder="50000000" 
+                    value={formData.salesTarget}
+                    onChange={(e) => setFormData({ ...formData, salesTarget: e.target.value })}
                   />
+                </div>
+
+                <div className="border rounded-md p-4 space-y-4 bg-muted/20">
+                  <div className="flex items-center space-x-2">
+                    <Checkbox 
+                      id="createManager" 
+                      checked={formData.createManagerUser}
+                      onCheckedChange={(checked) => setFormData({ ...formData, createManagerUser: checked as boolean })}
+                    />
+                    <Label htmlFor="createManager" className="font-medium">Buat User untuk Manager Cabang?</Label>
+                  </div>
+                  
+                  {formData.createManagerUser && (
+                    <div className="grid gap-2 pl-6 border-l-2 border-primary/20">
+                      <Label>Email Manager *</Label>
+                      <Input 
+                        placeholder="manager.ygy@retailpro.id" 
+                        value={formData.managerEmail}
+                        onChange={(e) => setFormData({ ...formData, managerEmail: e.target.value })}
+                      />
+                      <p className="text-xs text-muted-foreground">User akan dibuat dengan role 'store_manager' dan otomatis ditugaskan ke cabang ini.</p>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex gap-2">
@@ -239,7 +401,7 @@ export default function Branches() {
 
         {/* Edit Dialog */}
         <Dialog open={!!editingBranch} onOpenChange={(open) => !open && setEditingBranch(null)}>
-          <DialogContent className="sm:max-w-[500px]">
+          <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
             <DialogHeader><DialogTitle>Edit Cabang</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
@@ -277,7 +439,7 @@ export default function Branches() {
                 />
               </div>
               <div className="grid gap-2">
-                <Label>Email</Label>
+                <Label>Email Cabang</Label>
                 <Input 
                   type="email" 
                   placeholder="yogyakarta@retailpro.id" 
@@ -286,13 +448,36 @@ export default function Branches() {
                 />
               </div>
               <div className="grid gap-2">
-                <Label>Manager</Label>
-                <Input 
-                  placeholder="Nama Manager" 
-                  value={formData.manager}
-                  onChange={(e) => setFormData({ ...formData, manager: e.target.value })}
-                />
+                  <Label>Target Penjualan (Bulanan)</Label>
+                  <Input 
+                    type="number"
+                    placeholder="50000000" 
+                    value={formData.salesTarget}
+                    onChange={(e) => setFormData({ ...formData, salesTarget: e.target.value })}
+                  />
               </div>
+
+               <div className="border rounded-md p-4 space-y-4 bg-muted/20">
+                  <div className="flex items-center space-x-2">
+                    <Checkbox 
+                      id="editCreateManager" 
+                      checked={formData.createManagerUser}
+                      onCheckedChange={(checked) => setFormData({ ...formData, createManagerUser: checked as boolean })}
+                    />
+                    <Label htmlFor="editCreateManager" className="font-medium">Update/Buat User Manager?</Label>
+                  </div>
+                  
+                  {formData.createManagerUser && (
+                    <div className="grid gap-2 pl-6 border-l-2 border-primary/20">
+                      <Label>Email Manager *</Label>
+                      <Input 
+                        placeholder="manager.ygy@retailpro.id" 
+                        value={formData.managerEmail}
+                        onChange={(e) => setFormData({ ...formData, managerEmail: e.target.value })}
+                      />
+                    </div>
+                  )}
+                </div>
             </div>
             <div className="flex gap-2">
               <Button variant="outline" className="flex-1" onClick={() => setEditingBranch(null)}>Batal</Button>
@@ -363,6 +548,13 @@ export default function Branches() {
               </TableRow>
             </TableHeader>
             <TableBody>
+              {branches.length === 0 && !isLoading && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                    Belum ada data cabang. Silakan tambah cabang baru.
+                  </TableCell>
+                </TableRow>
+              )}
               {branches.map((branch) => (
                 <TableRow key={branch.id} className="cursor-pointer hover:bg-muted/50" onClick={() => handleRowClick(branch)}>
                   <TableCell>
@@ -388,14 +580,14 @@ export default function Branches() {
                   <TableCell className="text-center font-semibold hidden sm:table-cell">{branch.products.toLocaleString()}</TableCell>
                   <TableCell className="text-right hidden lg:table-cell">
                     <p className="font-semibold">{formatCurrency(branch.salesThisMonth)}</p>
-                    <p className="text-xs text-muted-foreground">{((branch.salesThisMonth / branch.salesTarget) * 100).toFixed(0)}% dari target</p>
+                    <p className="text-xs text-muted-foreground">{((branch.salesThisMonth / (branch.salesTarget || 1)) * 100).toFixed(0)}% dari target</p>
                   </TableCell>
                   <TableCell className="text-center">
                     <div className="flex items-center justify-center gap-2" onClick={(e) => e.stopPropagation()}>
                       <Switch
                         checked={branch.status === "active"}
                         onCheckedChange={() => {}}
-                        onClick={(e) => handleToggleStatus(e, branch.id)}
+                        onClick={(e) => handleToggleStatus(e, branch)}
                       />
                       <Badge 
                         variant={branch.status === "active" ? "default" : "secondary"} 

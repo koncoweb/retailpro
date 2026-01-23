@@ -18,6 +18,9 @@ import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
+import BranchDashboard from "./pages/branches/Dashboard";
+import { RoleBasedRoute } from "./components/auth/RoleBasedRoute";
+
 const queryClient = new QueryClient();
 
 const App = () => (
@@ -41,8 +44,33 @@ const App = () => (
 
             {/* Back Office Routes */}
             <Route path="/backoffice" element={<Dashboard />} />
-            <Route path="/backoffice/branches" element={<Branches />} />
-            <Route path="/backoffice/branches/transfer" element={<Branches />} />
+            
+            {/* Branch Management Routes */}
+            <Route 
+              path="/backoffice/branches" 
+              element={
+                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin']}>
+                  <Branches />
+                </RoleBasedRoute>
+              } 
+            />
+            <Route 
+              path="/backoffice/branches/dashboard" 
+              element={
+                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']}>
+                  <BranchDashboard />
+                </RoleBasedRoute>
+              } 
+            />
+            <Route 
+              path="/backoffice/branches/transfer" 
+              element={
+                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']}>
+                  <Branches />
+                </RoleBasedRoute>
+              } 
+            />
+            
             <Route path="/backoffice/inventory/products" element={<Inventory />} />
             <Route path="/backoffice/inventory/stock-in" element={<Inventory />} />
             <Route path="/backoffice/inventory/opname" element={<Inventory />} />

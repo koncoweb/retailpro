@@ -28,11 +28,11 @@ Menggunakan **Neon Auth** (yang berbasis Better Auth) untuk menyimpan data user,
 2.  **Tenant Owner (Pengusaha)**
     *   Mendaftar mandiri via aplikasi.
     *   Kekuasaan penuh atas data tenant (`role: 'owner'`).
-    *   Bisa menambah user baru (Admin, Store Admin, Cashier).
+    *   Bisa menambah user baru (Admin, Store Manager, Cashier).
 3.  **Tenant Admin**
     *   Membantu Owner mengelola operasional pusat.
     *   Akses read/write data tenant, tapi **TIDAK BISA** menambah user baru.
-4.  **Store Admin (Kepala Cabang)**
+4.  **Store Manager (Kepala Cabang)**
     *   Mengelola data spesifik satu cabang (`branch_id` tertentu).
 5.  **Cashier / Staff**
     *   Akses operasional terbatas (POS, Stock Opname) di satu cabang.
@@ -44,7 +44,7 @@ Tabel `user` bawaan Neon Auth akan diextend atau direlasikan dengan tabel profil
     *   `id` (UUID, PK) - Bawaan Neon Auth
     *   `email` - Bawaan Neon Auth
     *   `tenant_id` (FK -> tenants) - Custom
-    *   `role` (enum: 'platform_owner', 'tenant_owner', 'tenant_admin', 'branch_manager', 'cashier') - Custom
+    *   `role` (enum: 'platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'cashier') - Custom
     *   `assigned_branch_id` (FK -> branches, Nullable) - Custom
     *   `is_active` (boolean, default false for new tenants) - Custom
 
@@ -74,7 +74,7 @@ Tabel `user` bawaan Neon Auth akan diextend atau direlasikan dengan tabel profil
 *   **Redirect Logic**:
     *   `platform_owner` -> `/admin/dashboard` (Halaman Super Admin)
     *   `tenant_owner` / `tenant_admin` -> `/backoffice` (Dashboard Utama)
-    *   `branch_manager` -> `/backoffice` (Dashboard Cabang)
+    *   `store_manager` -> `/backoffice` (Dashboard Cabang)
     *   `cashier` -> `/pos` (Halaman Kasir)
 
 ## 5. Struktur Database (Schema Design)
@@ -191,11 +191,11 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
 2.  Desain schema SQL dengan `tenant_id` di semua tabel.
 3.  Aktifkan RLS (Row Level Security) policies.
     *   Policy: `CREATE POLICY tenant_isolation ON table_name USING (tenant_id = current_setting('app.current_tenant_id')::uuid);`
-4.  Buat API Layer (bisa menggunakan Next.js API Routes atau library backend terpisah, namun karena ini project Vite Client-Side, kita bisa menggunakan **Supabase** atau **Neon Serverless Driver** langsung di client dengan middleware keamanan, atau membuat backend service sederhana).
+4.  Buat API Layer (bisa menggunakan Neon Serverless Driver langsung di client dengan middleware keamanan, atau membuat backend service sederhana).
 
 ### Fase 2: Refactor Frontend (Current App)
 1.  **Authentication:** Implementasi Login/Register (bisa pakai Clerk/Auth0 atau custom).
-2.  **Mobile First UI:** Pastikan semua komponen menggunakan Tailwind Responsive classes (`md:`, `lg:`) dan Touch-friendly controls.
+2.  **Mobile First UI:** Pastikan semua komponen menggunakan Tailwind Responsive classes (`md:`, `lg:`) dan Touch-friendly controls. Gunakan font **Plus Jakarta Sans** dan density `text-sm tracking-tight` untuk tampilan modern.
 3.  **Context Management:** Buat `TenantProvider` dan `BranchProvider` di React Context untuk menyimpan state "Sedang login sebagai tenant apa" dan "Sedang aktif di cabang mana".
 4.  **Data Fetching:** Ganti semua mock data di komponen (Inventory, POS, Dashboard) dengan `useQuery` (TanStack Query) yang memanggil API database.
 5.  **Multi-Branch Logic:** Update UI Inventory untuk menampilkan stok berdasarkan cabang yang dipilih di dropdown header.

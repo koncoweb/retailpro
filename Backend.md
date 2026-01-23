@@ -4,14 +4,28 @@ Dokumen ini menjelaskan detail teknis implementasi Backend, Database Schema, dan
 
 ## 1. Technology Stack
 
-*   **Database:** [Neon (Serverless PostgreSQL)](https://neon.tech)
-    *   Fitur Kunci: Branching, Autoscaling, Row Level Security (RLS).
-*   **Authentication:** [Neon Auth](https://neon.tech/docs/auth/overview) (based on Better Auth)
-    *   Fitur Kunci: Integrated Session Management, OAuth, Custom Schema Support.
-*   **ORM:** [Drizzle ORM](https://orm.drizzle.team/)
-    *   Alasan: Ringan, Type-safe (TypeScript), Support Serverless Driver.
-*   **API Framework (Opsional):** Hono (Edge Compatible) atau Next.js API Routes.
-    *   *Catatan:* Aplikasi Client (Vite) bisa memanggil Database secara langsung menggunakan Neon Serverless Driver jika logic sederhana, namun untuk logika FIFO yang kompleks, disarankan menggunakan API Layer (Server Action/Edge Function).
+### Core Infrastructure (Neon Ecosystem)
+*   **Database:** [Neon (Serverless PostgreSQL)](https://neon.tech) - *Neon DB Docs*
+    *   Fitur: Branching, Autoscaling, RLS (Row Level Security).
+*   **Authentication:** [Neon Auth](https://neon.tech/docs/auth/overview)
+    *   Fitur: User Management, Session, RBAC (Role Based Access Control) terintegrasi dengan RLS.
+*   **Connectivity:** [Neon Serverless Driver](https://www.npmjs.com/package/@neondatabase/serverless) - *neonconnect*
+    *   Usage: Direct secure connection from Client to Database via HTTP/WebSockets.
+
+### Application Stack (Frontend & Logic)
+*   **Framework:** React 18 + Vite
+*   **Language:** TypeScript
+*   **UI Components:** Shadcn/UI + Tailwind CSS
+*   **Data Fetching:** TanStack Query (React Query)
+*   **State Management:** React Context (untuk Auth & Tenant State)
+
+### Development & Build Scripts
+Berikut adalah script standar yang digunakan dalam pengembangan (sesuai `package.json`):
+
+*   `npm run dev`: Menjalankan local development server menggunakan Vite.
+*   `npm run build`: Melakukan build aplikasi untuk production (TypeScript compilation + Vite bundling).
+*   `npm run lint`: Menjalankan ESLint untuk pemeriksaan kualitas kode dan error detection.
+*   `npm run preview`: Menjalankan preview server lokal untuk hasil build production.
 
 ## 2. Database Schema & Relations
 
@@ -44,7 +58,7 @@ CREATE TABLE users (
   id UUID PRIMARY KEY, -- Managed by Neon Auth
   tenant_id UUID REFERENCES tenants(id),
   email VARCHAR(255) NOT NULL,
-  role VARCHAR(20) NOT NULL, -- owner, admin, store_manager, cashier
+  role VARCHAR(20) NOT NULL, -- tenant_owner, tenant_admin, store_manager, cashier
   assigned_branch_id UUID REFERENCES branches(id), -- NULL for Owner/Admin
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT NOW()
@@ -193,14 +207,14 @@ Tabel ini mensinkronkan requirements Role dengan akses Database.
 | **Platform Owner** | Global | Read-Only (Debug) | Read-Only | Read-Only | Read-Only | **Manage (All)** | Global Stats |
 | **Tenant Owner** | Tenant | **Full Access** | Full Access | Full Access | **Full Access** | **Manage (Tenant)** | Full Access |
 | **Tenant Admin** | Tenant | **Full Access** | Full Access | Full Access | **Full Access** | Read-Only | Full Access |
-| **Store Admin** | **Branch** | Read-Only | **Manage (Branch)** | Void/Refund | **Request/Receive (Own Branch)** | No Access | Branch Only |
+| **Store Manager** | **Branch** | Read-Only | **Manage (Branch)** | Void/Refund | **Request/Receive (Own Branch)** | No Access | Branch Only |
 | **Cashier** | **Branch** | Read-Only | Read-Only | **Create Only** | No Access | No Access | Shift Only |
 
 ### Sinkronisasi Logic Role:
-1.  **Store Admin vs Stock:** Store Admin tidak bisa mengubah nama/harga produk (Katalog Pusat), tapi bisa melakukan *Stock Opname* atau *Receive Goods* (Input Batch baru) di cabangnya.
+1.  **Store Manager vs Stock:** Store Manager tidak bisa mengubah nama/harga produk (Katalog Pusat), tapi bisa melakukan *Stock Opname* atau *Receive Goods* (Input Batch baru) di cabangnya.
 2.  **Stock Transfer Authority:**
     *   **Tenant Owner/Admin:** Bisa membuat transfer antar *sembarang* cabang (misal: realokasi stok dari Cabang A ke B karena Cabang A sepi).
-    *   **Store Admin:** Hanya bisa membuat request ("Minta Stok" dari Pusat/Cabang Lain) atau mengirim stok *keluar* dari cabangnya sendiri. Tidak bisa menginisiasi transfer antar cabang lain.
+    *   **Store Manager:** Hanya bisa membuat request ("Minta Stok" dari Pusat/Cabang Lain) atau mengirim stok *keluar* dari cabangnya sendiri. Tidak bisa menginisiasi transfer antar cabang lain.
 3.  **Cashier vs Stock:** Cashier hanya mengurangi stok via Transaksi, tidak bisa mengedit manual.
 4.  **Tenant Admin vs User:** Tenant Admin bisa melihat daftar user untuk operasional, tapi tidak bisa `CREATE` user baru untuk mencegah fraud/unauthorized access, hanya Owner yang bisa.
 
@@ -218,8 +232,8 @@ ALTER TABLE products ENABLE ROW LEVEL SECURITY;
 CREATE POLICY tenant_isolation_policy ON products
 USING (tenant_id = (current_setting('app.current_tenant_id')::uuid));
 
--- Policy tambahan untuk Branch Isolation (Store Admin & Cashier)
--- Store Admin hanya bisa melihat Transactions miliknya
+-- Policy tambahan untuk Branch Isolation (Store Manager & Cashier)
+-- Store Manager hanya bisa melihat Transactions miliknya
 CREATE POLICY branch_isolation_policy ON transactions
 USING (
   branch_id = (current_setting('app.current_branch_id')::uuid) 
@@ -227,8 +241,28 @@ USING (
   (current_setting('app.user_role') IN ('owner', 'admin')) -- Owner/Admin bebas
 );
 
+-- Policy for Store Manager Branch Isolation
+-- Store Manager hanya bisa melihat data cabangnya sendiri
+CREATE POLICY branch_access_policy ON branches
+USING (
+  id = (current_setting('app.current_branch_id')::uuid)
+  OR
+  (current_setting('app.user_role') IN ('owner', 'admin'))
+);
+
+-- Policy for User Visibility
+-- Store Manager bisa melihat staff di cabangnya
+CREATE POLICY user_branch_policy ON users
+USING (
+  assigned_branch_id = (current_setting('app.current_branch_id')::uuid)
+  OR
+  (current_setting('app.user_role') IN ('owner', 'admin'))
+  OR
+  id = (current_setting('app.current_user_id')::uuid) -- Self
+);
+
 -- Policy untuk Stock Transfers (Complex)
--- Store Admin bisa melihat transfer jika dia adalah SENDER atau RECEIVER
+-- Store Manager bisa melihat transfer jika dia adalah SENDER atau RECEIVER
 CREATE POLICY transfer_visibility_policy ON stock_transfers
 USING (
   tenant_id = (current_setting('app.current_tenant_id')::uuid)

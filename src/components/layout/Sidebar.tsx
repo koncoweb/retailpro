@@ -27,21 +27,41 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
+import { useAuth } from "@/hooks/use-auth";
+import { UserRole } from "@/types";
+
 interface NavItem {
   title: string;
   icon: React.ElementType;
   path?: string;
-  children?: { title: string; path: string; icon: React.ElementType }[];
+  children?: { title: string; path: string; icon: React.ElementType; allowedRoles?: UserRole[] }[];
+  allowedRoles?: UserRole[];
 }
 
 const navItems: NavItem[] = [
-  { title: "Dashboard", icon: LayoutDashboard, path: "/" },
+  { title: "Dashboard", icon: LayoutDashboard, path: "/backoffice" },
   {
     title: "Cabang",
     icon: Building2,
     children: [
-      { title: "Daftar Cabang", path: "/branches", icon: Store },
-      { title: "Transfer Stok", path: "/branches/transfer", icon: ArrowLeftRight },
+      { 
+        title: "Dashboard", 
+        path: "/backoffice/branches/dashboard", 
+        icon: LayoutDashboard,
+        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']
+      },
+      { 
+        title: "Daftar Cabang", 
+        path: "/backoffice/branches", 
+        icon: Store,
+        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin']
+      },
+      { 
+        title: "Transfer Stok", 
+        path: "/backoffice/branches/transfer", 
+        icon: ArrowLeftRight,
+        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']
+      },
     ],
   },
   {
@@ -57,34 +77,34 @@ const navItems: NavItem[] = [
     title: "Inventory",
     icon: Package,
     children: [
-      { title: "Produk", path: "/inventory/products", icon: Package },
-      { title: "Stok Masuk", path: "/inventory/stock-in", icon: Warehouse },
-      { title: "Stok Opname", path: "/inventory/opname", icon: Calculator },
-      { title: "Purchase Order", path: "/inventory/po", icon: FileText },
+      { title: "Produk", path: "/backoffice/inventory/products", icon: Package },
+      { title: "Stok Masuk", path: "/backoffice/inventory/stock-in", icon: Warehouse },
+      { title: "Stok Opname", path: "/backoffice/inventory/opname", icon: Calculator },
+      { title: "Purchase Order", path: "/backoffice/inventory/po", icon: FileText },
     ],
   },
   {
     title: "Keuangan",
     icon: CreditCard,
     children: [
-      { title: "Jurnal", path: "/finance/journal", icon: FileText },
-      { title: "Hutang/Piutang", path: "/finance/ap-ar", icon: DollarSign },
-      { title: "Cash Flow", path: "/finance/cashflow", icon: BarChart3 },
-      { title: "Pengeluaran", path: "/finance/expenses", icon: CreditCard },
+      { title: "Jurnal", path: "/backoffice/finance/journal", icon: FileText },
+      { title: "Hutang/Piutang", path: "/backoffice/finance/ap-ar", icon: DollarSign },
+      { title: "Cash Flow", path: "/backoffice/finance/cashflow", icon: BarChart3 },
+      { title: "Pengeluaran", path: "/backoffice/finance/expenses", icon: CreditCard },
     ],
   },
   {
     title: "Karyawan",
     icon: Users,
     children: [
-      { title: "Data Karyawan", path: "/hr/employees", icon: Users },
-      { title: "Absensi", path: "/hr/attendance", icon: UserCheck },
-      { title: "Jadwal Shift", path: "/hr/schedule", icon: Calendar },
-      { title: "Payroll", path: "/hr/payroll", icon: DollarSign },
+      { title: "Data Karyawan", path: "/backoffice/hr/employees", icon: Users },
+      { title: "Absensi", path: "/backoffice/hr/attendance", icon: UserCheck },
+      { title: "Jadwal Shift", path: "/backoffice/hr/schedule", icon: Calendar },
+      { title: "Payroll", path: "/backoffice/hr/payroll", icon: DollarSign },
     ],
   },
-  { title: "Laporan", icon: BarChart3, path: "/reports" },
-  { title: "Pengaturan", icon: Settings, path: "/settings" },
+  { title: "Laporan", icon: BarChart3, path: "/backoffice/reports" },
+  { title: "Pengaturan", icon: Settings, path: "/backoffice/settings" },
 ];
 
 export function Sidebar() {
@@ -92,6 +112,24 @@ export function Sidebar() {
   const [expandedItems, setExpandedItems] = useState<string[]>(["POS & Kasir"]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+  const { role } = useAuth();
+
+  const filteredNavItems = navItems.filter(item => {
+    if (item.allowedRoles && (!role || !item.allowedRoles.includes(role))) {
+      return false;
+    }
+    return true;
+  }).map(item => {
+    if (item.children) {
+      return {
+        ...item,
+        children: item.children.filter(child => 
+          !child.allowedRoles || (role && child.allowedRoles.includes(role))
+        )
+      };
+    }
+    return item;
+  });
 
   const toggleExpand = (title: string) => {
     setExpandedItems((prev) =>
@@ -121,7 +159,7 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => (
+        {filteredNavItems.map((item) => (
           <div key={item.title}>
             {item.path ? (
               <NavLink
@@ -198,8 +236,8 @@ export function Sidebar() {
           </div>
           {!collapsed && (
             <div className="animate-fade-in">
-              <p className="text-sm font-medium text-sidebar-foreground">Admin</p>
-              <p className="text-xs text-sidebar-foreground/60">Super Admin</p>
+              <p className="text-sm font-medium text-sidebar-foreground capitalize">{role?.replace('_', ' ') || 'Guest'}</p>
+              <p className="text-xs text-sidebar-foreground/60">RetailPro User</p>
             </div>
           )}
         </div>

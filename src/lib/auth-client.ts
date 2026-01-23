@@ -21,6 +21,7 @@ export const getUserRole = async () => {
         const session = await authClient.getSession();
         // Assuming role is stored in user metadata or part of the extended schema
         // Note: Better Auth/Neon Auth user object might need type extension
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return (session.data?.user as any)?.role || 'guest';
     } catch (error) {
         return 'guest';

@@ -1,4 +1,4 @@
-export type UserRole = 'platform_owner' | 'tenant_owner' | 'tenant_admin' | 'branch_manager' | 'cashier';
+export type UserRole = 'platform_owner' | 'tenant_owner' | 'tenant_admin' | 'store_manager' | 'cashier';
 
 export interface Tenant {
   id: string;
@@ -72,7 +72,7 @@ export interface Transaction {
   customer_id?: string;
   invoice_number: string;
   total_amount: number;
-  payment_method: 'cash' | 'card' | 'qris' | 'ewallet';
+  payment_method: 'cash' | 'card' | 'qris' | 'ewallet' | 'debit' | 'credit';
   status: 'completed' | 'void';
   created_at: string;
   items: TransactionItem[];
