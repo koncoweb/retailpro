@@ -11,7 +11,7 @@ interface RoleBasedRouteProps {
 
 export function RoleBasedRoute({ 
   allowedRoles, 
-  redirectPath = "/backoffice/branches", 
+  redirectPath = "/backoffice", 
   children 
 }: RoleBasedRouteProps) {
   const { role, isLoading, isAuthenticated } = useAuth();

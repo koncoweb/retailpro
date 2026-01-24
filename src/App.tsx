@@ -49,7 +49,7 @@ const App = () => (
             <Route 
               path="/backoffice/branches" 
               element={
-                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin']}>
+                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']}>
                   <Branches />
                 </RoleBasedRoute>
               } 

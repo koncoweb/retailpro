@@ -12,8 +12,9 @@ Setiap "Usaha" atau "Perusahaan" akan dianggap sebagai satu **Tenant**.
 
 ### B. Strategi Database (Row-Level Security)
 Kita akan menggunakan strategi **Shared Database, Shared Schema** dengan kolom discriminator `tenant_id` di setiap tabel utama.
-*   Semua tabel (products, transactions, employees, dll) akan memiliki kolom `tenant_id`.
-*   Menggunakan fitur **Row Level Security (RLS)** di PostgreSQL (Neon DB) untuk menjamin keamanan data antar tenant.
+*   **Standard Kolom**: Menggunakan `tenant_id` (UUID) di seluruh tabel. TIDAK BOLEH menggunakan nama kolom lain seperti `tenant` atau `organization_id`.
+*   **Indexing**: Kolom `tenant_id` wajib di-index di setiap tabel untuk performa RLS yang optimal.
+*   **RLS**: Menggunakan fitur **Row Level Security (RLS)** di PostgreSQL (Neon DB) untuk menjamin keamanan data antar tenant.
 *   Aplikasi tidak perlu menyaring `WHERE tenant_id = X` di setiap query secara manual, melainkan diatur via session variable di database.
 
 ## 2. Authentication & Authorization (Neon Auth)

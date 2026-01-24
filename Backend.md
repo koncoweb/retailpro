@@ -31,6 +31,10 @@ Berikut adalah script standar yang digunakan dalam pengembangan (sesuai `package
 
 Berikut adalah definisi Schema (SQL-like) yang telah disinkronkan dengan hierarki Role dan kebutuhan Multi-Tenant.
 
+**Aturan Standardisasi Schema:**
+1.  **Kolom Tenant:** Seluruh tabel wajib menggunakan `tenant_id` (UUID) sebagai discriminator. Dilarang menggunakan nama `tenant` atau `organization_id`.
+2.  **Indexing:** Kolom `tenant_id` wajib memiliki Index (`CREATE INDEX`) untuk menjaga performa query RLS.
+
 ### A. Authentication & Tenant Management (System Scope)
 
 ```sql

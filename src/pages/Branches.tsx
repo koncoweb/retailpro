@@ -224,6 +224,7 @@ export default function Branches() {
           );
           
           toast.success(`User manager (${formData.managerEmail}) berhasil dibuat dengan password default: ${defaultPassword}`);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } catch (authErr: any) {
            console.error("Manager creation failed:", authErr);
            toast.error(`Cabang dibuat, tapi gagal membuat user manager: ${authErr.message}`);
