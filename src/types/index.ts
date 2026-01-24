@@ -80,6 +80,7 @@ export interface Transaction {
 
 export interface TransactionItem {
   id: string;
+  tenant_id: string;
   product_id: string;
   product_name: string;
   quantity: number;

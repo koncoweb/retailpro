@@ -136,6 +136,7 @@ export default function POS() {
       status: 'completed',
       items: cart.map(item => ({
         id: `ITEM-${Date.now()}-${item.id}`,
+        tenant_id: currentBranch.tenant_id,
         product_id: item.id,
         product_name: item.name,
         quantity: item.quantity,

@@ -112,6 +112,7 @@ export const mockTransactions: Transaction[] = [
     items: [
       {
         id: "ITEM-001",
+        tenant_id: "tenant-001",
         product_id: "PROD-001",
         product_name: "Kopi Robusta Premium",
         quantity: 2,
@@ -120,6 +121,7 @@ export const mockTransactions: Transaction[] = [
       },
       {
         id: "ITEM-002",
+        tenant_id: "tenant-001",
         product_id: "PROD-002",
         product_name: "Teh Hijau Jasmine",
         quantity: 1,
@@ -141,6 +143,7 @@ export const mockTransactions: Transaction[] = [
     items: [
       {
         id: "ITEM-003",
+        tenant_id: "tenant-001",
         product_id: "PROD-002",
         product_name: "Teh Hijau Jasmine",
         quantity: 2,
