@@ -78,6 +78,11 @@ Tabel `user` bawaan Neon Auth akan diextend atau direlasikan dengan tabel profil
     *   `store_manager` -> `/backoffice` (Dashboard Cabang)
     *   `cashier` -> `/pos` (Halaman Kasir)
 
+### C. Manajemen Karyawan (Backoffice)
+*   **Daftar Karyawan**: Menampilkan daftar karyawan berdasarkan cabang.
+*   **Tambah Karyawan**: Integrasi dengan Neon Auth untuk pembuatan akun dan assignment role/cabang.
+*   **Edit Karyawan**: Fitur untuk mengubah Role (promosi/demosi) dan Status Aktif karyawan (suspend/activate).
+
 ## 5. Struktur Database (Schema Design)
 
 Berikut adalah rancangan tabel utama yang dibutuhkan:

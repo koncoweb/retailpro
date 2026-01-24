@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -111,6 +112,13 @@ export function BranchDetailModal({
   const [newEmployeeRole, setNewEmployeeRole] = useState("cashier");
   const [isAddingEmployee, setIsAddingEmployee] = useState(false);
 
+  // Edit Employee State
+  const [isEditEmployeeOpen, setIsEditEmployeeOpen] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+  const [editRole, setEditRole] = useState("");
+  const [editIsActive, setEditIsActive] = useState(true);
+  const [isUpdatingEmployee, setIsUpdatingEmployee] = useState(false);
+
   useEffect(() => {
     if (open && branch?.id) {
       fetchBranchDetails(branch.id);
@@ -183,6 +191,37 @@ export function BranchDetailModal({
       console.error("Failed to fetch branch details:", error);
     } finally {
       setIsLoadingDetails(false);
+    }
+  };
+
+  const handleEditClick = (employee: Employee) => {
+    setSelectedEmployee(employee);
+    setEditRole(employee.role);
+    setEditIsActive(employee.is_active);
+    setIsEditEmployeeOpen(true);
+  };
+
+  const handleUpdateEmployee = async () => {
+    if (!selectedEmployee || !branch?.id) return;
+
+    setIsUpdatingEmployee(true);
+    try {
+      await query(
+        `UPDATE users SET role = $1, is_active = $2 WHERE id = $3`,
+        [editRole, editIsActive, selectedEmployee.id]
+      );
+
+      // Refresh employees list
+      await fetchBranchDetails(branch.id);
+
+      setIsEditEmployeeOpen(false);
+      setSelectedEmployee(null);
+      toast.success("Data karyawan berhasil diperbarui");
+    } catch (error) {
+      console.error("Failed to update employee:", error);
+      toast.error("Gagal memperbarui data karyawan");
+    } finally {
+      setIsUpdatingEmployee(false);
     }
   };
 
@@ -431,7 +470,11 @@ export function BranchDetailModal({
                           </TableRow>
                         ) : (
                           employees.map((emp) => (
-                            <TableRow key={emp.id}>
+                            <TableRow 
+                              key={emp.id}
+                              className="cursor-pointer hover:bg-muted/50 transition-colors"
+                              onClick={() => handleEditClick(emp)}
+                            >
                               <TableCell className="font-medium">{emp.email}</TableCell>
                               <TableCell>
                                 <Badge variant="outline" className="capitalize">
@@ -594,6 +637,51 @@ export function BranchDetailModal({
             <Button onClick={handleAddEmployee} disabled={isAddingEmployee}>
               {isAddingEmployee && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Simpan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Employee Dialog */}
+      <Dialog open={isEditEmployeeOpen} onOpenChange={setIsEditEmployeeOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Edit Data Karyawan</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label>Email</Label>
+              <Input value={selectedEmployee?.email || ""} disabled />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-role">Role</Label>
+              <Select value={editRole} onValueChange={setEditRole}>
+                <SelectTrigger id="edit-role">
+                  <SelectValue placeholder="Pilih Role" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="store_manager">Store Manager</SelectItem>
+                  <SelectItem value="cashier">Cashier</SelectItem>
+                  <SelectItem value="warehouse">Warehouse</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center justify-between space-x-2 border p-3 rounded-md">
+              <Label htmlFor="edit-active" className="cursor-pointer">Status Aktif</Label>
+              <Switch
+                id="edit-active"
+                checked={editIsActive}
+                onCheckedChange={setEditIsActive}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsEditEmployeeOpen(false)}>
+              Batal
+            </Button>
+            <Button onClick={handleUpdateEmployee} disabled={isUpdatingEmployee}>
+              {isUpdatingEmployee && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              Simpan Perubahan
             </Button>
           </DialogFooter>
         </DialogContent>
