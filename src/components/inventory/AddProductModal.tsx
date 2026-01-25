@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -32,17 +32,21 @@ interface AddProductModalProps {
     branches: Record<string, number>;
   }) => void;
   categories: string[];
+  branches: { id: string; name: string }[];
+  mode?: "add" | "edit";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  initialData?: any;
 }
 
-const branches = [
-  { id: "pusat", name: "Gudang Pusat" },
-  { id: "jakarta", name: "Cabang Jakarta" },
-  { id: "surabaya", name: "Cabang Surabaya" },
-  { id: "bandung", name: "Cabang Bandung" },
-  { id: "medan", name: "Cabang Medan" },
-];
-
-export function AddProductModal({ open, onOpenChange, onAdd, categories }: AddProductModalProps) {
+export function AddProductModal({ 
+  open, 
+  onOpenChange, 
+  onAdd, 
+  categories, 
+  branches, 
+  mode = "add", 
+  initialData 
+}: AddProductModalProps) {
   const [formData, setFormData] = useState({
     sku: "",
     name: "",
@@ -52,13 +56,31 @@ export function AddProductModal({ open, onOpenChange, onAdd, categories }: AddPr
     minStock: "",
     supplier: "",
   });
-  const [branchStocks, setBranchStocks] = useState<Record<string, string>>({
-    pusat: "",
-    jakarta: "",
-    surabaya: "",
-    bandung: "",
-    medan: "",
-  });
+  const [branchStocks, setBranchStocks] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (initialData && mode === "edit") {
+      setFormData({
+        sku: initialData.sku,
+        name: initialData.name,
+        category: initialData.category,
+        price: initialData.price.toString(),
+        cost: initialData.cost.toString(),
+        minStock: initialData.minStock.toString(),
+        supplier: initialData.supplier,
+      });
+      const stocks: Record<string, string> = {};
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const branchData = initialData.branches || {};
+      Object.entries(branchData).forEach(([key, value]) => {
+        stocks[key] = String(value);
+      });
+      setBranchStocks(stocks);
+    } else if (mode === "add" && open) {
+      setFormData({ sku: "", name: "", category: "", price: "", cost: "", minStock: "", supplier: "" });
+      setBranchStocks({});
+    }
+  }, [initialData, mode, open]);
 
   const handleSubmit = () => {
     if (!formData.sku || !formData.name || !formData.category) {
@@ -89,7 +111,7 @@ export function AddProductModal({ open, onOpenChange, onAdd, categories }: AddPr
     toast.success("Produk berhasil ditambahkan");
     onOpenChange(false);
     setFormData({ sku: "", name: "", category: "", price: "", cost: "", minStock: "", supplier: "" });
-    setBranchStocks({ pusat: "", jakarta: "", surabaya: "", bandung: "", medan: "" });
+    setBranchStocks({});
   };
 
   return (
@@ -198,7 +220,7 @@ export function AddProductModal({ open, onOpenChange, onAdd, categories }: AddPr
             Batal
           </Button>
           <Button className="flex-1" onClick={handleSubmit}>
-            Simpan Produk
+            {mode === "edit" ? "Simpan Perubahan" : "Simpan Produk"}
           </Button>
         </div>
       </DialogContent>

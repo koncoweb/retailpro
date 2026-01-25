@@ -28,7 +28,7 @@ import { toast } from "sonner";
 import { ArrowRight, Package, Plus, Trash2 } from "lucide-react";
 
 interface Product {
-  id: number;
+  id: string;
   sku: string;
   name: string;
   stock: number;
@@ -36,7 +36,7 @@ interface Product {
 }
 
 interface TransferItem {
-  productId: number;
+  productId: string;
   productName: string;
   sku: string;
   quantity: number;
@@ -71,7 +71,7 @@ export function StockTransferModal({ open, onOpenChange, products, onTransfer }:
   const [transferItems, setTransferItems] = useState<TransferItem[]>([]);
   const [notes, setNotes] = useState("");
 
-  const getAvailableStock = (productId: number, location: string) => {
+  const getAvailableStock = (productId: string, location: string) => {
     const product = products.find(p => p.id === productId);
     if (!product) return 0;
     return product.branches[location] || 0;
@@ -83,7 +83,7 @@ export function StockTransferModal({ open, onOpenChange, products, onTransfer }:
       return;
     }
 
-    const product = products.find(p => p.id === parseInt(selectedProduct));
+    const product = products.find(p => p.id === selectedProduct);
     if (!product) return;
 
     const availableStock = getAvailableStock(product.id, fromLocation);
@@ -113,7 +113,7 @@ export function StockTransferModal({ open, onOpenChange, products, onTransfer }:
     setQuantity("");
   };
 
-  const handleRemoveItem = (productId: number) => {
+  const handleRemoveItem = (productId: string) => {
     setTransferItems(transferItems.filter(item => item.productId !== productId));
   };
 
@@ -259,6 +259,7 @@ export function StockTransferModal({ open, onOpenChange, products, onTransfer }:
                           variant="ghost"
                           size="icon"
                           onClick={() => handleRemoveItem(item.productId)}
+                          type="button"
                         >
                           <Trash2 className="w-4 h-4 text-destructive" />
                         </Button>

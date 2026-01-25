@@ -62,6 +62,7 @@ CREATE TABLE users (
   id UUID PRIMARY KEY, -- Managed by Neon Auth
   tenant_id UUID REFERENCES tenants(id),
   email VARCHAR(255) NOT NULL,
+  name VARCHAR(255),
   role VARCHAR(20) NOT NULL, -- tenant_owner, tenant_admin, store_manager, cashier
   assigned_branch_id UUID REFERENCES branches(id), -- NULL for Owner/Admin
   is_active BOOLEAN DEFAULT TRUE,

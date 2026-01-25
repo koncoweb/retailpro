@@ -235,10 +235,11 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
     *   **User Guide:** Panduan penggunaan fitur untuk onboarding tenant baru.
 
 ## 7. Requirement Checklist
-- [ ] Database Schema (PostgreSQL) siap dengan RLS.
-- [ ] Koneksi Database terintegrasi di aplikasi.
+- [x] Database Schema (PostgreSQL) siap dengan RLS.
+- [x] Koneksi Database terintegrasi di aplikasi.
 - [ ] Sistem Autentikasi User (Multi-Tenant Login).
-- [ ] CRUD Master Data (Produk, Karyawan, Cabang) terhubung DB.
+- [x] CRUD Master Data (Produk) terhubung DB (Inventory Page).
+- [ ] CRUD Master Data (Karyawan, Cabang) terhubung DB.
 - [ ] Transaksi POS menyimpan data ke DB dan mengurangi stok secara atomik (FIFO).
 - [ ] Fitur Multi-Satuan (Unit Conversion) berfungsi di POS dan Inventory.
 - [ ] Fitur Stock Transfer (Mutasi Stok) berfungsi dengan Approval Workflow.

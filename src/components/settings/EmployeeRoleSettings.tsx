@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,11 +17,13 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Plus, Edit, Trash2, Shield, Users } from "lucide-react";
+import { Edit, Shield, Users, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
+import { ROLES, PERMISSION_GROUPS, PERMISSION_LABELS, DEFAULT_ROLE_PERMISSIONS } from "@/config/roles";
+import { query } from "@/lib/db";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface Role {
   id: string;
@@ -31,89 +33,8 @@ interface Role {
   userCount: number;
 }
 
-const permissionGroups = {
-  dashboard: ["view_dashboard", "view_analytics"],
-  pos: ["access_pos", "apply_discount", "void_transaction"],
-  inventory: ["view_inventory", "add_stock", "transfer_stock", "stock_opname"],
-  employees: ["view_employees", "add_employee", "edit_employee", "delete_employee"],
-  reports: ["view_reports", "export_reports"],
-  settings: ["view_settings", "edit_settings", "manage_roles"],
-};
-
-const permissionLabels: Record<string, string> = {
-  view_dashboard: "Lihat Dashboard",
-  view_analytics: "Lihat Analitik",
-  access_pos: "Akses POS",
-  apply_discount: "Berikan Diskon",
-  void_transaction: "Void Transaksi",
-  view_inventory: "Lihat Inventory",
-  add_stock: "Tambah Stok",
-  transfer_stock: "Transfer Stok",
-  stock_opname: "Stock Opname",
-  view_employees: "Lihat Karyawan",
-  add_employee: "Tambah Karyawan",
-  edit_employee: "Edit Karyawan",
-  delete_employee: "Hapus Karyawan",
-  view_reports: "Lihat Laporan",
-  export_reports: "Export Laporan",
-  view_settings: "Lihat Pengaturan",
-  edit_settings: "Edit Pengaturan",
-  manage_roles: "Kelola Role",
-};
-
-const initialRoles: Role[] = [
-  {
-    id: "1",
-    name: "Super Admin",
-    description: "Akses penuh ke semua fitur",
-    permissions: Object.fromEntries(Object.values(permissionGroups).flat().map((p) => [p, true])),
-    userCount: 2,
-  },
-  {
-    id: "2",
-    name: "Store Manager",
-    description: "Kelola operasional toko",
-    permissions: {
-      view_dashboard: true,
-      view_analytics: true,
-      access_pos: true,
-      apply_discount: true,
-      view_inventory: true,
-      add_stock: true,
-      transfer_stock: true,
-      view_employees: true,
-      view_reports: true,
-      export_reports: true,
-    },
-    userCount: 5,
-  },
-  {
-    id: "3",
-    name: "Cashier",
-    description: "Operasi kasir dan POS",
-    permissions: {
-      view_dashboard: true,
-      access_pos: true,
-      apply_discount: false,
-    },
-    userCount: 24,
-  },
-  {
-    id: "4",
-    name: "Warehouse Staff",
-    description: "Kelola gudang dan stok",
-    permissions: {
-      view_inventory: true,
-      add_stock: true,
-      transfer_stock: true,
-      stock_opname: true,
-    },
-    userCount: 12,
-  },
-];
-
 export function EmployeeRoleSettings() {
-  const [roles, setRoles] = useState<Role[]>(initialRoles);
+  const [roles, setRoles] = useState<Role[]>([]);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [formData, setFormData] = useState({
@@ -121,34 +42,53 @@ export function EmployeeRoleSettings() {
     description: "",
     permissions: {} as Record<string, boolean>,
   });
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    fetchRoles();
+  }, []);
+
+  const fetchRoles = async () => {
+    setIsLoading(true);
+    try {
+        // Fetch user counts from DB
+        const res = await query(`SELECT role, COUNT(*) as count FROM users GROUP BY role`);
+        const counts: Record<string, number> = {};
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        res.rows.forEach((row: any) => {
+            if (row.role) counts[row.role.toLowerCase()] = parseInt(row.count);
+        });
+
+        // Map system roles to state
+        const mappedRoles = ROLES.map(r => ({
+            id: r.value,
+            name: r.label,
+            description: r.description,
+            permissions: DEFAULT_ROLE_PERMISSIONS[r.value] || {},
+            userCount: counts[r.value] || 0
+        }));
+
+        setRoles(mappedRoles);
+    } catch (error) {
+        console.error("Failed to fetch roles data:", error);
+        toast.error("Gagal memuat data role");
+    } finally {
+        setIsLoading(false);
+    }
+  };
 
   const handleSave = () => {
-    if (!formData.name) {
-      toast.error("Nama role harus diisi");
-      return;
-    }
-
     if (editingRole) {
       setRoles((prev) =>
         prev.map((r) =>
           r.id === editingRole.id
-            ? { ...r, name: formData.name, description: formData.description, permissions: formData.permissions }
+            ? { ...r, permissions: formData.permissions }
             : r
         )
       );
-      toast.success("Role berhasil diperbarui");
-    } else {
-      setRoles((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          name: formData.name,
-          description: formData.description,
-          permissions: formData.permissions,
-          userCount: 0,
-        },
-      ]);
-      toast.success("Role berhasil ditambahkan");
+      toast.success("Permission berhasil diperbarui", {
+        description: "Perubahan ini hanya berlaku untuk sesi ini (Fitur permission dinamis sedang dikembangkan)",
+      });
     }
 
     setIsDialogOpen(false);
@@ -164,11 +104,6 @@ export function EmployeeRoleSettings() {
       permissions: { ...role.permissions },
     });
     setIsDialogOpen(true);
-  };
-
-  const handleDelete = (id: string) => {
-    setRoles((prev) => prev.filter((r) => r.id !== id));
-    toast.success("Role berhasil dihapus");
   };
 
   const togglePermission = (permission: string) => {
@@ -193,79 +128,17 @@ export function EmployeeRoleSettings() {
             <p className="text-sm text-muted-foreground">Kelola role dan hak akses karyawan</p>
           </div>
         </div>
-        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-          <DialogTrigger asChild>
-            <Button
-              size="sm"
-              className="gap-2"
-              onClick={() => {
-                setEditingRole(null);
-                setFormData({ name: "", description: "", permissions: {} });
-              }}
-            >
-              <Plus className="w-4 h-4" />
-              Tambah Role
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>{editingRole ? "Edit Role" : "Tambah Role Baru"}</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <Label>Nama Role</Label>
-                <Input
-                  placeholder="Contoh: Finance Manager"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Deskripsi</Label>
-                <Input
-                  placeholder="Deskripsi singkat role ini"
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label>Permissions</Label>
-                <Accordion type="multiple" className="w-full">
-                  {Object.entries(permissionGroups).map(([group, permissions]) => (
-                    <AccordionItem key={group} value={group}>
-                      <AccordionTrigger className="text-sm capitalize">{group}</AccordionTrigger>
-                      <AccordionContent>
-                        <div className="space-y-3 pt-2">
-                          {permissions.map((permission) => (
-                            <div key={permission} className="flex items-center justify-between">
-                              <Label className="text-sm font-normal cursor-pointer">
-                                {permissionLabels[permission] || permission}
-                              </Label>
-                              <Switch
-                                checked={formData.permissions[permission] || false}
-                                onCheckedChange={() => togglePermission(permission)}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </AccordionContent>
-                    </AccordionItem>
-                  ))}
-                </Accordion>
-              </div>
-            </div>
-            <div className="flex gap-2">
-              <Button variant="outline" className="flex-1" onClick={() => setIsDialogOpen(false)}>
-                Batal
-              </Button>
-              <Button className="flex-1" onClick={handleSave}>
-                Simpan
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
+        {/* Add Role button removed as system roles are fixed */}
       </div>
+
+      <Alert>
+        <AlertCircle className="h-4 w-4" />
+        <AlertTitle>Info Sistem</AlertTitle>
+        <AlertDescription>
+          Role dalam sistem ini bersifat tetap (System Roles). Anda dapat melihat dan menyesuaikan permission, 
+          namun penambahan role baru dilakukan melalui update sistem.
+        </AlertDescription>
+      </Alert>
 
       <div className="rounded-lg border overflow-hidden">
         <Table>
@@ -278,7 +151,13 @@ export function EmployeeRoleSettings() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {roles.map((role) => (
+            {isLoading ? (
+                <TableRow>
+                    <TableCell colSpan={4} className="text-center py-4 text-muted-foreground">
+                        Memuat data...
+                    </TableCell>
+                </TableRow>
+            ) : roles.map((role) => (
               <TableRow key={role.id}>
                 <TableCell>
                   <div className="flex items-center gap-2">
@@ -298,15 +177,7 @@ export function EmployeeRoleSettings() {
                     <Button variant="ghost" size="iconSm" onClick={() => handleEdit(role)}>
                       <Edit className="w-4 h-4" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="iconSm"
-                      className="text-destructive"
-                      onClick={() => handleDelete(role.id)}
-                      disabled={role.name === "Super Admin"}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    {/* Delete button removed for system roles */}
                   </div>
                 </TableCell>
               </TableRow>
@@ -314,6 +185,67 @@ export function EmployeeRoleSettings() {
           </TableBody>
         </Table>
       </div>
+
+      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+        <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+            <DialogTitle>Edit Permission: {editingRole?.name}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+            <div className="space-y-2">
+            <Label>Nama Role</Label>
+            <Input
+                value={formData.name}
+                disabled
+                className="bg-muted"
+            />
+            <p className="text-xs text-muted-foreground">Nama system role tidak dapat diubah</p>
+            </div>
+            <div className="space-y-2">
+            <Label>Deskripsi</Label>
+            <Input
+                value={formData.description}
+                disabled
+                className="bg-muted"
+            />
+            </div>
+
+            <div className="space-y-2">
+            <Label>Permissions</Label>
+            <Accordion type="multiple" className="w-full">
+                {Object.entries(PERMISSION_GROUPS).map(([group, permissions]) => (
+                <AccordionItem key={group} value={group}>
+                    <AccordionTrigger className="text-sm capitalize">{group}</AccordionTrigger>
+                    <AccordionContent>
+                    <div className="space-y-3 pt-2">
+                        {permissions.map((permission) => (
+                        <div key={permission} className="flex items-center justify-between">
+                            <Label className="text-sm font-normal cursor-pointer">
+                            {PERMISSION_LABELS[permission] || permission}
+                            </Label>
+                            <Switch
+                            checked={formData.permissions[permission] || false}
+                            onCheckedChange={() => togglePermission(permission)}
+                            />
+                        </div>
+                        ))}
+                    </div>
+                    </AccordionContent>
+                </AccordionItem>
+                ))}
+            </Accordion>
+            </div>
+        </div>
+        <div className="flex gap-2">
+            <Button variant="outline" className="flex-1" onClick={() => setIsDialogOpen(false)}>
+            Batal
+            </Button>
+            <Button className="flex-1" onClick={handleSave}>
+            Simpan Perubahan
+            </Button>
+        </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

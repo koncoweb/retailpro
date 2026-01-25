@@ -29,7 +29,7 @@ import { toast } from "sonner";
 import { Package, Plus, Trash2, AlertTriangle, ShoppingCart } from "lucide-react";
 
 interface Product {
-  id: number;
+  id: string;
   sku: string;
   name: string;
   stock: number;
@@ -40,7 +40,7 @@ interface Product {
 }
 
 interface POItem {
-  productId: number;
+  productId: string;
   productName: string;
   sku: string;
   quantity: number;
@@ -98,10 +98,12 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
       return;
     }
 
-    const product = products.find(p => p.id === parseInt(selectedProduct));
+    const product = products.find(p => p.id === selectedProduct);
     if (!product) return;
 
     const qty = parseInt(quantity);
+    const totalCost = qty * product.cost;
+
     const existingIndex = poItems.findIndex(item => item.productId === product.id);
     
     if (existingIndex >= 0) {
@@ -125,7 +127,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
     setQuantity("");
   };
 
-  const handleRemoveItem = (productId: number) => {
+  const handleRemoveItem = (productId: string) => {
     setPOItems(poItems.filter(item => item.productId !== productId));
   };
 

@@ -28,7 +28,7 @@ import { toast } from "sonner";
 import { Package, Search, CheckCircle2, AlertTriangle } from "lucide-react";
 
 interface Product {
-  id: number;
+  id: string;
   sku: string;
   name: string;
   stock: number;
@@ -42,7 +42,7 @@ interface StockOpnameModalProps {
   onSave: (opname: {
     location: string;
     items: Array<{
-      productId: number;
+      productId: string;
       systemStock: number;
       actualStock: number;
       difference: number;
@@ -61,7 +61,7 @@ const locations = [
 export function StockOpnameModal({ open, onOpenChange, products, onSave }: StockOpnameModalProps) {
   const [selectedLocation, setSelectedLocation] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [actualStocks, setActualStocks] = useState<Record<number, string>>({});
+  const [actualStocks, setActualStocks] = useState<Record<string, string>>({});
 
   const getLocationProducts = () => {
     if (!selectedLocation) return [];
@@ -76,7 +76,7 @@ export function StockOpnameModal({ open, onOpenChange, products, onSave }: Stock
 
   const locationProducts = getLocationProducts();
 
-  const handleActualStockChange = (productId: number, value: string) => {
+  const handleActualStockChange = (productId: string, value: string) => {
     setActualStocks({ ...actualStocks, [productId]: value });
   };
 

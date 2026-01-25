@@ -68,6 +68,7 @@ interface Branch {
 interface Employee {
   id: string;
   email: string;
+  name: string;
   role: string;
   is_active: boolean;
 }
@@ -87,10 +88,12 @@ interface RecentTransaction {
   status: string;
 }
 
+import { ROLES } from "@/config/roles";
+
 interface BranchDetailModalProps {
+  branch: Branch | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  branch: Branch | null;
 }
 
 export function BranchDetailModal({
@@ -115,6 +118,7 @@ export function BranchDetailModal({
   // Edit Employee State
   const [isEditEmployeeOpen, setIsEditEmployeeOpen] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+  const [editName, setEditName] = useState("");
   const [editRole, setEditRole] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
   const [isUpdatingEmployee, setIsUpdatingEmployee] = useState(false);
@@ -139,7 +143,7 @@ export function BranchDetailModal({
 
       // Fetch Employees
       const empRes = await query(
-        `SELECT id, email, role, is_active FROM users WHERE assigned_branch_id = $1`,
+        `SELECT id, email, name, role, is_active FROM users WHERE assigned_branch_id = $1`,
         [branchId]
       );
       
@@ -166,6 +170,7 @@ export function BranchDetailModal({
       setEmployees(empRes.rows.map((r: any) => ({
         id: r.id,
         email: r.email,
+        name: r.name,
         role: r.role,
         is_active: r.is_active
       })));
@@ -196,6 +201,7 @@ export function BranchDetailModal({
 
   const handleEditClick = (employee: Employee) => {
     setSelectedEmployee(employee);
+    setEditName(employee.name || "");
     setEditRole(employee.role);
     setEditIsActive(employee.is_active);
     setIsEditEmployeeOpen(true);
@@ -207,8 +213,8 @@ export function BranchDetailModal({
     setIsUpdatingEmployee(true);
     try {
       await query(
-        `UPDATE users SET role = $1, is_active = $2 WHERE id = $3`,
-        [editRole, editIsActive, selectedEmployee.id]
+        `UPDATE users SET role = $1, is_active = $2, name = $3 WHERE id = $4`,
+        [editRole, editIsActive, editName, selectedEmployee.id]
       );
 
       // Refresh employees list
@@ -456,7 +462,7 @@ export function BranchDetailModal({
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Email</TableHead>
+                          <TableHead>Karyawan</TableHead>
                           <TableHead>Role</TableHead>
                           <TableHead>Status</TableHead>
                         </TableRow>
@@ -475,7 +481,12 @@ export function BranchDetailModal({
                               className="cursor-pointer hover:bg-muted/50 transition-colors"
                               onClick={() => handleEditClick(emp)}
                             >
-                              <TableCell className="font-medium">{emp.email}</TableCell>
+                              <TableCell>
+                                <div>
+                                    <p className="font-medium">{emp.name || "Unnamed"}</p>
+                                    <p className="text-sm text-muted-foreground">{emp.email}</p>
+                                </div>
+                              </TableCell>
                               <TableCell>
                                 <Badge variant="outline" className="capitalize">
                                   {emp.role.replace('_', ' ')}
@@ -620,8 +631,11 @@ export function BranchDetailModal({
                   <SelectValue placeholder="Pilih role" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="store_manager">Store Manager</SelectItem>
-                  <SelectItem value="cashier">Cashier</SelectItem>
+                  {ROLES.filter(r => !['platform_owner', 'tenant_owner'].includes(r.value)).map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -650,6 +664,14 @@ export function BranchDetailModal({
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
+              <Label>Nama</Label>
+              <Input 
+                  value={editName} 
+                  onChange={(e) => setEditName(e.target.value)}
+                  placeholder="Nama Karyawan"
+              />
+            </div>
+            <div className="grid gap-2">
               <Label>Email</Label>
               <Input value={selectedEmployee?.email || ""} disabled />
             </div>
@@ -660,9 +682,11 @@ export function BranchDetailModal({
                   <SelectValue placeholder="Pilih Role" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="store_manager">Store Manager</SelectItem>
-                  <SelectItem value="cashier">Cashier</SelectItem>
-                  <SelectItem value="warehouse">Warehouse</SelectItem>
+                  {ROLES.filter(r => !['platform_owner', 'tenant_owner'].includes(r.value)).map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

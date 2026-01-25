@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useLocation } from "react-router-dom";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,7 @@ import {
   ArrowLeftRight,
   ClipboardCheck,
   ShoppingCart,
+  Loader2,
 } from "lucide-react";
 import { ProductImportExport } from "@/components/inventory/ProductImportExport";
 import { AddProductModal } from "@/components/inventory/AddProductModal";
@@ -48,9 +49,10 @@ import { StockTransferModal } from "@/components/inventory/StockTransferModal";
 import { StockOpnameModal } from "@/components/inventory/StockOpnameModal";
 import { PurchaseOrderModal } from "@/components/inventory/PurchaseOrderModal";
 import { toast } from "sonner";
+import { query } from "@/lib/db";
 
 interface Product {
-  id: number;
+  id: string;
   sku: string;
   name: string;
   category: string;
@@ -63,96 +65,10 @@ interface Product {
   supplier: string;
 }
 
-const initialProducts: Product[] = [
-  {
-    id: 1,
-    sku: "PRD-001",
-    name: "Indomie Goreng Original",
-    category: "Makanan",
-    price: 3500,
-    cost: 2800,
-    stock: 1250,
-    minStock: 200,
-    branches: { pusat: 300, jakarta: 450, surabaya: 250, bandung: 150, medan: 100 },
-    lastRestock: "2024-01-10",
-    supplier: "PT Indofood",
-  },
-  {
-    id: 2,
-    sku: "PRD-002",
-    name: "Susu Ultra 1L Full Cream",
-    category: "Minuman",
-    price: 18500,
-    cost: 15000,
-    stock: 45,
-    minStock: 100,
-    branches: { pusat: 10, jakarta: 15, surabaya: 10, bandung: 5, medan: 5 },
-    lastRestock: "2024-01-08",
-    supplier: "PT Ultra Jaya",
-  },
-  {
-    id: 3,
-    sku: "PRD-003",
-    name: "Aqua Botol 600ml",
-    category: "Minuman",
-    price: 4000,
-    cost: 3200,
-    stock: 2800,
-    minStock: 500,
-    branches: { pusat: 800, jakarta: 700, surabaya: 600, bandung: 400, medan: 300 },
-    lastRestock: "2024-01-12",
-    supplier: "PT Danone",
-  },
-  {
-    id: 4,
-    sku: "PRD-004",
-    name: "Roti Tawar Sari Roti",
-    category: "Makanan",
-    price: 16000,
-    cost: 12500,
-    stock: 12,
-    minStock: 50,
-    branches: { pusat: 5, jakarta: 3, surabaya: 2, bandung: 1, medan: 1 },
-    lastRestock: "2024-01-11",
-    supplier: "PT Nippon Indosari",
-  },
-  {
-    id: 5,
-    sku: "PRD-005",
-    name: "Sabun Lifebuoy 100g",
-    category: "Personal Care",
-    price: 5500,
-    cost: 4200,
-    stock: 680,
-    minStock: 150,
-    branches: { pusat: 200, jakarta: 180, surabaya: 150, bandung: 80, medan: 70 },
-    lastRestock: "2024-01-09",
-    supplier: "PT Unilever",
-  },
-  {
-    id: 6,
-    sku: "PRD-006",
-    name: "Kopi Kapal Api Special Mix",
-    category: "Minuman",
-    price: 2000,
-    cost: 1500,
-    stock: 3200,
-    minStock: 400,
-    branches: { pusat: 1000, jakarta: 800, surabaya: 700, bandung: 400, medan: 300 },
-    lastRestock: "2024-01-10",
-    supplier: "PT Santos Jaya",
-  },
-];
-
-const categories = ["Semua", "Makanan", "Minuman", "Personal Care", "Snack"];
-
-const locations = [
-  { id: "pusat", name: "Gudang Pusat" },
-  { id: "jakarta", name: "Cabang Jakarta" },
-  { id: "surabaya", name: "Cabang Surabaya" },
-  { id: "bandung", name: "Cabang Bandung" },
-  { id: "medan", name: "Cabang Medan" },
-];
+interface Branch {
+  id: string;
+  name: string;
+}
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -164,17 +80,115 @@ function formatCurrency(value: number) {
 
 export default function Inventory() {
   const location = useLocation();
-  const [products, setProducts] = useState<Product[]>(initialProducts);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Semua");
   const [stockFilter, setStockFilter] = useState("all");
   const [selectedLocation, setSelectedLocation] = useState("all");
+  const [branches, setBranches] = useState<Branch[]>([]);
   
   // Modal states
   const [isAddProductOpen, setIsAddProductOpen] = useState(false);
   const [isTransferOpen, setIsTransferOpen] = useState(false);
   const [isOpnameOpen, setIsOpnameOpen] = useState(false);
   const [isPOOpen, setIsPOOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+
+  const categories = ["Semua", "Makanan", "Minuman", "Personal Care", "Snack", "Elektronik", "Pakaian", "Lainnya"];
+
+  // Fetch Branches
+  useEffect(() => {
+    const fetchBranches = async () => {
+      try {
+        const res = await query('SELECT id, name FROM branches WHERE status = \'active\' ORDER BY name');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setBranches(res.rows.map((r: any) => ({ id: r.id, name: r.name })));
+      } catch (error) {
+        console.error("Failed to fetch branches:", error);
+      }
+    };
+    fetchBranches();
+  }, []);
+
+  // Fetch Products
+  const fetchProducts = async () => {
+    try {
+      setIsLoading(true);
+      const res = await query(`
+        SELECT 
+          p.id, 
+          p.sku, 
+          p.name, 
+          p.category, 
+          p.min_stock_level,
+          COALESCE(pu.price, 0) as price,
+          COALESCE((
+            SELECT AVG(pb.cost_price) 
+            FROM product_batches pb 
+            WHERE pb.product_id = p.id AND pb.quantity_current > 0
+          ), 0) as cost,
+          COALESCE((
+            SELECT SUM(pb.quantity_current) 
+            FROM product_batches pb 
+            WHERE pb.product_id = p.id
+          ), 0) as stock,
+          (
+            SELECT jsonb_object_agg(b.id, COALESCE(sum_qty, 0))
+            FROM branches b
+            LEFT JOIN (
+              SELECT branch_id, SUM(quantity_current) as sum_qty
+              FROM product_batches
+              WHERE product_id = p.id
+              GROUP BY branch_id
+            ) pb_sum ON b.id = pb_sum.branch_id
+          ) as branch_stock,
+          (
+            SELECT s.name 
+            FROM product_batches pb 
+            JOIN suppliers s ON pb.supplier_id = s.id 
+            WHERE pb.product_id = p.id 
+            ORDER BY pb.received_at DESC 
+            LIMIT 1
+          ) as supplier,
+          p.created_at
+        FROM products p
+        LEFT JOIN product_units pu ON p.id = pu.product_id
+        ORDER BY p.created_at DESC
+      `);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mappedProducts: Product[] = res.rows.map((row: any) => ({
+        id: row.id, // Keep as string or number? Interface says number but UUID is string. Need to update interface.
+        sku: row.sku,
+        name: row.name,
+        category: row.category || "Uncategorized",
+        price: parseFloat(row.price),
+        cost: parseFloat(row.cost),
+        stock: parseFloat(row.stock),
+        minStock: row.min_stock_level,
+        branches: row.branch_stock || {},
+        lastRestock: row.created_at, // Simplification
+        supplier: row.supplier || "-"
+      }));
+      
+      // Update interface to accept string ID or cast UUID to number (not possible safely). 
+      // Better to update interface to string | number or just string.
+      // For now I will cast to any to avoid TS error until I update interface
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setProducts(mappedProducts as any);
+    } catch (error) {
+      console.error("Failed to fetch products:", error);
+      toast.error("Gagal mengambil data produk");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchProducts();
+  }, []);
+
 
   // Determine active tab based on route
   const getActiveTab = () => {
@@ -209,7 +223,7 @@ export default function Inventory() {
         };
       }
       return {
-        id: Date.now() + index,
+        id: String(Date.now() + index),
         sku: p.sku,
         name: p.name,
         category: p.category,
@@ -235,7 +249,7 @@ export default function Inventory() {
     toast.success(`${importedProducts.length} produk berhasil diimport`);
   };
 
-  const handleAddProduct = (newProduct: {
+  const handleSaveProduct = async (productData: {
     sku: string;
     name: string;
     category: string;
@@ -246,18 +260,101 @@ export default function Inventory() {
     supplier: string;
     branches: Record<string, number>;
   }) => {
-    const product: Product = {
-      id: Date.now(),
-      ...newProduct,
-      lastRestock: new Date().toISOString().split("T")[0],
-    };
-    setProducts([...products, product]);
+    try {
+      // Handle Supplier (Find or Create) - Common for both Add and Edit
+      let supplierId: string | null = null;
+      if (productData.supplier) {
+        const supplierRes = await query(
+          `SELECT id FROM suppliers WHERE name = $1`,
+          [productData.supplier]
+        );
+        if (supplierRes.rows.length > 0) {
+          supplierId = supplierRes.rows[0].id;
+        } else {
+          const newSupplierRes = await query(
+            `INSERT INTO suppliers (name) VALUES ($1) RETURNING id`,
+            [productData.supplier]
+          );
+          supplierId = newSupplierRes.rows[0].id;
+        }
+      }
+
+      if (editingProduct) {
+        // UPDATE
+        await query(
+          `UPDATE products SET sku=$1, name=$2, category=$3, min_stock_level=$4 WHERE id=$5`,
+          [productData.sku, productData.name, productData.category, productData.minStock, editingProduct.id]
+        );
+
+        // Update Price
+        await query(
+          `UPDATE product_units SET price=$1 WHERE product_id=$2 AND name='Pcs'`,
+          [productData.price, editingProduct.id]
+        );
+
+        // Update Stock (Adjustment via Batches)
+        for (const [branchId, newQty] of Object.entries(productData.branches)) {
+          const oldQty = editingProduct.branches[branchId] || 0;
+          const diff = newQty - oldQty;
+          
+          if (diff !== 0) {
+            await query(
+              `INSERT INTO product_batches 
+               (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at, supplier_id)
+               VALUES ($1, $2, $3, $4, $4, $5, NOW(), $6)`,
+              [branchId, editingProduct.id, `ADJ-${Date.now()}`, diff, productData.cost, supplierId]
+            );
+          }
+        }
+
+        toast.success("Produk berhasil diperbarui");
+      } else {
+        // INSERT (Create)
+        const productRes = await query(
+          `INSERT INTO products (sku, name, category, min_stock_level, is_tracked) 
+           VALUES ($1, $2, $3, $4, true) 
+           RETURNING id`,
+          [productData.sku, productData.name, productData.category, productData.minStock]
+        );
+        const productId = productRes.rows[0].id;
+
+        // Insert Product Unit
+        await query(
+          `INSERT INTO product_units (product_id, name, price, conversion_factor) 
+           VALUES ($1, 'Pcs', $2, 1)`,
+          [productId, productData.price]
+        );
+
+        // Insert Initial Batches
+        const batchPromises = Object.entries(productData.branches).map(async ([branchId, qty]) => {
+           if (qty > 0) {
+              await query(
+                `INSERT INTO product_batches 
+                 (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at, supplier_id)
+                 VALUES ($1, $2, $3, $4, $4, $5, NOW(), $6)`,
+                [branchId, productId, `BATCH-${Date.now()}`, qty, productData.cost, supplierId]
+              );
+           }
+        });
+        await Promise.all(batchPromises);
+
+        toast.success("Produk berhasil ditambahkan");
+      }
+
+      setIsAddProductOpen(false);
+      setEditingProduct(null);
+      fetchProducts();
+    } catch (error) {
+      console.error("Failed to save product:", error);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      toast.error("Gagal menyimpan produk: " + (error as any).message);
+    }
   };
 
   const handleTransfer = (transfer: {
     from: string;
     to: string;
-    items: Array<{ productId: number; quantity: number }>;
+    items: Array<{ productId: string; quantity: number }>;
     notes: string;
   }) => {
     setProducts(products.map(p => {
@@ -277,7 +374,7 @@ export default function Inventory() {
 
   const handleOpname = (opname: {
     location: string;
-    items: Array<{ productId: number; actualStock: number }>;
+    items: Array<{ productId: string; actualStock: number }>;
   }) => {
     setProducts(products.map(p => {
       const opnameItem = opname.items.find(item => item.productId === p.id);
@@ -297,10 +394,24 @@ export default function Inventory() {
 
   const handlePO = (po: {
     destination: string;
-    items: Array<{ productId: number; quantity: number }>;
+    items: Array<{ productId: string; quantity: number }>;
   }) => {
     // In a real app, this would create a PO record
     console.log("PO Created:", po);
+  };
+
+  const handleDeleteProduct = async (productId: string) => {
+    if (!confirm("Apakah Anda yakin ingin menghapus produk ini?")) return;
+    try {
+      await query(`DELETE FROM product_batches WHERE product_id = $1`, [productId]);
+      await query(`DELETE FROM product_units WHERE product_id = $1`, [productId]);
+      await query(`DELETE FROM products WHERE id = $1`, [productId]);
+      toast.success("Produk berhasil dihapus");
+      fetchProducts();
+    } catch (error) {
+      console.error("Failed to delete product:", error);
+      toast.error("Gagal menghapus produk (mungkin sudah ada transaksi)");
+    }
   };
 
   const filteredProducts = products.filter((product) => {
@@ -445,24 +556,26 @@ export default function Inventory() {
                 />
               </div>
               <Select value={selectedLocation} onValueChange={setSelectedLocation}>
-                <SelectTrigger className="w-40">
+                <SelectTrigger className="w-[180px]">
                   <SelectValue placeholder="Lokasi" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Semua Lokasi</SelectItem>
-                  {locations.map((loc) => (
-                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  {branches.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                <SelectTrigger className="w-40">
+                <SelectTrigger className="w-[180px]">
                   <SelectValue placeholder="Kategori" />
                 </SelectTrigger>
                 <SelectContent>
-                  {categories.map((cat) => (
-                    <SelectItem key={cat} value={cat}>
-                      {cat}
+                  {categories.map((category) => (
+                    <SelectItem key={category} value={category}>
+                      {category}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -489,6 +602,9 @@ export default function Inventory() {
                     <TableHead className="text-right">Harga Jual</TableHead>
                     <TableHead className="text-right">Harga Modal</TableHead>
                     <TableHead className="text-center">Total Stok</TableHead>
+                    {selectedLocation === "all" && branches.map((loc) => (
+                      <TableHead key={loc.id} className="text-center">{loc.name}</TableHead>
+                    ))}
                     {selectedLocation !== "all" && (
                       <TableHead className="text-center">Stok Lokasi</TableHead>
                     )}
@@ -534,6 +650,11 @@ export default function Inventory() {
                             Min: {product.minStock}
                           </p>
                         </TableCell>
+                        {selectedLocation === "all" && branches.map((loc) => (
+                          <TableCell key={loc.id} className="text-center">
+                            {product.branches[loc.id] || 0}
+                          </TableCell>
+                        ))}
                         {selectedLocation !== "all" && locationStock !== null && (
                           <TableCell className="text-center">
                             <p className={`font-bold ${locationStock <= product.minStock / 5 ? "text-warning" : ""}`}>
@@ -568,7 +689,10 @@ export default function Inventory() {
                                 <Eye className="w-4 h-4 mr-2" />
                                 Lihat Detail
                               </DropdownMenuItem>
-                              <DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => {
+                                setEditingProduct(product);
+                                setIsAddProductOpen(true);
+                              }}>
                                 <Edit className="w-4 h-4 mr-2" />
                                 Edit
                               </DropdownMenuItem>
@@ -576,7 +700,10 @@ export default function Inventory() {
                                 <ArrowLeftRight className="w-4 h-4 mr-2" />
                                 Transfer Stok
                               </DropdownMenuItem>
-                              <DropdownMenuItem className="text-destructive">
+                              <DropdownMenuItem 
+                                className="text-destructive"
+                                onClick={() => handleDeleteProduct(product.id)}
+                              >
                                 <Trash2 className="w-4 h-4 mr-2" />
                                 Hapus
                               </DropdownMenuItem>
@@ -632,9 +759,15 @@ export default function Inventory() {
       {/* Modals */}
       <AddProductModal
         open={isAddProductOpen}
-        onOpenChange={setIsAddProductOpen}
-        onAdd={handleAddProduct}
+        onOpenChange={(open) => {
+          setIsAddProductOpen(open);
+          if (!open) setEditingProduct(null);
+        }}
+        onAdd={handleSaveProduct}
         categories={categories}
+        branches={branches}
+        mode={editingProduct ? "edit" : "add"}
+        initialData={editingProduct}
       />
 
       <StockTransferModal
