@@ -28,6 +28,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { Package, Plus, Trash2, AlertTriangle, ShoppingCart } from "lucide-react";
 
+import { ProductUnit } from "@/components/inventory/AddProductModal";
+
 interface Product {
   id: string;
   sku: string;
@@ -37,6 +39,7 @@ interface Product {
   cost: number;
   supplier: string;
   branches: Record<string, number>;
+  units: ProductUnit[];
 }
 
 interface POItem {
@@ -44,6 +47,8 @@ interface POItem {
   productName: string;
   sku: string;
   quantity: number;
+  unitName: string;
+  conversionFactor: number;
   unitCost: number;
   totalCost: number;
   supplier: string;
@@ -53,6 +58,7 @@ interface PurchaseOrderModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   products: Product[];
+  branches: Array<{ id: string; name: string }>;
   onSubmit: (po: {
     poNumber: string;
     supplier: string;
@@ -64,17 +70,10 @@ interface PurchaseOrderModalProps {
   }) => void;
 }
 
-const locations = [
-  { id: "pusat", name: "Gudang Pusat" },
-  { id: "jakarta", name: "Cabang Jakarta" },
-  { id: "surabaya", name: "Cabang Surabaya" },
-  { id: "bandung", name: "Cabang Bandung" },
-  { id: "medan", name: "Cabang Medan" },
-];
-
-export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: PurchaseOrderModalProps) {
+export function PurchaseOrderModal({ open, onOpenChange, products, branches, onSubmit }: PurchaseOrderModalProps) {
   const [destination, setDestination] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
+  const [selectedUnit, setSelectedUnit] = useState("");
   const [quantity, setQuantity] = useState("");
   const [poItems, setPOItems] = useState<POItem[]>([]);
   const [notes, setNotes] = useState("");
@@ -101,15 +100,31 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
     const product = products.find(p => p.id === selectedProduct);
     if (!product) return;
 
-    const qty = parseInt(quantity);
-    const totalCost = qty * product.cost;
+    // Find selected unit or default to first unit/Pcs
+    let unitName = selectedUnit || "Pcs";
+    let conversionFactor = 1;
+    let unitCost = product.cost;
 
-    const existingIndex = poItems.findIndex(item => item.productId === product.id);
+    if (selectedUnit && selectedUnit !== "Pcs" && product.units) {
+      const unit = product.units.find(u => u.name === selectedUnit);
+      if (unit) {
+        unitName = unit.name;
+        conversionFactor = unit.conversion_factor;
+        unitCost = product.cost * unit.conversion_factor;
+      }
+    }
+
+    const qty = parseInt(quantity);
+    const totalCost = qty * unitCost;
+
+    const existingIndex = poItems.findIndex(item => 
+      item.productId === product.id && item.unitName === unitName
+    );
     
     if (existingIndex >= 0) {
       const updated = [...poItems];
       updated[existingIndex].quantity += qty;
-      updated[existingIndex].totalCost = updated[existingIndex].quantity * product.cost;
+      updated[existingIndex].totalCost = updated[existingIndex].quantity * unitCost;
       setPOItems(updated);
     } else {
       setPOItems([...poItems, {
@@ -117,18 +132,21 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
         productName: product.name,
         sku: product.sku,
         quantity: qty,
-        unitCost: product.cost,
-        totalCost: qty * product.cost,
+        unitName,
+        conversionFactor,
+        unitCost,
+        totalCost,
         supplier: product.supplier,
       }]);
     }
 
     setSelectedProduct("");
+    setSelectedUnit("");
     setQuantity("");
   };
 
-  const handleRemoveItem = (productId: string) => {
-    setPOItems(poItems.filter(item => item.productId !== productId));
+  const handleRemoveItem = (productId: string, unitName: string) => {
+    setPOItems(poItems.filter(item => !(item.productId === productId && item.unitName === unitName)));
   };
 
   const handleAutoFillLowStock = () => {
@@ -149,6 +167,8 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
             productName: product.name,
             sku: product.sku,
             quantity: Math.max(needed, product.minStock), // Order at least minStock amount
+            unitName: "Pcs",
+            conversionFactor: 1,
             unitCost: product.cost,
             totalCost: Math.max(needed, product.minStock) * product.cost,
             supplier: product.supplier,
@@ -209,6 +229,8 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
     ? products.filter(p => p.supplier === selectedSupplier)
     : products;
 
+  const selectedProductObj = products.find(p => p.id === selectedProduct);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[900px] max-h-[90vh] overflow-y-auto">
@@ -244,7 +266,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
                   <SelectValue placeholder="Pilih lokasi" />
                 </SelectTrigger>
                 <SelectContent>
-                  {locations.map((loc) => (
+                  {branches.map((loc) => (
                     <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -279,7 +301,10 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
           <div className="border rounded-lg p-4 bg-muted/50">
             <Label className="text-sm font-medium">Tambah Produk</Label>
             <div className="flex gap-2 mt-2">
-              <Select value={selectedProduct} onValueChange={setSelectedProduct}>
+              <Select value={selectedProduct} onValueChange={(val) => {
+                setSelectedProduct(val);
+                setSelectedUnit(""); // Reset unit when product changes
+              }}>
                 <SelectTrigger className="flex-1">
                   <SelectValue placeholder="Pilih produk" />
                 </SelectTrigger>
@@ -297,6 +322,25 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
                   ))}
                 </SelectContent>
               </Select>
+
+              <Select 
+                value={selectedUnit} 
+                onValueChange={setSelectedUnit}
+                disabled={!selectedProduct}
+              >
+                <SelectTrigger className="w-[120px]">
+                  <SelectValue placeholder="Satuan" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Pcs">Pcs</SelectItem>
+                  {selectedProductObj?.units?.map((unit) => (
+                    <SelectItem key={unit.name} value={unit.name}>
+                      {unit.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
               <Input
                 type="number"
                 placeholder="Jumlah"
@@ -319,14 +363,15 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
                     <TableHead>Produk</TableHead>
                     <TableHead>Supplier</TableHead>
                     <TableHead className="text-center">Qty</TableHead>
+                    <TableHead className="text-center">Satuan</TableHead>
                     <TableHead className="text-right">Harga Satuan</TableHead>
                     <TableHead className="text-right">Total</TableHead>
                     <TableHead className="w-12"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {poItems.map((item) => (
-                    <TableRow key={item.productId}>
+                  {poItems.map((item, idx) => (
+                    <TableRow key={`${item.productId}-${item.unitName}-${idx}`}>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Package className="w-4 h-4 text-muted-foreground" />
@@ -342,6 +387,9 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
                       <TableCell className="text-center">
                         <Badge variant="secondary">{item.quantity}</Badge>
                       </TableCell>
+                      <TableCell className="text-center">
+                        <Badge variant="outline">{item.unitName}</Badge>
+                      </TableCell>
                       <TableCell className="text-right">
                         Rp {item.unitCost.toLocaleString()}
                       </TableCell>
@@ -352,7 +400,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleRemoveItem(item.productId)}
+                          onClick={() => handleRemoveItem(item.productId, item.unitName)}
                         >
                           <Trash2 className="w-4 h-4 text-destructive" />
                         </Button>
@@ -360,7 +408,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, onSubmit }: P
                     </TableRow>
                   ))}
                   <TableRow className="bg-muted/50">
-                    <TableCell colSpan={4} className="text-right font-semibold">
+                    <TableCell colSpan={5} className="text-right font-semibold">
                       Total Amount:
                     </TableCell>
                     <TableCell className="text-right font-bold text-lg">

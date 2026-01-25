@@ -26,6 +26,14 @@ export interface User {
   name: string;
 }
 
+export interface ProductUnit {
+  id?: string;
+  name: string;
+  conversion_factor: number;
+  price: number;
+  barcode: string;
+}
+
 export interface Product {
   id: string;
   tenant_id: string;
@@ -33,10 +41,11 @@ export interface Product {
   name: string;
   category: string;
   description?: string;
-  price: number; // Selling Price
+  price: number; // Selling Price (Base Unit)
   cost: number; // Base Cost (for reference, actual cost is in batches)
   unit_type: string;
   min_stock_alert: number;
+  units: ProductUnit[]; // Multi-unit support
   
   // Frontend helper for multi-branch stock view
   // In real DB, this comes from aggregation of product_batches
@@ -60,6 +69,8 @@ export interface CartItem {
   name: string;
   price: number;
   quantity: number;
+  unit_name: string;
+  conversion_factor: number;
   // In a real scenario, we might select specific batch if manually picking,
   // but usually FIFO is automatic on backend.
 }
@@ -86,6 +97,8 @@ export interface TransactionItem {
   quantity: number;
   unit_price: number;
   subtotal: number;
+  unit_name?: string;
+  conversion_factor?: number;
 }
 
 // Mock Session State

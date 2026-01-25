@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useLocation } from "react-router-dom";
+import { useAuth } from "@/hooks/use-auth";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,6 +51,9 @@ import { StockOpnameModal } from "@/components/inventory/StockOpnameModal";
 import { PurchaseOrderModal } from "@/components/inventory/PurchaseOrderModal";
 import { toast } from "sonner";
 import { query } from "@/lib/db";
+import { logAudit } from "@/lib/audit";
+
+import { ProductUnit } from "@/components/inventory/AddProductModal";
 
 interface Product {
   id: string;
@@ -63,6 +67,7 @@ interface Product {
   branches: Record<string, number>;
   lastRestock: string;
   supplier: string;
+  units: ProductUnit[];
 }
 
 interface Branch {
@@ -70,57 +75,44 @@ interface Branch {
   name: string;
 }
 
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat("id-ID", {
-    style: "currency",
-    currency: "IDR",
-    minimumFractionDigits: 0,
-  }).format(value);
-}
-
-interface Transfer {
-  id: string;
-  reference_number: string;
-  source_branch_name: string;
-  destination_branch_name: string;
-  status: string;
-  created_at: string;
-  items_count: number;
-}
-
 export default function Inventory() {
+  const { user } = useAuth();
   const location = useLocation();
+  const [isLoading, setIsLoading] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
-  const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const [transfers, setTransfers] = useState<any[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [isAddProductOpen, setIsAddProductOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isTransferOpen, setIsTransferOpen] = useState(false);
+  const [isOpnameOpen, setIsOpnameOpen] = useState(false);
+  const [isPOOpen, setIsPOOpen] = useState(false);
+
+  // Filter State
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Semua");
   const [stockFilter, setStockFilter] = useState("all");
   const [selectedLocation, setSelectedLocation] = useState("all");
-  const [branches, setBranches] = useState<Branch[]>([]);
-  
-  // Modal states
-  const [isAddProductOpen, setIsAddProductOpen] = useState(false);
-  const [isTransferOpen, setIsTransferOpen] = useState(false);
-  const [isOpnameOpen, setIsOpnameOpen] = useState(false);
-  const [isPOOpen, setIsPOOpen] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
 
-  const categories = ["Semua", "Makanan", "Minuman", "Personal Care", "Snack", "Elektronik", "Pakaian", "Lainnya"];
+  const categories = Array.from(new Set(products.map(p => p.category)));
+
+  const formatCurrency = (value: number) => {
+    return new Intl.NumberFormat("id-ID", {
+      style: "currency",
+      currency: "IDR",
+      minimumFractionDigits: 0,
+    }).format(value);
+  };
 
   // Fetch Branches
-  useEffect(() => {
-    const fetchBranches = async () => {
-      try {
-        const res = await query('SELECT id, name FROM branches WHERE status = \'active\' ORDER BY name');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        setBranches(res.rows.map((r: any) => ({ id: r.id, name: r.name })));
-      } catch (error) {
-        console.error("Failed to fetch branches:", error);
-      }
-    };
-    fetchBranches();
-  }, []);
+  const fetchBranches = async () => {
+    try {
+      const res = await query(`SELECT id, name FROM branches ORDER BY name ASC`);
+      setBranches(res.rows);
+    } catch (error) {
+      console.error("Failed to fetch branches:", error);
+    }
+  };
 
   // Fetch Products
   const fetchProducts = async () => {
@@ -133,7 +125,13 @@ export default function Inventory() {
           p.name, 
           p.category, 
           p.min_stock_level,
-          COALESCE(pu.price, 0) as price,
+          (
+            SELECT price 
+            FROM product_units 
+            WHERE product_id = p.id AND conversion_factor = 1 
+            ORDER BY created_at ASC 
+            LIMIT 1
+          ) as price,
           COALESCE((
             SELECT AVG(pb.cost_price) 
             FROM product_batches pb 
@@ -162,32 +160,39 @@ export default function Inventory() {
             ORDER BY pb.received_at DESC 
             LIMIT 1
           ) as supplier,
+          (
+             SELECT json_agg(json_build_object(
+               'id', id, 
+               'name', name, 
+               'conversion_factor', conversion_factor, 
+               'price', price,
+               'barcode', barcode
+             ))
+             FROM product_units 
+             WHERE product_id = p.id
+          ) as units,
           p.created_at
         FROM products p
-        LEFT JOIN product_units pu ON p.id = pu.product_id
         ORDER BY p.created_at DESC
       `);
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mappedProducts: Product[] = res.rows.map((row: any) => ({
-        id: row.id, // Keep as string or number? Interface says number but UUID is string. Need to update interface.
+        id: row.id,
         sku: row.sku,
         name: row.name,
         category: row.category || "Uncategorized",
-        price: parseFloat(row.price),
+        price: parseFloat(row.price) || 0,
         cost: parseFloat(row.cost),
         stock: parseFloat(row.stock),
         minStock: row.min_stock_level,
         branches: row.branch_stock || {},
-        lastRestock: row.created_at, // Simplification
-        supplier: row.supplier || "-"
+        lastRestock: row.created_at,
+        supplier: row.supplier || "-",
+        units: row.units || []
       }));
       
-      // Update interface to accept string ID or cast UUID to number (not possible safely). 
-      // Better to update interface to string | number or just string.
-      // For now I will cast to any to avoid TS error until I update interface
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setProducts(mappedProducts as any);
+      setProducts(mappedProducts);
     } catch (error) {
       console.error("Failed to fetch products:", error);
       toast.error("Gagal mengambil data produk");
@@ -222,6 +227,7 @@ export default function Inventory() {
   useEffect(() => {
     fetchProducts();
     fetchTransfers();
+    fetchBranches();
   }, []);
 
 
@@ -269,6 +275,7 @@ export default function Inventory() {
         branches: { pusat: p.stock },
         lastRestock: new Date().toISOString().split("T")[0],
         supplier: p.supplier,
+        units: [],
       };
     });
 
@@ -294,6 +301,7 @@ export default function Inventory() {
     minStock: number;
     supplier: string;
     branches: Record<string, number>;
+    units: ProductUnit[];
   }) => {
     try {
       // Handle Supplier (Find or Create) - Common for both Add and Edit
@@ -315,17 +323,40 @@ export default function Inventory() {
       }
 
       if (editingProduct) {
-        // UPDATE
+        // UPDATE Product
         await query(
           `UPDATE products SET sku=$1, name=$2, category=$3, min_stock_level=$4 WHERE id=$5`,
           [productData.sku, productData.name, productData.category, productData.minStock, editingProduct.id]
         );
 
-        // Update Price
-        await query(
-          `UPDATE product_units SET price=$1 WHERE product_id=$2 AND name='Pcs'`,
-          [productData.price, editingProduct.id]
-        );
+        // Update Units
+        // 1. Get existing unit IDs
+        const existingUnitsRes = await query(`SELECT id FROM product_units WHERE product_id = $1`, [editingProduct.id]);
+        const existingIds = existingUnitsRes.rows.map((row: any) => row.id);
+        
+        // 2. Identify IDs to keep and update
+        const incomingIds = productData.units.map(u => u.id).filter(id => id);
+        
+        // 3. Delete IDs not in incoming
+        const idsToDelete = existingIds.filter((id: string) => !incomingIds.includes(id));
+        for (const id of idsToDelete) {
+          await query(`DELETE FROM product_units WHERE id = $1`, [id]);
+        }
+
+        // 4. Upsert (Update existing, Insert new)
+        for (const unit of productData.units) {
+          if (unit.id) {
+            await query(
+              `UPDATE product_units SET name=$1, price=$2, conversion_factor=$3, barcode=$4 WHERE id=$5`,
+              [unit.name, unit.price, unit.conversion_factor, unit.barcode || '', unit.id]
+            );
+          } else {
+            await query(
+              `INSERT INTO product_units (product_id, name, price, conversion_factor, barcode) VALUES ($1, $2, $3, $4, $5)`,
+              [editingProduct.id, unit.name, unit.price, unit.conversion_factor, unit.barcode || '']
+            );
+          }
+        }
 
         // Update Stock (Adjustment via Batches)
         for (const [branchId, newQty] of Object.entries(productData.branches)) {
@@ -353,12 +384,14 @@ export default function Inventory() {
         );
         const productId = productRes.rows[0].id;
 
-        // Insert Product Unit
-        await query(
-          `INSERT INTO product_units (product_id, name, price, conversion_factor) 
-           VALUES ($1, 'Pcs', $2, 1)`,
-          [productId, productData.price]
-        );
+        // Insert Product Units
+        for (const unit of productData.units) {
+          await query(
+            `INSERT INTO product_units (product_id, name, price, conversion_factor, barcode) 
+             VALUES ($1, $2, $3, $4, $5)`,
+            [productId, unit.name, unit.price, unit.conversion_factor, unit.barcode || '']
+          );
+        }
 
         // Insert Initial Batches
         const batchPromises = Object.entries(productData.branches).map(async ([branchId, qty]) => {
@@ -372,6 +405,14 @@ export default function Inventory() {
            }
         });
         await Promise.all(batchPromises);
+
+        await logAudit({
+          action: "create_product",
+          entity: "products",
+          entityId: productId,
+          details: { sku: productData.sku, name: productData.name },
+          userId: user?.id
+        });
 
         toast.success("Produk berhasil ditambahkan");
       }
@@ -410,6 +451,20 @@ export default function Inventory() {
         );
       }
 
+      await logAudit({
+        action: "create",
+        entity: "stock_transfers",
+        entityId: transferId,
+        details: { 
+          reference_number: `TRF-${Date.now()}`,
+          from: transfer.from, 
+          to: transfer.to, 
+          items: transfer.items, 
+          notes: transfer.notes 
+        },
+        userId: user?.id
+      });
+
       toast.success("Permintaan transfer berhasil dibuat");
       setIsTransferOpen(false);
       fetchTransfers();
@@ -420,6 +475,12 @@ export default function Inventory() {
   };
 
   const handleApproveTransfer = async (transferId: string) => {
+    // RBAC Check
+    if (!user || !['store_manager', 'tenant_admin', 'tenant_owner', 'platform_owner'].includes(user.role)) {
+      toast.error("Anda tidak memiliki akses untuk menyetujui transfer");
+      return;
+    }
+
     try {
       const res = await query(`SELECT * FROM stock_transfers WHERE id = $1`, [transferId]);
       const transfer = res.rows[0];
@@ -428,7 +489,11 @@ export default function Inventory() {
       const items = itemsRes.rows;
 
       for (const item of items) {
-        let remaining = parseFloat(item.quantity_sent);
+        // Convert transfer quantity to base units
+        const conversionFactor = parseFloat(item.conversion_factor || '1');
+        const totalBaseQty = parseFloat(item.quantity_sent) * conversionFactor;
+        let remaining = totalBaseQty;
+
         const sourceBatches = await query(
           `SELECT id, quantity_current, cost_price 
            FROM product_batches 
@@ -464,7 +529,7 @@ export default function Inventory() {
           `INSERT INTO product_batches 
            (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at)
            VALUES ($1, $2, $3, $4, $4, $5, NOW())`,
-          [transfer.destination_branch_id, item.product_id, `TRF-${transfer.reference_number}`, item.quantity_sent, avgCost]
+          [transfer.destination_branch_id, item.product_id, `TRF-${transfer.reference_number}`, totalQtyMoved, avgCost]
         );
       }
 
@@ -472,6 +537,18 @@ export default function Inventory() {
         `UPDATE stock_transfers SET status = 'completed', received_at = NOW() WHERE id = $1`,
         [transferId]
       );
+
+      await logAudit({
+        action: "approve_transfer",
+        entity: "stock_transfers",
+        entityId: transferId,
+        details: {
+           transferId,
+           approvedBy: user.id,
+           itemsCount: items.length
+        },
+        userId: user.id
+      });
 
       toast.success("Transfer approved successfully");
       fetchTransfers();
@@ -530,6 +607,19 @@ export default function Inventory() {
                     remainingToReduce -= reduce;
                 }
             }
+
+            await logAudit({
+              action: "stock_adjustment",
+              entity: "product_batches",
+              entityId: item.productId,
+              details: {
+                reason: "Stock Opname",
+                branchId: opname.location,
+                diff,
+                actualStock: item.actualStock
+              },
+              userId: user?.id
+            });
          }
       }
       toast.success("Stock opname berhasil disimpan");
@@ -541,12 +631,11 @@ export default function Inventory() {
     }
   };
 
-  const handlePO = (po: {
-    destination: string;
-    items: Array<{ productId: string; quantity: number }>;
-  }) => {
+  const handlePO = (po: any) => {
     // In a real app, this would create a PO record
     console.log("PO Created:", po);
+    toast.success(`Purchase Order ${po.poNumber} berhasil dibuat`);
+    setIsPOOpen(false);
   };
 
   const handleDeleteProduct = async (productId: string) => {
@@ -769,7 +858,7 @@ export default function Inventory() {
                     const locationStock = selectedLocation !== "all" ? (product.branches[selectedLocation] || 0) : null;
                     
                     return (
-                      <TableRow key={product.id} className="group">
+                      <TableRow key={product.id} className={`group ${isLowStock ? "bg-red-50 dark:bg-red-950/10" : ""}`}>
                         <TableCell>
                           <div className="flex items-center gap-3">
                             <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-primary/20 to-info/20 flex items-center justify-center text-xl">
@@ -792,12 +881,17 @@ export default function Inventory() {
                           <p className="text-xs text-success">+{margin.toFixed(1)}%</p>
                         </TableCell>
                         <TableCell className="text-center">
-                          <p className={`font-bold ${isLowStock ? "text-warning" : ""}`}>
-                            {product.stock.toLocaleString()}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            Min: {product.minStock}
-                          </p>
+                          <div className="flex flex-col items-center">
+                            <div className="flex items-center gap-1">
+                              {isLowStock && <AlertTriangle className="w-4 h-4 text-warning" />}
+                              <p className={`font-bold ${isLowStock ? "text-warning" : ""}`}>
+                                {product.stock.toLocaleString()}
+                              </p>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              Min: {product.minStock}
+                            </p>
+                          </div>
                         </TableCell>
                         {selectedLocation === "all" && branches.map((loc) => (
                           <TableCell key={loc.id} className="text-center">
@@ -906,9 +1000,13 @@ export default function Inventory() {
                         <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
                         <TableCell className="text-right">
                           {t.status === 'pending' && (
-                            <Button size="sm" onClick={() => handleApproveTransfer(t.id)}>
-                              Approve
-                            </Button>
+                             (user?.role === 'store_manager' || user?.role === 'tenant_admin' || user?.role === 'tenant_owner' || user?.role === 'platform_owner') ? (
+                              <Button size="sm" onClick={() => handleApproveTransfer(t.id)}>
+                                Approve
+                              </Button>
+                             ) : (
+                               <span className="text-xs text-muted-foreground italic">Menunggu Approval</span>
+                             )
                           )}
                         </TableCell>
                       </TableRow>
@@ -969,7 +1067,13 @@ export default function Inventory() {
       <StockTransferModal
         open={isTransferOpen}
         onOpenChange={setIsTransferOpen}
-        products={products}
+        products={products.map(p => ({
+          ...p,
+          tenant_id: (user as any)?.tenant_id || '',
+          unit_type: 'Pcs',
+          min_stock_alert: p.minStock,
+          stock_by_branch: p.branches,
+        }))}
         branches={branches}
         onTransfer={handleTransfer}
       />
@@ -986,6 +1090,7 @@ export default function Inventory() {
         open={isPOOpen}
         onOpenChange={setIsPOOpen}
         products={products}
+        branches={branches}
         onSubmit={handlePO}
       />
     </BackOfficeLayout>

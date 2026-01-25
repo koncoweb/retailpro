@@ -26,21 +26,16 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { ArrowRight, Package, Plus, Trash2 } from "lucide-react";
-
-interface Product {
-  id: string;
-  sku: string;
-  name: string;
-  stock: number;
-  branches: Record<string, number>;
-}
+import { Product, ProductUnit } from "@/types";
 
 interface TransferItem {
   productId: string;
   productName: string;
   sku: string;
   quantity: number;
-  availableStock: number;
+  unitName: string;
+  conversionFactor: number;
+  availableStock: number; // In selected unit
 }
 
 interface StockTransferModalProps {
@@ -60,6 +55,7 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
   const [fromLocation, setFromLocation] = useState("");
   const [toLocation, setToLocation] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
+  const [selectedUnit, setSelectedUnit] = useState("");
   const [quantity, setQuantity] = useState("");
   const [transferItems, setTransferItems] = useState<TransferItem[]>([]);
   const [notes, setNotes] = useState("");
@@ -67,7 +63,8 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
   const getAvailableStock = (productId: string, location: string) => {
     const product = products.find(p => p.id === productId);
     if (!product) return 0;
-    return product.branches[location] || 0;
+    // stock_by_branch keys might vary, assuming ID matches location ID
+    return product.stock_by_branch?.[location] || 0;
   };
 
   const handleAddItem = () => {
@@ -79,18 +76,41 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
     const product = products.find(p => p.id === selectedProduct);
     if (!product) return;
 
-    const availableStock = getAvailableStock(product.id, fromLocation);
+    // Determine unit details
+    let unitName = product.unit_type || "Pcs";
+    let conversionFactor = 1;
+
+    if (selectedUnit) {
+      const unit = product.units?.find(u => u.name === selectedUnit);
+      if (unit) {
+        unitName = unit.name;
+        conversionFactor = unit.conversion_factor;
+      }
+    }
+
+    const baseAvailableStock = getAvailableStock(product.id, fromLocation);
+    const availableStockInUnit = Math.floor(baseAvailableStock / conversionFactor);
     const qty = parseInt(quantity);
 
-    if (qty > availableStock) {
-      toast.error(`Stok tidak mencukupi. Tersedia: ${availableStock}`);
+    if (qty > availableStockInUnit) {
+      toast.error(`Stok tidak mencukupi. Tersedia: ${availableStockInUnit} ${unitName}`);
       return;
     }
 
-    const existingIndex = transferItems.findIndex(item => item.productId === product.id);
+    const existingIndex = transferItems.findIndex(item => 
+      item.productId === product.id && item.unitName === unitName
+    );
+
     if (existingIndex >= 0) {
       const updated = [...transferItems];
-      updated[existingIndex].quantity += qty;
+      const newQty = updated[existingIndex].quantity + qty;
+      
+      if (newQty > availableStockInUnit) {
+        toast.error(`Total stok melebihi batas. Tersedia: ${availableStockInUnit} ${unitName}`);
+        return;
+      }
+      
+      updated[existingIndex].quantity = newQty;
       setTransferItems(updated);
     } else {
       setTransferItems([...transferItems, {
@@ -98,16 +118,21 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
         productName: product.name,
         sku: product.sku,
         quantity: qty,
-        availableStock,
+        unitName,
+        conversionFactor,
+        availableStock: availableStockInUnit,
       }]);
     }
 
     setSelectedProduct("");
+    setSelectedUnit("");
     setQuantity("");
   };
 
-  const handleRemoveItem = (productId: string) => {
-    setTransferItems(transferItems.filter(item => item.productId !== productId));
+  const handleRemoveItem = (index: number) => {
+    const newItems = [...transferItems];
+    newItems.splice(index, 1);
+    setTransferItems(newItems);
   };
 
   const handleSubmit = () => {
@@ -142,14 +167,17 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
     setFromLocation("");
     setToLocation("");
     setSelectedProduct("");
+    setSelectedUnit("");
     setQuantity("");
     setTransferItems([]);
     setNotes("");
   };
 
   const filteredProducts = fromLocation 
-    ? products.filter(p => (p.branches[fromLocation] || 0) > 0)
+    ? products.filter(p => (p.stock_by_branch?.[fromLocation] || 0) > 0)
     : products;
+
+  const selectedProductData = products.find(p => p.id === selectedProduct);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -195,21 +223,43 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
             <div className="border rounded-lg p-4 bg-muted/50">
               <Label className="text-sm font-medium">Tambah Produk</Label>
               <div className="flex gap-2 mt-2">
-                <Select value={selectedProduct} onValueChange={setSelectedProduct}>
+                <Select value={selectedProduct} onValueChange={(val) => {
+                  setSelectedProduct(val);
+                  setSelectedUnit(""); // Reset unit when product changes
+                }}>
                   <SelectTrigger className="flex-1">
                     <SelectValue placeholder="Pilih produk" />
                   </SelectTrigger>
                   <SelectContent>
                     {filteredProducts.map((product) => (
                       <SelectItem key={product.id} value={product.id.toString()}>
-                        {product.name} (Stok: {product.branches[fromLocation] || 0})
+                        {product.name} (Stok: {product.stock_by_branch?.[fromLocation] || 0})
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+
+                {selectedProductData && (
+                  <Select value={selectedUnit} onValueChange={setSelectedUnit}>
+                    <SelectTrigger className="w-[120px]">
+                      <SelectValue placeholder="Satuan" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={selectedProductData.unit_type || "Pcs"}>
+                        {selectedProductData.unit_type || "Pcs"} (1)
+                      </SelectItem>
+                      {selectedProductData.units?.map((u) => (
+                        <SelectItem key={u.name} value={u.name}>
+                          {u.name} ({u.conversion_factor})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+
                 <Input
                   type="number"
-                  placeholder="Jumlah"
+                  placeholder="Jml"
                   className="w-24"
                   value={quantity}
                   onChange={(e) => setQuantity(e.target.value)}
@@ -233,8 +283,8 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {transferItems.map((item) => (
-                    <TableRow key={item.productId}>
+                  {transferItems.map((item, index) => (
+                    <TableRow key={`${item.productId}-${item.unitName}`}>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Package className="w-4 h-4 text-muted-foreground" />
@@ -245,13 +295,15 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
                         </div>
                       </TableCell>
                       <TableCell className="text-center">
-                        <Badge variant="secondary">{item.quantity} unit</Badge>
+                        <Badge variant="secondary">
+                          {item.quantity} {item.unitName}
+                        </Badge>
                       </TableCell>
                       <TableCell>
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleRemoveItem(item.productId)}
+                          onClick={() => handleRemoveItem(index)}
                           type="button"
                         >
                           <Trash2 className="w-4 h-4 text-destructive" />
