@@ -39,6 +39,7 @@ interface StockOpnameModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   products: Product[];
+  branches: Array<{ id: string; name: string }>;
   onSave: (opname: {
     location: string;
     items: Array<{
@@ -50,15 +51,7 @@ interface StockOpnameModalProps {
   }) => void;
 }
 
-const locations = [
-  { id: "pusat", name: "Gudang Pusat" },
-  { id: "jakarta", name: "Cabang Jakarta" },
-  { id: "surabaya", name: "Cabang Surabaya" },
-  { id: "bandung", name: "Cabang Bandung" },
-  { id: "medan", name: "Cabang Medan" },
-];
-
-export function StockOpnameModal({ open, onOpenChange, products, onSave }: StockOpnameModalProps) {
+export function StockOpnameModal({ open, onOpenChange, products, branches, onSave }: StockOpnameModalProps) {
   const [selectedLocation, setSelectedLocation] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [actualStocks, setActualStocks] = useState<Record<string, string>>({});
@@ -126,15 +119,17 @@ export function StockOpnameModal({ open, onOpenChange, products, onSave }: Stock
         <div className="space-y-4 py-4">
           {/* Location Selection */}
           <div className="flex gap-4">
-            <div className="flex-1">
-              <Label>Pilih Lokasi</Label>
+            <div className="grid gap-2">
+              <Label>Lokasi Opname</Label>
               <Select value={selectedLocation} onValueChange={setSelectedLocation}>
-                <SelectTrigger className="mt-1">
+                <SelectTrigger>
                   <SelectValue placeholder="Pilih lokasi" />
                 </SelectTrigger>
                 <SelectContent>
-                  {locations.map((loc) => (
-                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  {branches.map((loc) => (
+                    <SelectItem key={loc.id} value={loc.id}>
+                      {loc.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>

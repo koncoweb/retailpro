@@ -78,9 +78,20 @@ function formatCurrency(value: number) {
   }).format(value);
 }
 
+interface Transfer {
+  id: string;
+  reference_number: string;
+  source_branch_name: string;
+  destination_branch_name: string;
+  status: string;
+  created_at: string;
+  items_count: number;
+}
+
 export default function Inventory() {
   const location = useLocation();
   const [products, setProducts] = useState<Product[]>([]);
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Semua");
@@ -185,8 +196,32 @@ export default function Inventory() {
     }
   };
 
+  // Fetch Transfers
+  const fetchTransfers = async () => {
+    try {
+      const res = await query(`
+        SELECT 
+          st.id,
+          st.reference_number,
+          b1.name as source_branch_name,
+          b2.name as destination_branch_name,
+          st.status,
+          st.created_at,
+          (SELECT COUNT(*) FROM transfer_items ti WHERE ti.transfer_id = st.id) as items_count
+        FROM stock_transfers st
+        LEFT JOIN branches b1 ON st.source_branch_id = b1.id
+        LEFT JOIN branches b2 ON st.destination_branch_id = b2.id
+        ORDER BY st.created_at DESC
+      `);
+      setTransfers(res.rows);
+    } catch (error) {
+      console.error("Failed to fetch transfers:", error);
+    }
+  };
+
   useEffect(() => {
     fetchProducts();
+    fetchTransfers();
   }, []);
 
 
@@ -351,45 +386,159 @@ export default function Inventory() {
     }
   };
 
-  const handleTransfer = (transfer: {
+  const handleTransfer = async (transfer: {
     from: string;
     to: string;
     items: Array<{ productId: string; quantity: number }>;
     notes: string;
   }) => {
-    setProducts(products.map(p => {
-      const transferItem = transfer.items.find(item => item.productId === p.id);
-      if (transferItem) {
-        const newBranches = { ...p.branches };
-        newBranches[transfer.from] = (newBranches[transfer.from] || 0) - transferItem.quantity;
-        newBranches[transfer.to] = (newBranches[transfer.to] || 0) + transferItem.quantity;
-        return {
-          ...p,
-          branches: newBranches,
-        };
+    try {
+      const res = await query(
+        `INSERT INTO stock_transfers 
+         (reference_number, source_branch_id, destination_branch_id, status, created_at)
+         VALUES ($1, $2, $3, 'pending', NOW())
+         RETURNING id`,
+        [`TRF-${Date.now()}`, transfer.from, transfer.to]
+      );
+      const transferId = res.rows[0].id;
+
+      for (const item of transfer.items) {
+        await query(
+          `INSERT INTO transfer_items (transfer_id, product_id, quantity_sent, notes)
+           VALUES ($1, $2, $3, $4)`,
+          [transferId, item.productId, item.quantity, transfer.notes]
+        );
       }
-      return p;
-    }));
+
+      toast.success("Permintaan transfer berhasil dibuat");
+      setIsTransferOpen(false);
+      fetchTransfers();
+    } catch (error) {
+      console.error("Transfer failed:", error);
+      toast.error("Gagal membuat transfer");
+    }
   };
 
-  const handleOpname = (opname: {
+  const handleApproveTransfer = async (transferId: string) => {
+    try {
+      const res = await query(`SELECT * FROM stock_transfers WHERE id = $1`, [transferId]);
+      const transfer = res.rows[0];
+      
+      const itemsRes = await query(`SELECT * FROM transfer_items WHERE transfer_id = $1`, [transferId]);
+      const items = itemsRes.rows;
+
+      for (const item of items) {
+        let remaining = parseFloat(item.quantity_sent);
+        const sourceBatches = await query(
+          `SELECT id, quantity_current, cost_price 
+           FROM product_batches 
+           WHERE product_id = $1 AND branch_id = $2 AND quantity_current > 0
+           ORDER BY received_at ASC`,
+          [item.product_id, transfer.source_branch_id]
+        );
+
+        let totalCost = 0;
+        let totalQtyMoved = 0;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        for (const batch of sourceBatches.rows as any[]) {
+          if (remaining <= 0) break;
+          const qty = parseFloat(batch.quantity_current);
+          const take = Math.min(qty, remaining);
+          
+          await query(
+            `UPDATE product_batches 
+             SET quantity_current = quantity_current - $1 
+             WHERE id = $2`,
+            [take, batch.id]
+          );
+          
+          remaining -= take;
+          totalCost += take * parseFloat(batch.cost_price);
+          totalQtyMoved += take;
+        }
+        
+        const avgCost = totalQtyMoved > 0 ? totalCost / totalQtyMoved : 0;
+
+        await query(
+          `INSERT INTO product_batches 
+           (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at)
+           VALUES ($1, $2, $3, $4, $4, $5, NOW())`,
+          [transfer.destination_branch_id, item.product_id, `TRF-${transfer.reference_number}`, item.quantity_sent, avgCost]
+        );
+      }
+
+      await query(
+        `UPDATE stock_transfers SET status = 'completed', received_at = NOW() WHERE id = $1`,
+        [transferId]
+      );
+
+      toast.success("Transfer approved successfully");
+      fetchTransfers();
+      fetchProducts();
+    } catch (error) {
+      console.error("Approval failed:", error);
+      toast.error("Approval failed");
+    }
+  };
+
+  const handleOpname = async (opname: {
     location: string;
     items: Array<{ productId: string; actualStock: number }>;
   }) => {
-    setProducts(products.map(p => {
-      const opnameItem = opname.items.find(item => item.productId === p.id);
-      if (opnameItem) {
-        const newBranches = { ...p.branches };
-        newBranches[opname.location] = opnameItem.actualStock;
-        const newStock = Object.values(newBranches).reduce((sum, val) => sum + val, 0);
-        return {
-          ...p,
-          branches: newBranches,
-          stock: newStock,
-        };
+    try {
+      for (const item of opname.items) {
+         const prodRes = await query(
+            `SELECT SUM(quantity_current) as current_stock 
+             FROM product_batches 
+             WHERE product_id = $1 AND branch_id = $2`,
+            [item.productId, opname.location]
+         );
+         const currentStock = parseFloat(prodRes.rows[0]?.current_stock || '0');
+         const diff = item.actualStock - currentStock;
+
+         if (diff !== 0) {
+            if (diff > 0) {
+                await query(
+                  `INSERT INTO product_batches 
+                   (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at)
+                   VALUES ($1, $2, $3, $4, $4, 0, NOW())`,
+                  [opname.location, item.productId, `OPNAME-${Date.now()}`, diff]
+                );
+            } else {
+                let remainingToReduce = Math.abs(diff);
+                const batchesRes = await query(
+                    `SELECT id, quantity_current 
+                     FROM product_batches 
+                     WHERE product_id = $1 AND branch_id = $2 AND quantity_current > 0
+                     ORDER BY received_at ASC`,
+                    [item.productId, opname.location]
+                );
+                
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                for (const batch of batchesRes.rows as any[]) {
+                    if (remainingToReduce <= 0) break;
+                    const qty = parseFloat(batch.quantity_current);
+                    const reduce = Math.min(qty, remainingToReduce);
+                    
+                    await query(
+                        `UPDATE product_batches 
+                         SET quantity_current = quantity_current - $1 
+                         WHERE id = $2`,
+                        [reduce, batch.id]
+                    );
+                    remainingToReduce -= reduce;
+                }
+            }
+         }
       }
-      return p;
-    }));
+      toast.success("Stock opname berhasil disimpan");
+      setIsOpnameOpen(false);
+      fetchProducts();
+    } catch (error) {
+      console.error("Opname failed:", error);
+      toast.error("Gagal menyimpan opname");
+    }
   };
 
   const handlePO = (po: {
@@ -718,15 +867,62 @@ export default function Inventory() {
             </div>
           </TabsContent>
 
-          <TabsContent value="stock-in">
-            <div className="text-center py-12">
-              <ArrowLeftRight className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold mb-2">Transfer Stok</h3>
-              <p className="text-muted-foreground mb-4">Transfer stok antar cabang dan gudang pusat</p>
-              <Button onClick={() => setIsTransferOpen(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Buat Transfer Baru
-              </Button>
+          <TabsContent value="transfers">
+            <div className="bg-card rounded-xl border p-6">
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h3 className="text-lg font-semibold">Transfer Stok</h3>
+                  <p className="text-muted-foreground">Kelola perpindahan stok antar cabang</p>
+                </div>
+                <Button onClick={() => setIsTransferOpen(true)}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Transfer Baru
+                </Button>
+              </div>
+
+              <div className="rounded-lg border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Ref Number</TableHead>
+                      <TableHead>Dari</TableHead>
+                      <TableHead>Ke</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Tanggal</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {transfers.map((t) => (
+                      <TableRow key={t.id}>
+                        <TableCell className="font-medium">{t.reference_number}</TableCell>
+                        <TableCell>{t.source_branch_name}</TableCell>
+                        <TableCell>{t.destination_branch_name}</TableCell>
+                        <TableCell>
+                          <Badge variant={t.status === 'completed' ? 'default' : 'secondary'}>
+                            {t.status}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
+                        <TableCell className="text-right">
+                          {t.status === 'pending' && (
+                            <Button size="sm" onClick={() => handleApproveTransfer(t.id)}>
+                              Approve
+                            </Button>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                    {transfers.length === 0 && (
+                       <TableRow>
+                         <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                           Belum ada data transfer
+                         </TableCell>
+                       </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           </TabsContent>
 
@@ -774,6 +970,7 @@ export default function Inventory() {
         open={isTransferOpen}
         onOpenChange={setIsTransferOpen}
         products={products}
+        branches={branches}
         onTransfer={handleTransfer}
       />
 
@@ -781,6 +978,7 @@ export default function Inventory() {
         open={isOpnameOpen}
         onOpenChange={setIsOpnameOpen}
         products={products}
+        branches={branches}
         onSave={handleOpname}
       />
 

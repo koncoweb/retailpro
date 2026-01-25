@@ -47,6 +47,7 @@ interface StockTransferModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   products: Product[];
+  branches: Array<{ id: string; name: string }>;
   onTransfer: (transfer: {
     from: string;
     to: string;
@@ -55,15 +56,7 @@ interface StockTransferModalProps {
   }) => void;
 }
 
-const locations = [
-  { id: "pusat", name: "Gudang Pusat" },
-  { id: "jakarta", name: "Cabang Jakarta" },
-  { id: "surabaya", name: "Cabang Surabaya" },
-  { id: "bandung", name: "Cabang Bandung" },
-  { id: "medan", name: "Cabang Medan" },
-];
-
-export function StockTransferModal({ open, onOpenChange, products, onTransfer }: StockTransferModalProps) {
+export function StockTransferModal({ open, onOpenChange, products, branches, onTransfer }: StockTransferModalProps) {
   const [fromLocation, setFromLocation] = useState("");
   const [toLocation, setToLocation] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
@@ -175,7 +168,7 @@ export function StockTransferModal({ open, onOpenChange, products, onTransfer }:
                   <SelectValue placeholder="Pilih lokasi asal" />
                 </SelectTrigger>
                 <SelectContent>
-                  {locations.map((loc) => (
+                  {branches.map((loc) => (
                     <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
                   ))}
                 </SelectContent>
@@ -189,7 +182,7 @@ export function StockTransferModal({ open, onOpenChange, products, onTransfer }:
                   <SelectValue placeholder="Pilih lokasi tujuan" />
                 </SelectTrigger>
                 <SelectContent>
-                  {locations.filter(loc => loc.id !== fromLocation).map((loc) => (
+                  {branches.filter(loc => loc.id !== fromLocation).map((loc) => (
                     <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
                   ))}
                 </SelectContent>
