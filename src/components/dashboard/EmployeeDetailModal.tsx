@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -15,22 +16,25 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Users, Building2 } from "lucide-react";
+import { query } from "@/lib/db";
 
 interface EmployeeDetailModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-const activeEmployees = [
-  { id: 1, name: "Budi Santoso", role: "Store Manager", branch: "Jakarta", status: "online" },
-  { id: 2, name: "Dewi Lestari", role: "Store Manager", branch: "Surabaya", status: "online" },
-  { id: 3, name: "Andi Wijaya", role: "Cashier", branch: "Jakarta", status: "online" },
-  { id: 4, name: "Sari Rahmawati", role: "Warehouse Staff", branch: "Bandung", status: "online" },
-  { id: 5, name: "Maya Sari", role: "Cashier", branch: "Surabaya", status: "online" },
-  { id: 6, name: "Rizky Pratama", role: "Cashier", branch: "Bandung", status: "break" },
-  { id: 7, name: "Dina Putri", role: "Finance Staff", branch: "Jakarta", status: "online" },
-  { id: 8, name: "Ahmad Fauzi", role: "Warehouse Staff", branch: "Medan", status: "online" },
-];
+interface Employee {
+  id: string;
+  name: string;
+  role: string;
+  branch_name: string;
+  status: string; // "online" | "offline"
+}
+
+interface BranchEmployeeStat {
+  name: string;
+  count: number;
+}
 
 const roleColors: Record<string, string> = {
   "Store Manager": "bg-primary/20 text-primary",
@@ -39,15 +43,67 @@ const roleColors: Record<string, string> = {
   "Finance Staff": "bg-warning/20 text-warning",
 };
 
-const branchStats = [
-  { name: "Jakarta", count: 24 },
-  { name: "Surabaya", count: 18 },
-  { name: "Bandung", count: 12 },
-  { name: "Medan", count: 10 },
-];
-
 export function EmployeeDetailModal({ open, onOpenChange }: EmployeeDetailModalProps) {
-  const totalActive = activeEmployees.filter((e) => e.status === "online").length;
+  const [activeEmployees, setActiveEmployees] = useState<Employee[]>([]);
+  const [branchStats, setBranchStats] = useState<BranchEmployeeStat[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      fetchData();
+    }
+  }, [open]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // Fetch active employees
+      // Assuming 'online' if they are active users. 
+      // In a real app, we might check last_login or session table.
+      const empRes = await query(`
+        SELECT 
+          u.id, 
+          u.name, 
+          u.role, 
+          b.name as branch_name
+        FROM users u
+        LEFT JOIN branches b ON u.assigned_branch_id = b.id
+        WHERE u.is_active = true
+        ORDER BY b.name, u.name
+      `);
+
+      setActiveEmployees(empRes.rows.map((row: any) => ({
+        id: row.id,
+        name: row.name || "Unnamed",
+        role: row.role,
+        branch_name: row.branch_name || "Unassigned",
+        status: "online"
+      })));
+
+      // Fetch branch stats
+      const statsRes = await query(`
+        SELECT 
+          b.name, 
+          COUNT(u.id) as emp_count
+        FROM branches b
+        LEFT JOIN users u ON b.id = u.assigned_branch_id AND u.is_active = true
+        GROUP BY b.id, b.name
+        ORDER BY emp_count DESC
+      `);
+
+      setBranchStats(statsRes.rows.map((row: any) => ({
+        name: row.name,
+        count: parseInt(row.emp_count)
+      })));
+
+    } catch (error) {
+      console.error("Failed to fetch employee details:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const totalActive = activeEmployees.length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -78,9 +134,9 @@ export function EmployeeDetailModal({ open, onOpenChange }: EmployeeDetailModalP
           <div className="p-4 bg-warning/10 rounded-lg">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 bg-success rounded-full animate-pulse" />
-              <p className="text-sm text-muted-foreground">Sedang Aktif</p>
+              <p className="text-sm text-muted-foreground">Status Karyawan</p>
             </div>
-            <p className="text-2xl font-bold">{totalActive} dari {activeEmployees.length} karyawan</p>
+            <p className="text-2xl font-bold">{totalActive} karyawan terdaftar aktif</p>
           </div>
 
           {/* Employee Table */}
@@ -95,41 +151,48 @@ export function EmployeeDetailModal({ open, onOpenChange }: EmployeeDetailModalP
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {activeEmployees.map((emp) => (
-                  <TableRow key={emp.id}>
-                    <TableCell>
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-8 w-8">
-                          <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                            {emp.name.split(" ").map((n) => n[0]).join("")}
-                          </AvatarFallback>
-                        </Avatar>
-                        <span className="font-medium">{emp.name}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <Badge className={roleColors[emp.role] || "bg-muted"}>
-                        {emp.role}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="flex items-center gap-1">
-                      <Building2 className="w-3 h-3 text-muted-foreground" />
-                      {emp.branch}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <div className="flex items-center justify-center gap-2">
-                        <span
-                          className={`w-2 h-2 rounded-full ${
-                            emp.status === "online" ? "bg-success" : "bg-warning"
-                          }`}
-                        />
-                        <span className="text-sm">
-                          {emp.status === "online" ? "Online" : "Istirahat"}
-                        </span>
-                      </div>
-                    </TableCell>
+                {loading ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center py-4">Loading...</TableCell>
                   </TableRow>
-                ))}
+                ) : activeEmployees.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center py-4">Belum ada karyawan aktif</TableCell>
+                  </TableRow>
+                ) : (
+                  activeEmployees.map((emp) => (
+                    <TableRow key={emp.id}>
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <Avatar className="w-8 h-8">
+                            <AvatarFallback>{emp.name.charAt(0)}</AvatarFallback>
+                          </Avatar>
+                          <span className="font-medium">{emp.name}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="secondary"
+                          className={roleColors[emp.role] || "bg-muted text-muted-foreground"}
+                        >
+                          {emp.role}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Building2 className="w-3 h-3 text-muted-foreground" />
+                          {emp.branch_name}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <span className={`w-2 h-2 rounded-full ${emp.status === 'online' ? 'bg-success' : 'bg-muted'}`} />
+                          <span className="text-xs capitalize">{emp.status}</span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </div>

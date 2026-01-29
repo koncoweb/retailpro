@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -23,26 +24,25 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Package, Building2 } from "lucide-react";
+import { query } from "@/lib/db";
 
 interface ProductSalesModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-const productSales = [
-  { name: "Indomie Goreng", sku: "PRD-001", sold: 245, branch: "Jakarta", revenue: 857500 },
-  { name: "Susu Ultra 1L", sku: "PRD-002", sold: 189, branch: "Surabaya", revenue: 3496500 },
-  { name: "Aqua 600ml", sku: "PRD-003", sold: 312, branch: "Jakarta", revenue: 1248000 },
-  { name: "Roti Tawar", sku: "PRD-004", sold: 156, branch: "Bandung", revenue: 2496000 },
-  { name: "Kopi Kapal Api", sku: "PRD-006", sold: 278, branch: "Medan", revenue: 556000 },
-];
+interface ProductSale {
+  name: string;
+  sku: string;
+  sold: number;
+  branch: string;
+  revenue: number;
+}
 
-const branchProductData = [
-  { branch: "Jakarta", products: 580 },
-  { branch: "Surabaya", products: 420 },
-  { branch: "Bandung", products: 350 },
-  { branch: "Medan", products: 192 },
-];
+interface BranchProductStat {
+  branch: string;
+  products: number;
+}
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -53,6 +53,69 @@ function formatCurrency(value: number) {
 }
 
 export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps) {
+  const [productSales, setProductSales] = useState<ProductSale[]>([]);
+  const [branchProductData, setBranchProductData] = useState<BranchProductStat[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      fetchData();
+    }
+  }, [open]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // Fetch top selling products (grouped by product and branch)
+      const prodRes = await query(`
+        SELECT 
+          p.name, 
+          p.sku, 
+          b.name as branch_name, 
+          SUM(ti.quantity) as total_sold, 
+          SUM(ti.subtotal) as total_revenue
+        FROM transaction_items ti
+        JOIN transactions t ON ti.transaction_id = t.id
+        JOIN products p ON ti.product_id = p.id
+        JOIN branches b ON t.branch_id = b.id
+        WHERE t.created_at >= CURRENT_DATE
+        GROUP BY p.id, p.name, p.sku, b.id, b.name
+        ORDER BY total_sold DESC
+        LIMIT 5
+      `);
+
+      setProductSales(prodRes.rows.map((row: any) => ({
+        name: row.name,
+        sku: row.sku,
+        sold: parseInt(row.total_sold),
+        branch: row.branch_name,
+        revenue: parseFloat(row.total_revenue)
+      })));
+
+      // Fetch products sold per branch
+      const branchRes = await query(`
+        SELECT 
+          b.name as branch_name, 
+          COALESCE(SUM(ti.quantity), 0) as total_products
+        FROM branches b
+        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= CURRENT_DATE
+        LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
+        GROUP BY b.id, b.name
+        ORDER BY total_products DESC
+      `);
+
+      setBranchProductData(branchRes.rows.map((row: any) => ({
+        branch: row.branch_name,
+        products: parseInt(row.total_products)
+      })));
+
+    } catch (error) {
+      console.error("Failed to fetch product sales:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const totalProducts = productSales.reduce((sum, p) => sum + p.sold, 0);
 
   return (
@@ -79,8 +142,8 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={branchProductData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                  <XAxis dataKey="branch" tick={{ fill: "hsl(var(--muted-foreground))" }} />
-                  <YAxis tick={{ fill: "hsl(var(--muted-foreground))" }} />
+                  <XAxis dataKey="branch" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
+                  <YAxis tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
                   <Tooltip
                     contentStyle={{
                       backgroundColor: "hsl(var(--card))",
@@ -109,25 +172,35 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {productSales.map((product, index) => (
-                    <TableRow key={product.sku}>
-                      <TableCell className="flex items-center gap-2">
-                        <Badge variant="outline" className="w-6 h-6 rounded-full flex items-center justify-center text-xs">
-                          {index + 1}
-                        </Badge>
-                        {product.name}
-                      </TableCell>
-                      <TableCell className="font-mono text-sm">{product.sku}</TableCell>
-                      <TableCell className="flex items-center gap-1">
-                        <Building2 className="w-3 h-3 text-muted-foreground" />
-                        {product.branch}
-                      </TableCell>
-                      <TableCell className="text-center font-bold">{product.sold}</TableCell>
-                      <TableCell className="text-right font-medium">
-                        {formatCurrency(product.revenue)}
-                      </TableCell>
+                  {loading && productSales.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center py-4">Loading...</TableCell>
                     </TableRow>
-                  ))}
+                  ) : productSales.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center py-4">Belum ada penjualan produk hari ini</TableCell>
+                    </TableRow>
+                  ) : (
+                    productSales.map((product, index) => (
+                      <TableRow key={`${product.sku}-${product.branch}`}>
+                        <TableCell className="flex items-center gap-2">
+                          <Badge variant="outline" className="w-6 h-6 rounded-full flex items-center justify-center text-xs">
+                            {index + 1}
+                          </Badge>
+                          {product.name}
+                        </TableCell>
+                        <TableCell className="font-mono text-sm">{product.sku}</TableCell>
+                        <TableCell className="flex items-center gap-1">
+                          <Building2 className="w-3 h-3 text-muted-foreground" />
+                          {product.branch}
+                        </TableCell>
+                        <TableCell className="text-center font-bold">{product.sold}</TableCell>
+                        <TableCell className="text-right font-medium">
+                          {formatCurrency(product.revenue)}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             </div>

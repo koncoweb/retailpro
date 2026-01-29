@@ -31,7 +31,7 @@ interface SalesDetailModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-interface BranchSales {
+interface BranchSale {
   branch: string;
   sales: number;
   transactions: number;
@@ -47,7 +47,7 @@ function formatCurrency(value: number) {
 }
 
 export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) {
-  const [branchSales, setBranchSales] = useState<BranchSales[]>([]);
+  const [branchSales, setBranchSales] = useState<BranchSale[]>([]);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -59,7 +59,7 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Get current date stats
+      // Get today's sales
       const todayRes = await query(`
         SELECT 
           b.name as branch_name, 
@@ -67,40 +67,40 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
           COUNT(t.id) as tx_count
         FROM branches b
         LEFT JOIN transactions t ON b.id = t.branch_id 
-          AND t.created_at >= CURRENT_DATE
+          AND date(t.created_at) = CURRENT_DATE
         GROUP BY b.id, b.name
         ORDER BY total_sales DESC
       `);
 
-      // Get yesterday stats for growth calculation
+      // Get yesterday's sales for growth calculation
       const yesterdayRes = await query(`
         SELECT 
           b.name as branch_name, 
           COALESCE(SUM(t.amount_paid), 0) as total_sales
         FROM branches b
         LEFT JOIN transactions t ON b.id = t.branch_id 
-          AND t.created_at >= CURRENT_DATE - INTERVAL '1 day'
-          AND t.created_at < CURRENT_DATE
+          AND date(t.created_at) = CURRENT_DATE - 1
         GROUP BY b.id, b.name
       `);
 
-      const yesterdayMap = new Map(yesterdayRes.rows.map((row: any) => [row.branch_name, parseFloat(row.total_sales)]));
+      const yesterdayMap = new Map(yesterdayRes.rows.map((r: any) => [r.branch_name, parseFloat(r.total_sales)]));
 
       const data = todayRes.rows.map((row: any) => {
-        const currentSales = parseFloat(row.total_sales);
-        const prevSales = yesterdayMap.get(row.branch_name) || 0;
+        const todaySales = parseFloat(row.total_sales);
+        const yesterdaySales = yesterdayMap.get(row.branch_name) || 0;
+        
         let growth = 0;
-        if (prevSales > 0) {
-          growth = ((currentSales - prevSales) / prevSales) * 100;
-        } else if (currentSales > 0) {
-          growth = 100; // New sales from 0
+        if (yesterdaySales > 0) {
+          growth = ((todaySales - yesterdaySales) / yesterdaySales) * 100;
+        } else if (todaySales > 0) {
+          growth = 100; // 100% growth if yesterday was 0 and today is > 0
         }
 
         return {
           branch: row.branch_name,
-          sales: currentSales,
+          sales: todaySales,
           transactions: parseInt(row.tx_count),
-          growth: growth
+          growth: parseFloat(growth.toFixed(1))
         };
       });
 
@@ -115,8 +115,8 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
   const totalSales = branchSales.reduce((sum, b) => sum + b.sales, 0);
 
   const chartData = branchSales.map((b) => ({
-    name: b.branch, // Keep full name or split if too long
-    sales: b.sales / 1000000, // Convert to millions for chart
+    name: b.branch.split(" ")[0],
+    sales: b.sales / 1000000,
   }));
 
   return (
@@ -141,10 +141,10 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                <XAxis dataKey="name" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
+                <XAxis dataKey="name" tick={{ fill: "hsl(var(--muted-foreground))" }} />
                 <YAxis
                   tickFormatter={(value) => `${value}Jt`}
-                  tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
+                  tick={{ fill: "hsl(var(--muted-foreground))" }}
                 />
                 <Tooltip
                   contentStyle={{
@@ -152,7 +152,7 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
                     border: "1px solid hsl(var(--border))",
                     borderRadius: "8px",
                   }}
-                  formatter={(value: number) => [`Rp ${value.toFixed(1)}Jt`, "Penjualan"]}
+                  formatter={(value: number) => [`Rp ${value}Jt`, "Penjualan"]}
                 />
                 <Bar dataKey="sales" fill="hsl(173, 80%, 40%)" radius={[4, 4, 0, 0]} />
               </BarChart>
@@ -171,33 +171,43 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {branchSales.map((branch) => (
-                  <TableRow key={branch.branch}>
-                    <TableCell className="flex items-center gap-2">
-                      <Building2 className="w-4 h-4 text-muted-foreground" />
-                      {branch.branch}
-                    </TableCell>
-                    <TableCell className="text-right font-medium">
-                      {formatCurrency(branch.sales)}
-                    </TableCell>
-                    <TableCell className="text-center">{branch.transactions}</TableCell>
-                    <TableCell className="text-right">
-                      <Badge
-                        variant={branch.growth >= 0 ? "default" : "secondary"}
-                        className={
-                          branch.growth >= 0
-                            ? "bg-success/20 text-success"
-                            : "bg-destructive/20 text-destructive"
-                        }
-                      >
-                        <TrendingUp
-                          className={`w-3 h-3 mr-1 ${branch.growth < 0 ? "rotate-180" : ""}`}
-                        />
-                        {Math.abs(branch.growth)}%
-                      </Badge>
-                    </TableCell>
+                {loading ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center py-4">Loading...</TableCell>
                   </TableRow>
-                ))}
+                ) : branchSales.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center py-4">Belum ada penjualan hari ini</TableCell>
+                  </TableRow>
+                ) : (
+                  branchSales.map((branch) => (
+                    <TableRow key={branch.branch}>
+                      <TableCell className="flex items-center gap-2">
+                        <Building2 className="w-4 h-4 text-muted-foreground" />
+                        {branch.branch}
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {formatCurrency(branch.sales)}
+                      </TableCell>
+                      <TableCell className="text-center">{branch.transactions}</TableCell>
+                      <TableCell className="text-right">
+                        <Badge
+                          variant={branch.growth >= 0 ? "default" : "secondary"}
+                          className={
+                            branch.growth >= 0
+                              ? "bg-success/20 text-success"
+                              : "bg-destructive/20 text-destructive"
+                          }
+                        >
+                          <TrendingUp
+                            className={`w-3 h-3 mr-1 ${branch.growth < 0 ? "rotate-180" : ""}`}
+                          />
+                          {Math.abs(branch.growth)}%
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
               </TableBody>
             </Table>
           </div>

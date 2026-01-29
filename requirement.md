@@ -264,7 +264,7 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
   *   **Cashflow**: Menggunakan metode **Cash Basis** (menghitung `amount_paid`) untuk refleksi arus kas riil.
   *   **Journal**: Menggunakan pendekatan **Virtual Journal** (generated on-the-fly dari data Transaksi & Expenses) untuk efisiensi storage.
   *   **Expenses**: Mendukung linkage ke Supplier dan Branch context.
-- [ ] Dashboard mengambil data real-time via Aggregation Query.
+- [x] Dashboard mengambil data real-time via Aggregation Query.
 - [ ] UI Mobile Responsive terverifikasi di viewport kecil.
 - [ ] Audit Logging system terimplementasi.
 - [ ] Notifikasi system berjalan.
