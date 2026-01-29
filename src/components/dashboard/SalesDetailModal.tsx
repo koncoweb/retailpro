@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -23,23 +24,19 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { DollarSign, TrendingUp, Building2 } from "lucide-react";
+import { query } from "@/lib/db";
 
 interface SalesDetailModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-const branchSales = [
-  { branch: "Jakarta Pusat", sales: 18500000, transactions: 85, growth: 12.5 },
-  { branch: "Surabaya", sales: 12300000, transactions: 62, growth: 8.2 },
-  { branch: "Bandung", sales: 8900000, transactions: 45, growth: -2.4 },
-  { branch: "Medan", sales: 6100000, transactions: 32, growth: 15.3 },
-];
-
-const chartData = branchSales.map((b) => ({
-  name: b.branch.split(" ")[0],
-  sales: b.sales / 1000000,
-}));
+interface BranchSales {
+  branch: string;
+  sales: number;
+  transactions: number;
+  growth: number;
+}
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -50,7 +47,77 @@ function formatCurrency(value: number) {
 }
 
 export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) {
+  const [branchSales, setBranchSales] = useState<BranchSales[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      fetchData();
+    }
+  }, [open]);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // Get current date stats
+      const todayRes = await query(`
+        SELECT 
+          b.name as branch_name, 
+          COALESCE(SUM(t.amount_paid), 0) as total_sales,
+          COUNT(t.id) as tx_count
+        FROM branches b
+        LEFT JOIN transactions t ON b.id = t.branch_id 
+          AND t.created_at >= CURRENT_DATE
+        GROUP BY b.id, b.name
+        ORDER BY total_sales DESC
+      `);
+
+      // Get yesterday stats for growth calculation
+      const yesterdayRes = await query(`
+        SELECT 
+          b.name as branch_name, 
+          COALESCE(SUM(t.amount_paid), 0) as total_sales
+        FROM branches b
+        LEFT JOIN transactions t ON b.id = t.branch_id 
+          AND t.created_at >= CURRENT_DATE - INTERVAL '1 day'
+          AND t.created_at < CURRENT_DATE
+        GROUP BY b.id, b.name
+      `);
+
+      const yesterdayMap = new Map(yesterdayRes.rows.map((row: any) => [row.branch_name, parseFloat(row.total_sales)]));
+
+      const data = todayRes.rows.map((row: any) => {
+        const currentSales = parseFloat(row.total_sales);
+        const prevSales = yesterdayMap.get(row.branch_name) || 0;
+        let growth = 0;
+        if (prevSales > 0) {
+          growth = ((currentSales - prevSales) / prevSales) * 100;
+        } else if (currentSales > 0) {
+          growth = 100; // New sales from 0
+        }
+
+        return {
+          branch: row.branch_name,
+          sales: currentSales,
+          transactions: parseInt(row.tx_count),
+          growth: growth
+        };
+      });
+
+      setBranchSales(data);
+    } catch (error) {
+      console.error("Failed to fetch sales detail:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const totalSales = branchSales.reduce((sum, b) => sum + b.sales, 0);
+
+  const chartData = branchSales.map((b) => ({
+    name: b.branch, // Keep full name or split if too long
+    sales: b.sales / 1000000, // Convert to millions for chart
+  }));
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -74,10 +141,10 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
-                <XAxis dataKey="name" tick={{ fill: "hsl(var(--muted-foreground))" }} />
+                <XAxis dataKey="name" tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }} />
                 <YAxis
                   tickFormatter={(value) => `${value}Jt`}
-                  tick={{ fill: "hsl(var(--muted-foreground))" }}
+                  tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 12 }}
                 />
                 <Tooltip
                   contentStyle={{
@@ -85,7 +152,7 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
                     border: "1px solid hsl(var(--border))",
                     borderRadius: "8px",
                   }}
-                  formatter={(value: number) => [`Rp ${value}Jt`, "Penjualan"]}
+                  formatter={(value: number) => [`Rp ${value.toFixed(1)}Jt`, "Penjualan"]}
                 />
                 <Bar dataKey="sales" fill="hsl(173, 80%, 40%)" radius={[4, 4, 0, 0]} />
               </BarChart>

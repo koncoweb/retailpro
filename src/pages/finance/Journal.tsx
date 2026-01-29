@@ -33,16 +33,16 @@ export default function Journal() {
     try {
       // 1. Fetch Sales Transactions (simplified journal: Debit Cash, Credit Sales)
       const salesRes = await query(`
-        SELECT id, created_at, invoice_number, total_amount, payment_method
+        SELECT id, created_at, invoice_number, total_amount, payment_method, amount_paid
         FROM transactions
         WHERE status = 'completed'
         ORDER BY created_at DESC
         LIMIT 100
       `);
 
-      // 2. Fetch Expenses (simplified journal: Debit Expense, Credit Cash)
+      // 2. Fetch Expenses (simplified journal: Debit Expense, Credit Cash/AP)
       const expenseRes = await query(`
-        SELECT id, date, category, amount, description
+        SELECT id, date, category, amount, description, status, amount_paid
         FROM expenses
         ORDER BY date DESC
         LIMIT 100
@@ -53,7 +53,9 @@ export default function Journal() {
       // Process Sales
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       salesRes.rows.forEach((sale: any) => {
-        // Debit Cash/Bank
+        // Debit Cash/Bank/Piutang
+        const isPaid = parseFloat(sale.amount_paid) >= parseFloat(sale.total_amount);
+        
         journalEntries.push({
           id: `${sale.id}-dr`,
           date: sale.created_at,
@@ -61,7 +63,7 @@ export default function Journal() {
           ref: sale.invoice_number,
           debit: parseFloat(sale.total_amount),
           credit: 0,
-          account: sale.payment_method === 'cash' ? 'Kas' : 'Bank/QRIS',
+          account: isPaid ? (sale.payment_method === 'cash' ? 'Kas' : 'Bank/QRIS') : 'Piutang Usaha',
           type: 'debit'
         });
         // Credit Sales Revenue
@@ -80,10 +82,12 @@ export default function Journal() {
       // Process Expenses
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       expenseRes.rows.forEach((exp: any) => {
+        const isPaid = exp.status === 'paid' || parseFloat(exp.amount_paid) >= parseFloat(exp.amount);
+        
         // Debit Expense Category
         journalEntries.push({
           id: `${exp.id}-dr`,
-          date: exp.date, // Note: expenses usually have date only, assuming 00:00 time or current time if created_at used
+          date: exp.date, 
           description: exp.description || `Biaya ${exp.category}`,
           ref: 'EXP',
           debit: parseFloat(exp.amount),
@@ -91,15 +95,15 @@ export default function Journal() {
           account: `Biaya ${exp.category}`,
           type: 'debit'
         });
-        // Credit Cash
+        // Credit Cash or Hutang
         journalEntries.push({
           id: `${exp.id}-cr`,
           date: exp.date,
-          description: `Pembayaran Biaya ${exp.category}`,
+          description: isPaid ? `Pembayaran Biaya ${exp.category}` : `Hutang Biaya ${exp.category}`,
           ref: 'EXP',
           debit: 0,
           credit: parseFloat(exp.amount),
-          account: 'Kas',
+          account: isPaid ? 'Kas' : 'Hutang Usaha',
           type: 'credit'
         });
       });

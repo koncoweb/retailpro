@@ -26,7 +26,21 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import { Package, Plus, Trash2, AlertTriangle, ShoppingCart } from "lucide-react";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Package, Plus, Trash2, AlertTriangle, ShoppingCart, Check, ChevronsUpDown } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 import { ProductUnit } from "@/components/inventory/AddProductModal";
 
@@ -76,10 +90,12 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
   const [selectedProduct, setSelectedProduct] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
   const [quantity, setQuantity] = useState("");
+  const [costPrice, setCostPrice] = useState("");
   const [poItems, setPOItems] = useState<POItem[]>([]);
   const [notes, setNotes] = useState("");
   const [expectedDate, setExpectedDate] = useState("");
   const [selectedSupplier, setSelectedSupplier] = useState("");
+  const [openCombobox, setOpenCombobox] = useState(false);
 
   // Get low stock products
   const lowStockProducts = products.filter(p => p.stock <= p.minStock);
@@ -101,14 +117,16 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
     // Find selected unit or default to first unit/Pcs
     let unitName = selectedUnit || "Pcs";
     let conversionFactor = 1;
-    let unitCost = product.cost;
+    let unitCost = costPrice ? parseFloat(costPrice) : product.cost;
 
     if (selectedUnit && selectedUnit !== "Pcs" && product.units) {
       const unit = product.units.find(u => u.name === selectedUnit);
       if (unit) {
         unitName = unit.name;
         conversionFactor = unit.conversion_factor;
-        unitCost = product.cost * unit.conversion_factor;
+        if (!costPrice) {
+          unitCost = product.cost * unit.conversion_factor;
+        }
       }
     }
 
@@ -141,6 +159,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
     setSelectedProduct("");
     setSelectedUnit("");
     setQuantity("");
+    setCostPrice("");
   };
 
   const handleRemoveItem = (productId: string, unitName: string) => {
@@ -215,6 +234,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
     setDestination("");
     setSelectedProduct("");
     setQuantity("");
+    setCostPrice("");
     setPOItems([]);
     setNotes("");
     setExpectedDate("");
@@ -299,31 +319,76 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
           <div className="border rounded-lg p-4 bg-muted/50">
             <Label className="text-sm font-medium">Tambah Produk</Label>
             <div className="flex gap-2 mt-2">
-              <Select value={selectedProduct} onValueChange={(val) => {
-                setSelectedProduct(val);
-                setSelectedUnit(""); // Reset unit when product changes
-              }}>
-                <SelectTrigger className="flex-1">
-                  <SelectValue placeholder="Pilih produk" />
-                </SelectTrigger>
-                <SelectContent>
-                  {filteredProducts.map((product) => (
-                    <SelectItem key={product.id} value={product.id.toString()}>
-                      <div className="flex items-center gap-2">
-                        {product.stock <= product.minStock && (
-                          <AlertTriangle className="w-3 h-3 text-warning" />
-                        )}
-                        <span>{product.name}</span>
-                        <span className="text-muted-foreground">({product.sku})</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover open={openCombobox} onOpenChange={setOpenCombobox}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={openCombobox}
+                    className="flex-1 justify-between"
+                  >
+                    {selectedProduct
+                      ? filteredProducts.find((product) => product.id === selectedProduct)?.name
+                      : "Pilih produk..."}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Cari produk..." />
+                    <CommandList>
+                      <CommandEmpty>Produk tidak ditemukan.</CommandEmpty>
+                      <CommandGroup>
+                        {filteredProducts.map((product) => (
+                          <CommandItem
+                            key={product.id}
+                            value={product.name}
+                            onSelect={() => {
+                              setSelectedProduct(product.id);
+                              setSelectedUnit("");
+                              setCostPrice(product.cost.toString());
+                              setOpenCombobox(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                selectedProduct === product.id ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            <div className="flex flex-col">
+                              <span className="flex items-center gap-2">
+                                {product.name}
+                                {product.stock <= product.minStock && (
+                                  <AlertTriangle className="w-3 h-3 text-warning" />
+                                )}
+                              </span>
+                              <span className="text-xs text-muted-foreground">{product.sku}</span>
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
 
               <Select 
-                value={selectedUnit} 
-                onValueChange={setSelectedUnit}
+                value={selectedUnit}  
+                onValueChange={(val) => {
+                  setSelectedUnit(val);
+                  // Update cost based on unit
+                  if (selectedProductObj) {
+                    if (val === "Pcs") {
+                      setCostPrice(selectedProductObj.cost.toString());
+                    } else {
+                      const unit = selectedProductObj.units?.find(u => u.name === val);
+                      if (unit) {
+                        setCostPrice((selectedProductObj.cost * unit.conversion_factor).toString());
+                      }
+                    }
+                  }
+                }}
                 disabled={!selectedProduct}
               >
                 <SelectTrigger className="w-[120px]">
@@ -339,6 +404,13 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
                 </SelectContent>
               </Select>
 
+              <Input
+                type="number"
+                placeholder="Harga Satuan"
+                className="w-32"
+                value={costPrice}
+                onChange={(e) => setCostPrice(e.target.value)}
+              />
               <Input
                 type="number"
                 placeholder="Jumlah"

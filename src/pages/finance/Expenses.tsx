@@ -24,6 +24,13 @@ import { Plus, Search, Trash2 } from "lucide-react";
 import { query } from "@/lib/db";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface Expense {
   id: string;
@@ -32,10 +39,18 @@ interface Expense {
   date: string;
   description: string;
   created_at: string;
+  branch_name: string | null;
+  supplier_name: string | null;
+}
+
+interface Supplier {
+  id: string;
+  name: string;
 }
 
 export default function Expenses() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -44,15 +59,35 @@ export default function Expenses() {
     amount: "",
     date: format(new Date(), "yyyy-MM-dd"),
     description: "",
+    supplier_id: "none", // or empty string
   });
+
+  const fetchSuppliers = async () => {
+    try {
+      const res = await query("SELECT id, name FROM suppliers ORDER BY name ASC");
+      setSuppliers(res.rows);
+    } catch (error) {
+      console.error("Failed to fetch suppliers:", error);
+    }
+  };
 
   const fetchExpenses = async () => {
     setIsLoading(true);
     try {
       const res = await query(`
-        SELECT id, category, amount, date, description, created_at
-        FROM expenses
-        ORDER BY date DESC, created_at DESC
+        SELECT 
+          e.id, 
+          e.category, 
+          e.amount, 
+          e.date, 
+          e.description, 
+          e.created_at,
+          b.name as branch_name,
+          s.name as supplier_name
+        FROM expenses e
+        LEFT JOIN branches b ON e.branch_id = b.id
+        LEFT JOIN suppliers s ON e.supplier_id = s.id
+        ORDER BY e.date DESC, e.created_at DESC
       `);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setExpenses(res.rows.map((row: any) => ({
@@ -69,6 +104,7 @@ export default function Expenses() {
 
   useEffect(() => {
     fetchExpenses();
+    fetchSuppliers();
   }, []);
 
   const handleAddExpense = async () => {
@@ -79,13 +115,14 @@ export default function Expenses() {
 
     try {
       await query(`
-        INSERT INTO expenses (category, amount, date, description, status, amount_paid)
-        VALUES ($1, $2, $3, $4, 'paid', $2)
+        INSERT INTO expenses (category, amount, date, description, status, amount_paid, supplier_id)
+        VALUES ($1, $2, $3, $4, 'paid', $2, $5)
       `, [
         newExpense.category,
         parseFloat(newExpense.amount),
         newExpense.date,
-        newExpense.description
+        newExpense.description,
+        newExpense.supplier_id === "none" || newExpense.supplier_id === "" ? null : newExpense.supplier_id
       ]);
 
       toast.success("Pengeluaran berhasil disimpan");
@@ -95,6 +132,7 @@ export default function Expenses() {
         amount: "",
         date: format(new Date(), "yyyy-MM-dd"),
         description: "",
+        supplier_id: "none",
       });
       fetchExpenses();
     } catch (error) {
@@ -136,6 +174,23 @@ export default function Expenses() {
                     value={newExpense.category}
                     onChange={(e) => setNewExpense({ ...newExpense, category: e.target.value })}
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label>Supplier (Opsional)</Label>
+                  <Select
+                    value={newExpense.supplier_id}
+                    onValueChange={(val) => setNewExpense({ ...newExpense, supplier_id: val })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Pilih Supplier" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">-- Tidak Ada Supplier --</SelectItem>
+                      {suppliers.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-2">
                   <Label>Jumlah (Rp)</Label>
@@ -193,6 +248,8 @@ export default function Expenses() {
                 <TableRow>
                   <TableHead>Tanggal</TableHead>
                   <TableHead>Kategori</TableHead>
+                  <TableHead>Supplier</TableHead>
+                  <TableHead>Cabang</TableHead>
                   <TableHead>Deskripsi</TableHead>
                   <TableHead className="text-right">Jumlah</TableHead>
                 </TableRow>
@@ -200,13 +257,13 @@ export default function Expenses() {
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center py-8">
+                    <TableCell colSpan={6} className="text-center py-8">
                       Memuat data...
                     </TableCell>
                   </TableRow>
                 ) : filteredExpenses.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
                       Belum ada data pengeluaran
                     </TableCell>
                   </TableRow>
@@ -215,6 +272,8 @@ export default function Expenses() {
                     <TableRow key={expense.id}>
                       <TableCell>{format(new Date(expense.date), "dd MMM yyyy")}</TableCell>
                       <TableCell>{expense.category}</TableCell>
+                      <TableCell>{expense.supplier_name || "-"}</TableCell>
+                      <TableCell>{expense.branch_name || "Pusat/Semua"}</TableCell>
                       <TableCell>{expense.description || "-"}</TableCell>
                       <TableCell className="text-right font-medium">
                         {new Intl.NumberFormat("id-ID", {

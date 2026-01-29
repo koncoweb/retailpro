@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { SalesChart } from "@/components/dashboard/SalesChart";
 import { BranchPerformance } from "@/components/dashboard/BranchPerformance";
@@ -10,6 +10,7 @@ import { ProductSalesModal } from "@/components/dashboard/ProductSalesModal";
 import { EmployeeDetailModal } from "@/components/dashboard/EmployeeDetailModal";
 import { DollarSign, ShoppingCart, Package, Users, TrendingUp, TrendingDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { query } from "@/lib/db";
 
 const variantStyles = { primary: "bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20", success: "bg-gradient-to-br from-success/10 to-success/5 border-success/20", warning: "bg-gradient-to-br from-warning/10 to-warning/5 border-warning/20", info: "bg-gradient-to-br from-info/10 to-info/5 border-info/20" };
 const iconStyles = { primary: "bg-primary/20 text-primary", success: "bg-success/20 text-success", warning: "bg-warning/20 text-warning", info: "bg-info/20 text-info" };
@@ -37,6 +38,42 @@ export default function Dashboard() {
   const [productModalOpen, setProductModalOpen] = useState(false);
   const [employeeModalOpen, setEmployeeModalOpen] = useState(false);
 
+  const [stats, setStats] = useState({
+    todaySales: 0,
+    todayTx: 0,
+    productsSold: 0,
+    activeEmployees: 0
+  });
+
+  useEffect(() => {
+     const fetchData = async () => {
+        try {
+          const [salesRes, txRes, prodRes, empRes] = await Promise.all([
+             query("SELECT COALESCE(SUM(amount_paid), 0) as val FROM transactions WHERE created_at >= CURRENT_DATE"),
+             query("SELECT COUNT(*) as val FROM transactions WHERE created_at >= CURRENT_DATE"),
+             query("SELECT COALESCE(SUM(quantity), 0) as val FROM transaction_items ti JOIN transactions t ON ti.transaction_id = t.id WHERE t.created_at >= CURRENT_DATE"),
+             query("SELECT COUNT(*) as val FROM users WHERE is_active = true")
+          ]);
+          
+          setStats({
+             todaySales: parseFloat(salesRes.rows[0].val),
+             todayTx: parseInt(txRes.rows[0].val),
+             productsSold: parseInt(prodRes.rows[0].val),
+             activeEmployees: parseInt(empRes.rows[0].val)
+          });
+        } catch (e) {
+           console.error("Dashboard fetch error", e);
+        }
+     };
+     fetchData();
+  }, []);
+
+  const formatCurrency = (val: number) => {
+     if (val >= 1000000000) return `Rp ${(val/1000000000).toFixed(1)} M`;
+     if (val >= 1000000) return `Rp ${(val/1000000).toFixed(1)} Jt`;
+     return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(val);
+  };
+
   return (
     <BackOfficeLayout>
       <div className="space-y-4 md:space-y-6">
@@ -49,10 +86,10 @@ export default function Dashboard() {
         </div>
 
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
-          <ClickableStatCard title="Total Penjualan Hari Ini" value="Rp 45.8 Jt" change={12.5} icon={<DollarSign className="w-5 h-5 md:w-6 md:h-6" />} variant="primary" onClick={() => setSalesModalOpen(true)} />
-          <ClickableStatCard title="Transaksi Hari Ini" value="328" change={8.2} icon={<ShoppingCart className="w-5 h-5 md:w-6 md:h-6" />} variant="info" onClick={() => setTransactionModalOpen(true)} />
-          <ClickableStatCard title="Produk Terjual" value="1,542" change={-2.4} icon={<Package className="w-5 h-5 md:w-6 md:h-6" />} variant="success" onClick={() => setProductModalOpen(true)} />
-          <ClickableStatCard title="Karyawan Aktif" value="64" change={0} icon={<Users className="w-5 h-5 md:w-6 md:h-6" />} variant="warning" onClick={() => setEmployeeModalOpen(true)} />
+          <ClickableStatCard title="Total Penjualan Hari Ini" value={formatCurrency(stats.todaySales)} icon={<DollarSign className="w-5 h-5 md:w-6 md:h-6" />} variant="primary" onClick={() => setSalesModalOpen(true)} />
+          <ClickableStatCard title="Transaksi Hari Ini" value={stats.todayTx.toString()} icon={<ShoppingCart className="w-5 h-5 md:w-6 md:h-6" />} variant="info" onClick={() => setTransactionModalOpen(true)} />
+          <ClickableStatCard title="Produk Terjual" value={stats.productsSold.toLocaleString('id-ID')} icon={<Package className="w-5 h-5 md:w-6 md:h-6" />} variant="success" onClick={() => setProductModalOpen(true)} />
+          <ClickableStatCard title="Karyawan Aktif" value={stats.activeEmployees.toString()} icon={<Users className="w-5 h-5 md:w-6 md:h-6" />} variant="warning" onClick={() => setEmployeeModalOpen(true)} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6"><div className="lg:col-span-2"><SalesChart /></div><div><BranchPerformance /></div></div>

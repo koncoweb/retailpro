@@ -252,8 +252,8 @@ export default function POS() {
             // 1. Create Transaction
             const trxRes = await client.query(`
                 INSERT INTO transactions 
-                (branch_id, cashier_id, invoice_number, total_amount, payment_method, status, created_at)
-                VALUES ($1, $2, $3, $4, $5, 'completed', NOW())
+                (branch_id, cashier_id, invoice_number, total_amount, payment_method, status, created_at, amount_paid)
+                VALUES ($1, $2, $3, $4, $5, 'completed', NOW(), $4)
                 RETURNING id
             `, [currentBranchId, 'user-001', invoiceNumber, total, finalMethod]);
             

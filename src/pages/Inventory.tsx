@@ -379,6 +379,24 @@ export default function Inventory() {
                VALUES ($1, $2, $3, $4, $4, $5, NOW(), $6)`,
               [branchId, editingProduct.id, `ADJ-${Date.now()}`, diff, productData.cost, supplierId]
             );
+
+            // Auto-create Expense if stock added
+            if (diff > 0) {
+              const totalCost = diff * productData.cost;
+              const isUnpaid = !!supplierId;
+              await query(
+                `INSERT INTO expenses (category, amount, date, description, status, amount_paid, supplier_id, branch_id)
+                 VALUES ('Pembelian Stok', $1, CURRENT_DATE, $2, $3, $4, $5, $6)`,
+                [
+                  totalCost, 
+                  `Pembelian Stok Tambahan: ${productData.name}`, 
+                  isUnpaid ? 'unpaid' : 'paid',
+                  isUnpaid ? 0 : totalCost,
+                  supplierId,
+                  branchId
+                ]
+              );
+            }
           }
         }
 
@@ -410,6 +428,22 @@ export default function Inventory() {
                  (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at, supplier_id)
                  VALUES ($1, $2, $3, $4, $4, $5, NOW(), $6)`,
                 [branchId, productId, `BATCH-${Date.now()}`, qty, productData.cost, supplierId]
+              );
+
+              // Auto-create Expense for Initial Stock
+              const totalCost = qty * productData.cost;
+              const isUnpaid = !!supplierId;
+              await query(
+                `INSERT INTO expenses (category, amount, date, description, status, amount_paid, supplier_id, branch_id)
+                 VALUES ('Pembelian Stok', $1, CURRENT_DATE, $2, $3, $4, $5, $6)`,
+                [
+                  totalCost, 
+                  `Pembelian Stok Awal: ${productData.name}`, 
+                  isUnpaid ? 'unpaid' : 'paid',
+                  isUnpaid ? 0 : totalCost,
+                  supplierId,
+                  branchId
+                ]
               );
            }
         });

@@ -22,24 +22,24 @@ export default function Cashflow() {
   const fetchCashflow = async () => {
     setIsLoading(true);
     try {
-      // Fetch Income (Sales) by Month (Last 6 months)
+      // Fetch Income (Sales) by Month (Last 6 months) - Cash Basis (amount_paid)
       const incomeRes = await query(`
         SELECT 
           to_char(created_at, 'Mon') as month,
           to_char(created_at, 'YYYY-MM') as sort_key,
-          SUM(total_amount) as total
+          SUM(amount_paid) as total
         FROM transactions
-        WHERE status = 'completed' AND created_at >= date_trunc('month', CURRENT_DATE - INTERVAL '5 months')
+        WHERE created_at >= date_trunc('month', CURRENT_DATE - INTERVAL '5 months')
         GROUP BY 1, 2
         ORDER BY 2
       `);
 
-      // Fetch Expenses by Month (Last 6 months)
+      // Fetch Expenses by Month (Last 6 months) - Cash Basis (amount_paid)
       const expenseRes = await query(`
         SELECT 
           to_char(date, 'Mon') as month,
           to_char(date, 'YYYY-MM') as sort_key,
-          SUM(amount) as total
+          SUM(amount_paid) as total
         FROM expenses
         WHERE date >= date_trunc('month', CURRENT_DATE - INTERVAL '5 months')
         GROUP BY 1, 2
