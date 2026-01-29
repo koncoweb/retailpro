@@ -1,11 +1,12 @@
-import { ReactNode } from "react";
+import { ReactNode, useState, useEffect } from "react";
 // Layout component for Point of Sale pages
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { ShoppingCart, FileText, Clock, LogOut, Store, Moon, Sun, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
-import { mockBranches } from "@/data/mockData";
+import { useAuth } from "@/hooks/use-auth";
+import { query } from "@/lib/db";
 
 interface POSLayoutProps {
   children: ReactNode;
@@ -20,7 +21,43 @@ const posNavItems = [
 export function POSLayout({ children }: POSLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
-  const currentBranch = mockBranches[0];
+  const { user } = useAuth();
+  const [branchName, setBranchName] = useState<string>("Loading...");
+
+  useEffect(() => {
+    const fetchBranch = async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const branchId = (user as any)?.assigned_branch_id;
+      
+      if (branchId) {
+        try {
+          const res = await query('SELECT name FROM branches WHERE id = $1', [branchId]);
+          if (res.rows.length > 0) {
+            setBranchName(res.rows[0].name);
+          } else {
+             setBranchName("Unknown Branch");
+          }
+        } catch (err) {
+          console.error("Failed to fetch branch:", err);
+          setBranchName("Error loading branch");
+        }
+      } else {
+        // Fallback if no assigned branch
+        try {
+            const res = await query('SELECT name FROM branches LIMIT 1');
+            if (res.rows.length > 0) {
+                setBranchName(res.rows[0].name);
+            } else {
+                setBranchName("RetailPro");
+            }
+        } catch (e) {
+            setBranchName("RetailPro");
+        }
+      }
+    };
+
+    fetchBranch();
+  }, [user]);
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -37,7 +74,7 @@ export function POSLayout({ children }: POSLayoutProps) {
           
           <div className="hidden md:flex items-center gap-2 text-sm text-muted-foreground border-l pl-4 ml-2">
             <MapPin className="w-4 h-4" />
-            <span>{currentBranch.name}</span>
+            <span>{branchName}</span>
           </div>
 
           <nav className="hidden md:flex items-center gap-1 ml-4">

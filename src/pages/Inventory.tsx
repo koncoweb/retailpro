@@ -82,6 +82,7 @@ export default function Inventory() {
   const [products, setProducts] = useState<Product[]>([]);
   const [transfers, setTransfers] = useState<any[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [suppliers, setSuppliers] = useState<Array<{ id: string; name: string }>>([]);
   const [isAddProductOpen, setIsAddProductOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isTransferOpen, setIsTransferOpen] = useState(false);
@@ -94,7 +95,7 @@ export default function Inventory() {
   const [stockFilter, setStockFilter] = useState("all");
   const [selectedLocation, setSelectedLocation] = useState("all");
 
-  const categories = Array.from(new Set(products.map(p => p.category)));
+  const categories = Array.from(new Set(products.map(p => p.category).filter(c => c && c.trim() !== "")));
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat("id-ID", {
@@ -111,6 +112,16 @@ export default function Inventory() {
       setBranches(res.rows);
     } catch (error) {
       console.error("Failed to fetch branches:", error);
+    }
+  };
+
+  // Fetch Suppliers
+  const fetchSuppliers = async () => {
+    try {
+      const res = await query(`SELECT id, name FROM suppliers ORDER BY name ASC`);
+      setSuppliers(res.rows);
+    } catch (error) {
+      console.error("Failed to fetch suppliers:", error);
     }
   };
 
@@ -154,11 +165,8 @@ export default function Inventory() {
           ) as branch_stock,
           (
             SELECT s.name 
-            FROM product_batches pb 
-            JOIN suppliers s ON pb.supplier_id = s.id 
-            WHERE pb.product_id = p.id 
-            ORDER BY pb.received_at DESC 
-            LIMIT 1
+            FROM suppliers s 
+            WHERE s.id = p.supplier_id
           ) as supplier,
           (
              SELECT json_agg(json_build_object(
@@ -228,6 +236,7 @@ export default function Inventory() {
     fetchProducts();
     fetchTransfers();
     fetchBranches();
+    fetchSuppliers();
   }, []);
 
 
@@ -325,8 +334,8 @@ export default function Inventory() {
       if (editingProduct) {
         // UPDATE Product
         await query(
-          `UPDATE products SET sku=$1, name=$2, category=$3, min_stock_level=$4 WHERE id=$5`,
-          [productData.sku, productData.name, productData.category, productData.minStock, editingProduct.id]
+          `UPDATE products SET sku=$1, name=$2, category=$3, min_stock_level=$4, supplier_id=$5 WHERE id=$6`,
+          [productData.sku, productData.name, productData.category, productData.minStock, supplierId, editingProduct.id]
         );
 
         // Update Units
@@ -377,10 +386,10 @@ export default function Inventory() {
       } else {
         // INSERT (Create)
         const productRes = await query(
-          `INSERT INTO products (sku, name, category, min_stock_level, is_tracked) 
-           VALUES ($1, $2, $3, $4, true) 
+          `INSERT INTO products (sku, name, category, min_stock_level, is_tracked, supplier_id) 
+           VALUES ($1, $2, $3, $4, true, $5) 
            RETURNING id`,
-          [productData.sku, productData.name, productData.category, productData.minStock]
+          [productData.sku, productData.name, productData.category, productData.minStock, supplierId]
         );
         const productId = productRes.rows[0].id;
 
@@ -430,7 +439,12 @@ export default function Inventory() {
   const handleTransfer = async (transfer: {
     from: string;
     to: string;
-    items: Array<{ productId: string; quantity: number }>;
+    items: Array<{ 
+      productId: string; 
+      quantity: number;
+      unitName?: string;
+      conversionFactor?: number;
+    }>;
     notes: string;
   }) => {
     try {
@@ -445,9 +459,16 @@ export default function Inventory() {
 
       for (const item of transfer.items) {
         await query(
-          `INSERT INTO transfer_items (transfer_id, product_id, quantity_sent, notes)
-           VALUES ($1, $2, $3, $4)`,
-          [transferId, item.productId, item.quantity, transfer.notes]
+          `INSERT INTO transfer_items (transfer_id, product_id, quantity_sent, notes, unit_name, conversion_factor)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            transferId, 
+            item.productId, 
+            item.quantity, 
+            transfer.notes,
+            item.unitName || 'Pcs',
+            item.conversionFactor || 1
+          ]
         );
       }
 
@@ -811,6 +832,7 @@ export default function Inventory() {
                   <SelectValue placeholder="Kategori" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="Semua">Semua Kategori</SelectItem>
                   {categories.map((category) => (
                     <SelectItem key={category} value={category}>
                       {category}
@@ -1091,6 +1113,7 @@ export default function Inventory() {
         onOpenChange={setIsPOOpen}
         products={products}
         branches={branches}
+        suppliers={suppliers}
         onSubmit={handlePO}
       />
     </BackOfficeLayout>

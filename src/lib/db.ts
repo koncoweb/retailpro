@@ -21,21 +21,25 @@ interface UserCache {
 
 let userCache: UserCache | null = null;
 
+const getUserId = async (): Promise<string | undefined> => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const session = (await authClient.getSession()) as any;
+    return session.data?.user?.id || session.data?.session?.userId;
+  } catch (e) {
+    console.warn("Auth session check failed, proceeding as unauthenticated:", e);
+    return undefined;
+  }
+};
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const query = async (text: string, params?: any[]) => {
+  // Get User ID BEFORE acquiring a DB connection to avoid holding it during auth check
+  const userId = await getUserId();
+  
   const client = await pool.connect();
-  let userId: string | undefined;
   
   try {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const session = (await authClient.getSession()) as any;
-      userId = session.data?.user?.id || session.data?.session?.userId;
-    } catch (e) {
-      console.warn("Auth session check failed in db query, proceeding as unauthenticated:", e);
-      // Fallback to unauthenticated query if session check fails (e.g. 401)
-    }
-
     if (userId) {
        await setupSession(client, userId);
     }
@@ -43,19 +47,17 @@ export const query = async (text: string, params?: any[]) => {
     const res = await client.query(text, params);
     
     // Only commit if we started a transaction (which setupSession does)
-    // Actually, query should always manage its own transaction boundary if it wants to be safe
-    // But here we want to wrap the single query in a transaction if we set session vars
-    // If we didn't set session vars, we might not need a transaction, but it's safer to have one.
-    // However, the original code did BEGIN/COMMIT inside.
-    
-    // To match original behavior:
     if (userId) {
         await client.query('COMMIT');
     }
     return res;
   } catch (err) {
     if (userId) {
-        await client.query('ROLLBACK');
+        try {
+            await client.query('ROLLBACK');
+        } catch (rollbackError) {
+            console.error("Rollback failed:", rollbackError);
+        }
     }
     throw err;
   } finally {
@@ -107,17 +109,10 @@ const setupSession = async (client: any, userId: string) => {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const runTransaction = async <T>(callback: (client: any) => Promise<T>) => {
+  const userId = await getUserId();
   const client = await pool.connect();
+  
   try {
-    let userId: string | undefined;
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const session = (await authClient.getSession()) as any;
-      userId = session.data?.user?.id || session.data?.session?.userId;
-    } catch (e) { 
-        console.warn("Auth check failed in transaction", e);
-    }
-
     if (userId) {
         await setupSession(client, userId);
     } else {
@@ -129,7 +124,11 @@ export const runTransaction = async <T>(callback: (client: any) => Promise<T>) =
     await client.query('COMMIT');
     return result;
   } catch (err) {
-    await client.query('ROLLBACK');
+    try {
+        await client.query('ROLLBACK');
+    } catch (rollbackError) {
+        console.error("Rollback failed:", rollbackError);
+    }
     throw err;
   } finally {
     client.release();

@@ -248,7 +248,7 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
                       <SelectItem value={selectedProductData.unit_type || "Pcs"}>
                         {selectedProductData.unit_type || "Pcs"} (1)
                       </SelectItem>
-                      {selectedProductData.units?.map((u) => (
+                      {selectedProductData.units?.filter(u => u.name && u.name.trim() !== "").map((u) => (
                         <SelectItem key={u.name} value={u.name}>
                           {u.name} ({u.conversion_factor})
                         </SelectItem>

@@ -59,6 +59,7 @@ interface PurchaseOrderModalProps {
   onOpenChange: (open: boolean) => void;
   products: Product[];
   branches: Array<{ id: string; name: string }>;
+  suppliers: Array<{ id: string; name: string }>;
   onSubmit: (po: {
     poNumber: string;
     supplier: string;
@@ -70,7 +71,7 @@ interface PurchaseOrderModalProps {
   }) => void;
 }
 
-export function PurchaseOrderModal({ open, onOpenChange, products, branches, onSubmit }: PurchaseOrderModalProps) {
+export function PurchaseOrderModal({ open, onOpenChange, products, branches, suppliers, onSubmit }: PurchaseOrderModalProps) {
   const [destination, setDestination] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
@@ -82,9 +83,6 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, onS
 
   // Get low stock products
   const lowStockProducts = products.filter(p => p.stock <= p.minStock);
-  
-  // Get unique suppliers
-  const suppliers = [...new Set(products.map(p => p.supplier))].filter(Boolean);
 
   const generatePONumber = () => {
     const date = new Date();
@@ -225,7 +223,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, onS
 
   const totalAmount = poItems.reduce((sum, item) => sum + item.totalCost, 0);
 
-  const filteredProducts = selectedSupplier 
+  const filteredProducts = (selectedSupplier && selectedSupplier !== "all")
     ? products.filter(p => p.supplier === selectedSupplier)
     : products;
 
@@ -279,9 +277,9 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, onS
                   <SelectValue placeholder="Semua supplier" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">Semua Supplier</SelectItem>
+                  <SelectItem value="all">Semua Supplier</SelectItem>
                   {suppliers.map((supplier) => (
-                    <SelectItem key={supplier} value={supplier}>{supplier}</SelectItem>
+                    <SelectItem key={supplier.id} value={supplier.name}>{supplier.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>

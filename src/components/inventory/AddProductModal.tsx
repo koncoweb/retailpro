@@ -8,15 +8,25 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { toast } from "sonner";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, Check, ChevronsUpDown, Barcode as BarcodeIcon, Download, RefreshCw } from "lucide-react";
+import { query } from "@/lib/db";
+import { BarcodeGenerator } from "@/components/ui/BarcodeGenerator";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
+import { generateNextSku } from "@/lib/inventory-utils";
 
 export interface ProductUnit {
   id?: string;
@@ -41,7 +51,7 @@ interface AddProductModalProps {
     branches: Record<string, number>;
     units: ProductUnit[];
   }) => void;
-  categories: string[];
+  categories: string[]; // Keep for compatibility, but we'll fetch from DB too
   branches: { id: string; name: string }[];
   mode?: "add" | "edit";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -52,7 +62,6 @@ export function AddProductModal({
   open, 
   onOpenChange, 
   onAdd, 
-  categories, 
   branches, 
   mode = "add", 
   initialData 
@@ -70,6 +79,38 @@ export function AddProductModal({
   const [units, setUnits] = useState<ProductUnit[]>([
     { name: "Pcs", conversion_factor: 1, price: 0, barcode: "" }
   ]);
+  
+  // Combobox states
+  const [openCategory, setOpenCategory] = useState(false);
+  const [openSupplier, setOpenSupplier] = useState(false);
+  const [dbCategories, setDbCategories] = useState<{id: string, name: string}[]>([]);
+  const [dbSuppliers, setDbSuppliers] = useState<{id: string, name: string}[]>([]);
+
+  const [showAddCategory, setShowAddCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [showAddSupplier, setShowAddSupplier] = useState(false);
+  const [newSupplierName, setNewSupplierName] = useState("");
+
+  const fetchMasterData = async () => {
+    try {
+      // Fetch Categories
+      const catRes = await query("SELECT id, name FROM categories ORDER BY name ASC");
+      setDbCategories(catRes.rows);
+      
+      // Fetch Suppliers
+      const supRes = await query("SELECT id, name FROM suppliers ORDER BY name ASC");
+      setDbSuppliers(supRes.rows);
+    } catch (error) {
+      console.error("Failed to fetch master data:", error);
+    }
+  };
+
+  // Fetch Categories and Suppliers
+  useEffect(() => {
+    if (open) {
+      fetchMasterData();
+    }
+  }, [open]);
 
   useEffect(() => {
     if (initialData && mode === "edit") {
@@ -104,6 +145,53 @@ export function AddProductModal({
     }
   }, [initialData, mode, open]);
 
+  // Generate SKU
+  const generateSku = async (categoryName?: string) => {
+    const catToUse = categoryName || formData.category;
+    if (!catToUse) {
+      toast.error("Pilih kategori terlebih dahulu");
+      return;
+    }
+
+    try {
+      // Prepare prefix for DB query pattern
+      const prefix = catToUse.substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, "CAT");
+      // Note: We duplicate some logic here for the DB query pattern, 
+      // but the actual generation is unified in the util.
+      // Ideally we should export the prefix generator too if we want perfect DRY.
+      
+      const date = new Date();
+      const dateStr = date.toISOString().slice(0, 10).replace(/-/g, ""); // YYYYMMDD
+      // Use wildcard for sequence
+      const baseSkuPattern = `${prefix}-${dateStr}-%`; 
+      
+      // Query DB for latest sequence
+      const res = await query(`SELECT sku FROM products WHERE sku LIKE $1 ORDER BY sku DESC LIMIT 1`, [baseSkuPattern]);
+      
+      let lastSku = null;
+      if (res.rows.length > 0) {
+        lastSku = res.rows[0].sku;
+      }
+      
+      const newSku = generateNextSku(catToUse, date, lastSku);
+      setFormData(prev => ({ ...prev, sku: newSku }));
+      toast.success("SKU generated: " + newSku);
+    } catch (error) {
+      console.error("Failed to generate SKU:", error);
+      toast.error("Gagal generate SKU");
+    }
+  };
+
+  // Auto-generate SKU when category changes (only if SKU is empty and mode is add)
+  useEffect(() => {
+    if (mode === 'add' && formData.category && !formData.sku) {
+      // Optional: Auto-generate or just let user click button. 
+      // Requirement: "generate SKU automatically... when form opened" -> But needs category.
+      // So best is to generate when category is selected if SKU is empty.
+      generateSku(formData.category);
+    }
+  }, [formData.category]);
+
   // Sync base price with first unit price
   useEffect(() => {
     if (units.length > 0 && formData.price) {
@@ -137,10 +225,36 @@ export function AddProductModal({
     setUnits(newUnits);
   };
 
-  const handleSubmit = () => {
+  const downloadBarcode = (value: string) => {
+    const svg = document.getElementById(`barcode-${value}`)?.querySelector('svg');
+    if (svg) {
+        const serializer = new XMLSerializer();
+        const source = serializer.serializeToString(svg);
+        const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source);
+        
+        const link = document.createElement('a');
+        link.download = `${value}.svg`;
+        link.href = url;
+        link.click();
+    } else {
+        toast.error("Barcode preview not found");
+    }
+  };
+
+  const handleSubmit = async () => {
     if (!formData.sku || !formData.name || !formData.category) {
       toast.error("Mohon lengkapi data produk");
       return;
+    }
+
+    // Ensure category exists in master data (if new)
+    const catExists = dbCategories.some(c => c.name.toLowerCase() === formData.category.toLowerCase());
+    if (!catExists) {
+      try {
+        await query("INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", [formData.category]);
+      } catch (e) {
+        console.error("Failed to save new category:", e);
+      }
     }
 
     const branchStockNumbers: Record<string, number> = {};
@@ -172,21 +286,265 @@ export function AddProductModal({
     setUnits([{ name: "Pcs", conversion_factor: 1, price: 0, barcode: "" }]);
   };
 
+  const handleAddCategory = async () => {
+    if (!newCategoryName.trim()) return;
+    const name = newCategoryName.trim();
+    
+    // Check duplicate locally first
+    if (dbCategories.some(c => c.name.toLowerCase() === name.toLowerCase())) {
+        toast.error("Kategori sudah ada");
+        return;
+    }
+
+    try {
+        await query("INSERT INTO categories (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", [name]);
+        toast.success("Kategori berhasil ditambahkan");
+        
+        // Refresh list and select it
+        await fetchMasterData();
+        setFormData(prev => ({ ...prev, category: name }));
+        setOpenCategory(false);
+        setShowAddCategory(false);
+        setNewCategoryName("");
+    } catch (error) {
+        console.error("Failed to add category:", error);
+        toast.error("Gagal menambahkan kategori");
+    }
+  };
+
+  const handleAddSupplier = async () => {
+    if (!newSupplierName.trim()) return;
+    const name = newSupplierName.trim();
+
+    // Check duplicate locally
+    if (dbSuppliers.some(s => s.name.toLowerCase() === name.toLowerCase())) {
+        toast.error("Supplier sudah ada");
+        return;
+    }
+
+    try {
+        await query("INSERT INTO suppliers (name) VALUES ($1)", [name]);
+        toast.success("Supplier berhasil ditambahkan");
+        
+        // Refresh list and select it
+        await fetchMasterData();
+        setFormData(prev => ({ ...prev, supplier: name }));
+        setOpenSupplier(false);
+        setShowAddSupplier(false);
+        setNewSupplierName("");
+    } catch (error) {
+        console.error("Failed to add supplier:", error);
+        toast.error("Gagal menambahkan supplier");
+    }
+  };
+
   return (
+    <>
+    <Dialog open={showAddCategory} onOpenChange={setShowAddCategory}>
+        <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+                <DialogTitle>Tambah Kategori Baru</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+                <div className="grid gap-2">
+                    <Label htmlFor="cat-name">Nama Kategori</Label>
+                    <Input 
+                        id="cat-name" 
+                        value={newCategoryName} 
+                        onChange={(e) => setNewCategoryName(e.target.value)} 
+                        placeholder="Contoh: Elektronik"
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddCategory()}
+                    />
+                </div>
+                <Button onClick={handleAddCategory}>Simpan</Button>
+            </div>
+        </DialogContent>
+    </Dialog>
+
+    <Dialog open={showAddSupplier} onOpenChange={setShowAddSupplier}>
+        <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+                <DialogTitle>Tambah Supplier Baru</DialogTitle>
+            </DialogHeader>
+            <div className="grid gap-4 py-4">
+                <div className="grid gap-2">
+                    <Label htmlFor="sup-name">Nama Supplier</Label>
+                    <Input 
+                        id="sup-name" 
+                        value={newSupplierName} 
+                        onChange={(e) => setNewSupplierName(e.target.value)} 
+                        placeholder="Contoh: PT Sumber Makmur"
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddSupplier()}
+                    />
+                </div>
+                <Button onClick={handleAddSupplier}>Simpan</Button>
+            </div>
+        </DialogContent>
+    </Dialog>
+
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[800px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{mode === 'add' ? 'Tambah Produk Baru' : 'Edit Produk'}</DialogTitle>
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
+              <Label>Kategori *</Label>
+              <Popover open={openCategory} onOpenChange={setOpenCategory}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={openCategory}
+                    className="justify-between"
+                  >
+                    {formData.category
+                      ? formData.category
+                      : "Pilih kategori..."}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Cari kategori..." />
+                    <CommandList>
+                      <CommandEmpty>
+                        <div className="p-2">
+                            <p className="text-sm text-muted-foreground mb-2">Kategori tidak ditemukan.</p>
+                            <Button size="sm" className="w-full" onClick={() => {
+                                setShowAddCategory(true);
+                                setOpenCategory(false);
+                            }}>
+                                Tambah Kategori Baru
+                            </Button>
+                        </div>
+                      </CommandEmpty>
+                      <CommandGroup>
+                        {dbCategories.map((category) => (
+                          <CommandItem
+                            key={category.id}
+                            value={category.name}
+                            onSelect={(currentValue) => {
+                              setFormData({ ...formData, category: currentValue });
+                              setOpenCategory(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                formData.category === category.name ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {category.name}
+                          </CommandItem>
+                        ))}
+                         <CommandItem 
+                            value="tambah-baru-manual"
+                            onSelect={() => {
+                                setShowAddCategory(true);
+                                setOpenCategory(false);
+                            }}
+                            className="text-blue-500 font-medium"
+                         >
+                            <Plus className="mr-2 h-4 w-4" /> Tambah Kategori Baru
+                         </CommandItem>
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Supplier</Label>
+               <Popover open={openSupplier} onOpenChange={setOpenSupplier}>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={openSupplier}
+                    className="justify-between"
+                  >
+                    {formData.supplier
+                      ? formData.supplier
+                      : "Pilih supplier..."}
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[300px] p-0">
+                  <Command>
+                    <CommandInput placeholder="Cari supplier..." />
+                    <CommandList>
+                      <CommandEmpty>
+                        <div className="p-2">
+                            <p className="text-sm text-muted-foreground mb-2">Supplier tidak ditemukan.</p>
+                            <Button size="sm" className="w-full" onClick={() => {
+                                setShowAddSupplier(true);
+                                setOpenSupplier(false);
+                            }}>
+                                Tambah Supplier Baru
+                            </Button>
+                        </div>
+                      </CommandEmpty>
+                      <CommandGroup>
+                        {dbSuppliers.map((supplier) => (
+                          <CommandItem
+                            key={supplier.id}
+                            value={supplier.name}
+                            onSelect={(currentValue) => {
+                              setFormData({ ...formData, supplier: currentValue });
+                              setOpenSupplier(false);
+                            }}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-4 w-4",
+                                formData.supplier === supplier.name ? "opacity-100" : "opacity-0"
+                              )}
+                            />
+                            {supplier.name}
+                          </CommandItem>
+                        ))}
+                         <CommandItem 
+                            value="tambah-baru-manual"
+                            onSelect={() => {
+                                setShowAddSupplier(true);
+                                setOpenSupplier(false);
+                            }}
+                            className="text-blue-500 font-medium"
+                         >
+                            <Plus className="mr-2 h-4 w-4" /> Tambah Supplier Baru
+                         </CommandItem>
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+             <div className="grid gap-2">
               <Label>SKU *</Label>
-              <Input
-                placeholder="PRD-007"
-                value={formData.sku}
-                onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
-              />
+              <div className="flex gap-2">
+                <Input
+                  placeholder="PRD-007"
+                  value={formData.sku}
+                  onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
+                />
+                <Button 
+                    variant="outline" 
+                    size="icon" 
+                    onClick={() => generateSku()} 
+                    title="Generate SKU"
+                >
+                    <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Format: KAT-YYMMDD-XXX (Auto-generated)
+              </p>
             </div>
             <div className="grid gap-2">
               <Label>Nama Produk *</Label>
@@ -194,33 +552,6 @@ export function AddProductModal({
                 placeholder="Nama produk"
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label>Kategori *</Label>
-              <Select
-                value={formData.category}
-                onValueChange={(value) => setFormData({ ...formData, category: value })}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Pilih kategori" />
-                </SelectTrigger>
-                <SelectContent>
-                  {categories.filter(c => c !== "Semua").map((cat) => (
-                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-2">
-              <Label>Supplier</Label>
-              <Input
-                placeholder="Nama supplier"
-                value={formData.supplier}
-                onChange={(e) => setFormData({ ...formData, supplier: e.target.value })}
               />
             </div>
           </div>
@@ -258,59 +589,84 @@ export function AddProductModal({
           {/* Units Section */}
           <div className="border-t pt-4">
             <div className="flex justify-between items-center mb-3">
-              <Label className="text-base font-semibold">Satuan & Konversi</Label>
+              <Label className="text-base font-semibold">Satuan & Barcode</Label>
               <Button size="sm" variant="outline" onClick={addUnit}>
                 <Plus className="w-4 h-4 mr-2" />
                 Tambah Satuan
               </Button>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-4">
               {units.map((unit, index) => (
-                <div key={index} className="grid grid-cols-12 gap-2 items-end">
-                  <div className="col-span-3">
-                    <Label className="text-xs">Satuan</Label>
-                    <Input 
-                      value={unit.name} 
-                      onChange={(e) => handleUnitChange(index, 'name', e.target.value)}
-                      placeholder="Pcs/Box"
-                    />
+                <div key={index} className="space-y-3 p-3 border rounded-lg bg-slate-50 dark:bg-slate-900">
+                  <div className="grid grid-cols-12 gap-2 items-end">
+                    <div className="col-span-3">
+                      <Label className="text-xs">Satuan</Label>
+                      <Input 
+                        value={unit.name} 
+                        onChange={(e) => handleUnitChange(index, 'name', e.target.value)}
+                        placeholder="Pcs/Box"
+                      />
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-xs">Konversi</Label>
+                      <Input 
+                        type="number" 
+                        value={unit.conversion_factor} 
+                        onChange={(e) => handleUnitChange(index, 'conversion_factor', parseFloat(e.target.value) || 1)}
+                        disabled={index === 0} // Base unit always 1
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <Label className="text-xs">Harga Jual</Label>
+                      <Input 
+                        type="number" 
+                        value={unit.price} 
+                        onChange={(e) => handleUnitChange(index, 'price', parseFloat(e.target.value) || 0)}
+                      />
+                    </div>
+                    <div className="col-span-3">
+                      <Label className="text-xs">Kode Barcode</Label>
+                       <div className="flex gap-1">
+                          <Input 
+                            value={unit.barcode || ''} 
+                            onChange={(e) => handleUnitChange(index, 'barcode', e.target.value)}
+                            placeholder="Scan/Input..."
+                          />
+                          <Button 
+                            variant="ghost" 
+                            size="icon"
+                            onClick={() => handleUnitChange(index, 'barcode', formData.sku ? `${formData.sku}-${unit.name}` : `${Date.now()}`)}
+                            title="Generate Default"
+                          >
+                             <BarcodeIcon className="h-4 w-4" />
+                          </Button>
+                       </div>
+                    </div>
+                    <div className="col-span-1">
+                      <Button 
+                        variant="ghost" 
+                        size="icon" 
+                        onClick={() => removeUnit(index)}
+                        disabled={index === 0}
+                        className="text-destructive"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    </div>
                   </div>
-                  <div className="col-span-2">
-                    <Label className="text-xs">Konversi</Label>
-                    <Input 
-                      type="number" 
-                      value={unit.conversion_factor} 
-                      onChange={(e) => handleUnitChange(index, 'conversion_factor', parseFloat(e.target.value) || 1)}
-                      disabled={index === 0} // Base unit always 1
-                    />
-                  </div>
-                  <div className="col-span-3">
-                    <Label className="text-xs">Harga Jual</Label>
-                    <Input 
-                      type="number" 
-                      value={unit.price} 
-                      onChange={(e) => handleUnitChange(index, 'price', parseFloat(e.target.value) || 0)}
-                    />
-                  </div>
-                  <div className="col-span-3">
-                    <Label className="text-xs">Barcode</Label>
-                    <Input 
-                      value={unit.barcode || ''} 
-                      onChange={(e) => handleUnitChange(index, 'barcode', e.target.value)}
-                      placeholder="Scan..."
-                    />
-                  </div>
-                  <div className="col-span-1">
-                    <Button 
-                      variant="ghost" 
-                      size="icon" 
-                      onClick={() => removeUnit(index)}
-                      disabled={index === 0}
-                      className="text-destructive"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
+                  
+                  {/* Barcode Preview */}
+                  {unit.barcode && (
+                     <div className="flex items-center gap-4 bg-white dark:bg-black p-2 rounded border justify-between">
+                        <div id={`barcode-${unit.barcode}`} className="overflow-hidden bg-white p-1 rounded">
+                           <BarcodeGenerator value={unit.barcode} width={1.5} height={40} fontSize={12} />
+                        </div>
+                        <Button variant="outline" size="sm" onClick={() => downloadBarcode(unit.barcode)}>
+                           <Download className="w-4 h-4 mr-2" />
+                           Download SVG
+                        </Button>
+                     </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -344,5 +700,6 @@ export function AddProductModal({
         </div>
       </DialogContent>
     </Dialog>
+    </>
   );
 }

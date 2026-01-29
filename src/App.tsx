@@ -19,7 +19,14 @@ import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
 import BranchDashboard from "./pages/branches/Dashboard";
+import BranchTransfers from "./pages/BranchTransfers";
 import { RoleBasedRoute } from "./components/auth/RoleBasedRoute";
+import Expenses from "./pages/finance/Expenses";
+import Journal from "./pages/finance/Journal";
+import ApAr from "./pages/finance/ApAr";
+import Cashflow from "./pages/finance/Cashflow";
+import Suppliers from "./pages/crm/Suppliers";
+import Customers from "./pages/crm/Customers";
 
 const queryClient = new QueryClient();
 
@@ -44,6 +51,8 @@ const App = () => (
 
             {/* Back Office Routes */}
             <Route path="/backoffice" element={<Dashboard />} />
+            <Route path="/backoffice/crm/suppliers" element={<Suppliers />} />
+            <Route path="/backoffice/crm/customers" element={<Customers />} />
             
             {/* Branch Management Routes */}
             <Route 
@@ -66,7 +75,7 @@ const App = () => (
               path="/backoffice/branches/transfer" 
               element={
                 <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']}>
-                  <Branches />
+                  <BranchTransfers />
                 </RoleBasedRoute>
               } 
             />
@@ -75,10 +84,10 @@ const App = () => (
             <Route path="/backoffice/inventory/stock-in" element={<Inventory />} />
             <Route path="/backoffice/inventory/opname" element={<Inventory />} />
             <Route path="/backoffice/inventory/po" element={<Inventory />} />
-            <Route path="/backoffice/finance/journal" element={<Reports />} />
-            <Route path="/backoffice/finance/ap-ar" element={<Reports />} />
-            <Route path="/backoffice/finance/cashflow" element={<Reports />} />
-            <Route path="/backoffice/finance/expenses" element={<Reports />} />
+            <Route path="/backoffice/finance/journal" element={<Journal />} />
+            <Route path="/backoffice/finance/ap-ar" element={<ApAr />} />
+            <Route path="/backoffice/finance/cashflow" element={<Cashflow />} />
+            <Route path="/backoffice/finance/expenses" element={<Expenses />} />
             <Route path="/backoffice/hr/employees" element={<Employees />} />
             <Route path="/backoffice/hr/attendance" element={<EmployeeReports />} />
             <Route path="/backoffice/hr/schedule" element={<Employees />} />

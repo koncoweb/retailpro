@@ -9,6 +9,7 @@ export type AuditAction =
   | "stock_adjustment" 
   | "transfer_approval"
   | "create_product"
+  | "create_transfer"
   | "approve_transfer";
 
 export interface AuditLogParams {

@@ -25,6 +25,7 @@ import {
   Moon,
   Sun,
   Warehouse,
+  Contact,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
@@ -61,6 +62,14 @@ const navItems: NavItem[] = [
     ],
   },
   {
+    title: "CRM",
+    icon: Contact,
+    children: [
+      { title: "Supplier", path: "/backoffice/crm/suppliers", icon: Building2 },
+      { title: "Pelanggan", path: "/backoffice/crm/customers", icon: Users },
+    ],
+  },
+  {
     title: "Keuangan",
     icon: CreditCard,
     children: [
@@ -86,7 +95,7 @@ const navItems: NavItem[] = [
 
 export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const [expandedItems, setExpandedItems] = useState<string[]>(["Inventory"]);
+  const [expandedItems, setExpandedItems] = useState<string[]>(["Inventory", "CRM"]);
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const { theme, setTheme } = useTheme();

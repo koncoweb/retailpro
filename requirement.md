@@ -179,6 +179,8 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
     *   `payment_method`
     *   `status`
     *   `created_at`
+    *   `due_date` (untuk Piutang/AR)
+    *   `amount_paid` (untuk tracking pelunasan Piutang)
 2.  **transaction_items**
     *   `id` (UUID, PK)
     *   `tenant_id` (FK)
@@ -189,6 +191,21 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
     *   `quantity`
     *   `price_at_purchase`
     *   `subtotal`
+
+### E. Finance Module
+1.  **expenses**
+    *   `id` (UUID, PK)
+    *   `tenant_id` (FK)
+    *   `branch_id` (FK)
+    *   `category` (Operasional, Gaji, Sewa, dll)
+    *   `description`
+    *   `amount`
+    *   `amount_paid` (untuk tracking pelunasan Hutang)
+    *   `date`
+    *   `due_date` (untuk Hutang/AP)
+    *   `status` (paid, unpaid)
+    *   `supplier_id` (FK -> suppliers, opsional)
+    *   `created_by` (FK -> users)
 
 ## 3. Rencana Implementasi Teknis
 
@@ -238,11 +255,12 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
 - [x] Database Schema (PostgreSQL) siap dengan RLS.
 - [x] Koneksi Database terintegrasi di aplikasi.
 - [ ] Sistem Autentikasi User (Multi-Tenant Login).
-- [x] CRUD Master Data (Produk) terhubung DB (Inventory Page).
+- [x] CRUD Master Data (Produk) terhubung DB (Inventory Page) - Enhanced (SKU Auto-gen, Searchable Dropdown, Barcode).
 - [ ] CRUD Master Data (Karyawan, Cabang) terhubung DB.
 - [ ] Transaksi POS menyimpan data ke DB dan mengurangi stok secara atomik (FIFO).
 - [ ] Fitur Multi-Satuan (Unit Conversion) berfungsi di POS dan Inventory.
 - [ ] Fitur Stock Transfer (Mutasi Stok) berfungsi dengan Approval Workflow.
+- [x] Fitur Finance (Expenses, Cashflow, Journal, AP/AR) berfungsi dengan Neon DB.
 - [ ] Dashboard mengambil data real-time via Aggregation Query.
 - [ ] UI Mobile Responsive terverifikasi di viewport kecil.
 - [ ] Audit Logging system terimplementasi.

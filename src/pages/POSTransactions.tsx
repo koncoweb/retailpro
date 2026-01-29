@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,9 +28,10 @@ import {
   Banknote,
   Wallet,
   Printer,
+  Loader2,
 } from "lucide-react";
-import { mockTransactions, mockBranches } from "@/data/mockData";
-import { Transaction } from "@/types";
+import { Transaction, Branch } from "@/types";
+import { query } from "@/lib/db";
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -47,18 +48,77 @@ const paymentIcons: Record<string, React.ElementType> = {
   qris: Wallet,
 };
 
-const getBranchName = (branchId: string) => {
-  const branch = mockBranches.find((b) => b.id === branchId);
-  return branch ? branch.name : branchId;
-};
-
 export default function POSTransactions() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPayment, setSelectedPayment] = useState("all");
   const [selectedBranch, setSelectedBranch] = useState("all");
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const filteredTransactions = mockTransactions.filter((trx) => {
-    const branchName = getBranchName(trx.branch_id);
+  useEffect(() => {
+    const fetchData = async () => {
+      setIsLoading(true);
+      try {
+        // Fetch branches
+        const branchesRes = await query('SELECT * FROM branches');
+        setBranches(branchesRes.rows);
+
+        // Fetch transactions with items
+        // We use json_agg to bundle items with the transaction
+        const sql = `
+          SELECT 
+            t.id, t.tenant_id, t.branch_id, t.cashier_id, t.customer_id, 
+            t.invoice_number, t.total_amount, t.payment_method, t.status, t.created_at,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'id', ti.id,
+                  'tenant_id', ti.tenant_id,
+                  'product_id', ti.product_id,
+                  'product_name', ti.product_name,
+                  'quantity', ti.quantity,
+                  'unit_price', ti.unit_price,
+                  'subtotal', ti.subtotal,
+                  'unit_name', ti.unit_name
+                )
+              ) FILTER (WHERE ti.id IS NOT NULL),
+              '[]'
+            ) as items
+          FROM transactions t
+          LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
+          GROUP BY t.id
+          ORDER BY t.created_at DESC
+          LIMIT 100
+        `;
+        const trxRes = await query(sql);
+        
+        // Map to Transaction type
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mappedTrx: Transaction[] = trxRes.rows.map((row: any) => ({
+            ...row,
+            created_at: new Date(row.created_at).toISOString(),
+            // items is already an array of objects due to json_agg
+            items: row.items || []
+        }));
+
+        setTransactions(mappedTrx);
+      } catch (error) {
+        console.error("Failed to fetch data:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchData();
+  }, []);
+
+  const getBranchName = (branchId: string) => {
+    const branch = branches.find((b) => b.id === branchId);
+    return branch ? branch.name : branchId;
+  };
+
+  const filteredTransactions = transactions.filter((trx) => {
     const matchesSearch =
       trx.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       trx.invoice_number.toLowerCase().includes(searchQuery.toLowerCase());
@@ -69,6 +129,16 @@ export default function POSTransactions() {
 
   const totalSales = filteredTransactions.reduce((sum, trx) => sum + trx.total_amount, 0);
   const totalTransactions = filteredTransactions.length;
+
+  if (isLoading) {
+    return (
+        <POSLayout>
+            <div className="flex items-center justify-center h-[calc(100vh-4rem)]">
+                <Loader2 className="w-8 h-8 animate-spin text-primary" />
+            </div>
+        </POSLayout>
+    );
+  }
 
   return (
     <POSLayout>
@@ -126,7 +196,7 @@ export default function POSTransactions() {
                 <p className="text-sm text-muted-foreground">Via Kartu</p>
                 <p className="text-xl font-bold">
                   {formatCurrency(
-                    mockTransactions.filter((t) => t.payment_method === "card").reduce((s, t) => s + t.total_amount, 0)
+                    filteredTransactions.filter((t) => t.payment_method === "card").reduce((s, t) => s + t.total_amount, 0)
                   )}
                 </p>
               </div>
@@ -141,7 +211,7 @@ export default function POSTransactions() {
                 <p className="text-sm text-muted-foreground">Via E-Wallet/QRIS</p>
                 <p className="text-xl font-bold">
                   {formatCurrency(
-                    mockTransactions.filter((t) => t.payment_method === "ewallet" || t.payment_method === "qris").reduce((s, t) => s + t.total_amount, 0)
+                    filteredTransactions.filter((t) => t.payment_method === "ewallet" || t.payment_method === "qris").reduce((s, t) => s + t.total_amount, 0)
                   )}
                 </p>
               </div>
@@ -178,7 +248,7 @@ export default function POSTransactions() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Semua</SelectItem>
-              {mockBranches.map((branch) => (
+              {branches.map((branch) => (
                 <SelectItem key={branch.id} value={branch.id}>
                   {branch.name}
                 </SelectItem>
@@ -203,71 +273,79 @@ export default function POSTransactions() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredTransactions.map((trx) => {
-                const PaymentIcon = paymentIcons[trx.payment_method] || Receipt;
-                const totalItems = trx.items.reduce((sum, item) => sum + item.quantity, 0);
-                const branchName = getBranchName(trx.branch_id);
-                const date = new Date(trx.created_at);
-                
-                return (
-                  <TableRow key={trx.id} className="group">
-                    <TableCell>
-                      <span className="font-mono font-medium text-primary">{trx.id}</span>
-                      <p className="text-xs text-muted-foreground">{trx.invoice_number}</p>
+              {filteredTransactions.length === 0 ? (
+                <TableRow>
+                    <TableCell colSpan={8} className="text-center h-24 text-muted-foreground">
+                        Tidak ada transaksi ditemukan
                     </TableCell>
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{date.toLocaleDateString('id-ID')}</p>
-                        <p className="text-sm text-muted-foreground">{date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <div>
-                        <p className="font-medium">{trx.customer_id || "Walk-in Customer"}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {trx.cashier_id} • {branchName}
-                        </p>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="secondary">{totalItems}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <PaymentIcon className="w-4 h-4 text-muted-foreground" />
-                        <span className="capitalize">{trx.payment_method}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div>
-                        <p className="font-bold">{formatCurrency(trx.total_amount)}</p>
-                      </div>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge
-                        variant={trx.status === "completed" ? "default" : "destructive"}
-                        className={
-                          trx.status === "completed"
-                            ? "bg-success/20 text-success hover:bg-success/30"
-                            : ""
-                        }
-                      >
-                        {trx.status === "completed" ? "Selesai" : "Void"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex gap-1">
-                        <Button variant="ghost" size="icon">
-                          <Eye className="w-4 h-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon">
-                          <Printer className="w-4 h-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
+                </TableRow>
+              ) : (
+                filteredTransactions.map((trx) => {
+                    const PaymentIcon = paymentIcons[trx.payment_method] || Receipt;
+                    const totalItems = trx.items.reduce((sum, item) => sum + item.quantity, 0);
+                    const branchName = getBranchName(trx.branch_id);
+                    const date = new Date(trx.created_at);
+                    
+                    return (
+                    <TableRow key={trx.id} className="group">
+                        <TableCell>
+                        <span className="font-mono font-medium text-primary">{trx.id}</span>
+                        <p className="text-xs text-muted-foreground">{trx.invoice_number}</p>
+                        </TableCell>
+                        <TableCell>
+                        <div>
+                            <p className="font-medium">{date.toLocaleDateString('id-ID')}</p>
+                            <p className="text-sm text-muted-foreground">{date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</p>
+                        </div>
+                        </TableCell>
+                        <TableCell>
+                        <div>
+                            <p className="font-medium">{trx.customer_id || "Walk-in Customer"}</p>
+                            <p className="text-sm text-muted-foreground">
+                            {trx.cashier_id} • {branchName}
+                            </p>
+                        </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                        <Badge variant="secondary">{totalItems}</Badge>
+                        </TableCell>
+                        <TableCell>
+                        <div className="flex items-center gap-2">
+                            <PaymentIcon className="w-4 h-4 text-muted-foreground" />
+                            <span className="capitalize">{trx.payment_method}</span>
+                        </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                        <div>
+                            <p className="font-bold">{formatCurrency(trx.total_amount)}</p>
+                        </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                        <Badge
+                            variant={trx.status === "completed" ? "default" : "destructive"}
+                            className={
+                            trx.status === "completed"
+                                ? "bg-success/20 text-success hover:bg-success/30"
+                                : ""
+                            }
+                        >
+                            {trx.status === "completed" ? "Selesai" : "Void"}
+                        </Badge>
+                        </TableCell>
+                        <TableCell>
+                        <div className="flex gap-1">
+                            <Button variant="ghost" size="icon">
+                            <Eye className="w-4 h-4" />
+                            </Button>
+                            <Button variant="ghost" size="icon">
+                            <Printer className="w-4 h-4" />
+                            </Button>
+                        </div>
+                        </TableCell>
+                    </TableRow>
+                    );
+                })
+              )}
             </TableBody>
           </Table>
         </div>
