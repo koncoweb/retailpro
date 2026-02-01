@@ -173,33 +173,38 @@ export default function Employees() {
 
     setIsSubmitting(true);
     try {
-      // 1. Create User via Neon Auth API (Mocking the fetch call structure as used in BranchDetailModal)
+      // 1. Create User via Neon Auth API
       const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
-      let userId = `user_${Date.now()}`; // Fallback ID if auth fails or not configured
+      if (!authUrl) throw new Error("Neon Auth URL not configured");
 
-      if (authUrl) {
-        const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: newEmpEmail,
-            password: newEmpPassword,
-            name: newEmpName,
-          }),
-        });
+      const defaultPassword = newEmpPassword; // Password dari input
 
-        if (signUpRes.ok) {
-            const authData = await signUpRes.json();
-            userId = authData.user?.id || authData.session?.userId || userId;
-        } else {
-             // If auth fails (e.g. duplicate email), we might stop here.
-             // But for development without full auth setup, we might proceed or throw.
-             // Let's throw to be safe if it's a real error.
-             const errData = await signUpRes.json().catch(() => ({}));
-             if (errData.code !== 'duplicate_email') { // proceed if it's just duplicate to try updating db
-                 console.warn("Auth signup failed, maybe user exists?", errData);
-             }
-        }
+      const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: newEmpEmail,
+          password: defaultPassword,
+          name: newEmpName,
+        }),
+      });
+
+      let userId: string | undefined;
+
+      if (signUpRes.ok) {
+         const authData = await signUpRes.json();
+         userId = authData.user?.id || authData.session?.userId;
+      } else {
+         const errData = await signUpRes.json();
+         console.warn("Neon Auth creation warning:", errData);
+         if (signUpRes.status === 422 || signUpRes.status === 409) {
+             throw new Error("Email sudah terdaftar di sistem Auth. Silahkan gunakan email lain.");
+         }
+         throw new Error(errData.message || "Gagal membuat akun Neon Auth");
+      }
+
+      if (!userId) {
+         throw new Error("Gagal mendapatkan User ID dari Neon Auth");
       }
 
       // 2. Insert into users table

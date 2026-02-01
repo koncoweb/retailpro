@@ -321,15 +321,55 @@ export default function Branches() {
 
       // If manager creation requested during edit
       if (formData.createManagerUser && formData.managerEmail) {
-        // Check if user exists or just insert
-         await query(
-          `INSERT INTO users (id, email, role, assigned_branch_id, is_active)
-           VALUES (gen_random_uuid(), $1, 'store_manager', $2, true)
-           ON CONFLICT (email) DO UPDATE SET assigned_branch_id = $2, role = 'store_manager'
-           WHERE users.role NOT IN ('platform_owner', 'tenant_owner')`, 
-          [formData.managerEmail, editingBranch.id]
-        );
-        toast.success(`User manager updated/created`);
+        try {
+          // 1. Create User via Neon Auth API
+          const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
+          if (!authUrl) throw new Error("Neon Auth URL not configured");
+
+          const defaultPassword = "ChangeMe123!"; 
+
+          const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: formData.managerEmail,
+              password: defaultPassword,
+              name: formData.managerEmail.split("@")[0],
+            }),
+          });
+
+          let userId: string | undefined;
+
+          if (signUpRes.ok) {
+             const authData = await signUpRes.json();
+             userId = authData.user?.id || authData.session?.userId;
+          } else {
+             const errData = await signUpRes.json();
+             console.warn("Neon Auth creation warning:", errData);
+             if (signUpRes.status === 422 || signUpRes.status === 409) {
+                throw new Error("Email sudah terdaftar di sistem Auth. Silahkan tambahkan user tersebut secara manual atau gunakan email lain.");
+             }
+             throw new Error(errData.message || "Gagal membuat akun Neon Auth");
+          }
+
+          if (!userId) {
+             throw new Error("Gagal mendapatkan User ID dari Neon Auth");
+          }
+
+          // 2. Insert into users table
+          await query(
+            `INSERT INTO users (id, email, role, assigned_branch_id, is_active)
+             VALUES ($1, $2, 'store_manager', $3, true)
+             ON CONFLICT (email) DO UPDATE SET assigned_branch_id = $3, role = 'store_manager'
+             WHERE users.role NOT IN ('platform_owner', 'tenant_owner')`, 
+            [userId, formData.managerEmail, editingBranch.id]
+          );
+          
+          toast.success(`User manager (${formData.managerEmail}) berhasil dibuat/diupdate`);
+        } catch (authErr: any) {
+           console.error("Manager creation failed:", authErr);
+           toast.error(`Cabang diupdate, tapi gagal set user manager: ${authErr.message}`);
+        }
       }
 
       toast.success("Cabang berhasil diupdate");
