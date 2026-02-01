@@ -32,6 +32,8 @@ import {
 } from "lucide-react";
 import { Transaction, Branch } from "@/types";
 import { query } from "@/lib/db";
+import * as XLSX from 'xlsx';
+import { toast } from "sonner";
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -130,6 +132,47 @@ export default function POSTransactions() {
   const totalSales = filteredTransactions.reduce((sum, trx) => sum + trx.total_amount, 0);
   const totalTransactions = filteredTransactions.length;
 
+  const handleExport = () => {
+    if (filteredTransactions.length === 0) {
+      toast.error("Tidak ada data untuk diexport");
+      return;
+    }
+
+    const exportData = filteredTransactions.map(trx => ({
+      "ID Transaksi": trx.id,
+      "Invoice": trx.invoice_number,
+      "Tanggal": new Date(trx.created_at).toLocaleDateString('id-ID'),
+      "Waktu": new Date(trx.created_at).toLocaleTimeString('id-ID'),
+      "Customer": trx.customer_id || "Walk-in",
+      "Cabang": getBranchName(trx.branch_id),
+      "Pembayaran": trx.payment_method,
+      "Total Items": trx.items.reduce((sum, item) => sum + item.quantity, 0),
+      "Total Amount": trx.total_amount,
+      "Status": trx.status
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Transaksi");
+
+    // Auto-width
+    ws['!cols'] = [
+      { wch: 20 }, // ID
+      { wch: 15 }, // Invoice
+      { wch: 12 }, // Tanggal
+      { wch: 10 }, // Waktu
+      { wch: 20 }, // Customer
+      { wch: 15 }, // Cabang
+      { wch: 12 }, // Pembayaran
+      { wch: 10 }, // Items
+      { wch: 15 }, // Total
+      { wch: 10 }, // Status
+    ];
+
+    XLSX.writeFile(wb, `Transaksi_POS_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data transaksi");
+  };
+
   if (isLoading) {
     return (
         <POSLayout>
@@ -156,9 +199,9 @@ export default function POSTransactions() {
               <Calendar className="w-4 h-4" />
               Hari Ini
             </Button>
-            <Button variant="outline" className="gap-2">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
               <Download className="w-4 h-4" />
-              Export
+              Export Excel
             </Button>
           </div>
         </div>

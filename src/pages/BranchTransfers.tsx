@@ -23,9 +23,11 @@ import {
   Clock,
   Eye,
   Loader2,
+  Download,
 } from "lucide-react";
 import { StockTransferModal } from "@/components/inventory/StockTransferModal";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 import { query } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { Product, Branch } from "@/types";
@@ -324,6 +326,41 @@ export default function BranchTransfers() {
     return true;
   });
 
+  const handleExport = () => {
+    if (filteredTransfers.length === 0) {
+      toast.error("Tidak ada data transfer untuk diexport");
+      return;
+    }
+
+    const exportData = filteredTransfers.map(t => ({
+      "No. Referensi": t.reference_number,
+      "Dari Cabang": t.source_branch_name,
+      "Ke Cabang": t.destination_branch_name,
+      "Tanggal": new Date(t.created_at).toLocaleDateString('id-ID'),
+      "Jumlah Item": t.items_count,
+      "Status": t.status === 'completed' ? 'Selesai' : t.status === 'pending' ? 'Pending' : 'Dibatalkan',
+      "Catatan": t.notes || "-"
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Transfer Stok");
+
+    const wscols = [
+      { wch: 20 }, // Ref
+      { wch: 20 }, // Source
+      { wch: 20 }, // Dest
+      { wch: 15 }, // Date
+      { wch: 12 }, // Items
+      { wch: 15 }, // Status
+      { wch: 30 }, // Notes
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `Transfer_Stok_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data transfer");
+  };
+
   return (
     <BackOfficeLayout>
       <div className="space-y-6">
@@ -334,10 +371,16 @@ export default function BranchTransfers() {
               Kelola perpindahan stok antar cabang
             </p>
           </div>
-          <Button onClick={() => setIsTransferOpen(true)} className="gap-2">
-            <Plus className="w-4 h-4" />
-            Buat Transfer Baru
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="w-4 h-4" />
+              Export
+            </Button>
+            <Button onClick={() => setIsTransferOpen(true)} className="gap-2">
+              <Plus className="w-4 h-4" />
+              Buat Transfer Baru
+            </Button>
+          </div>
         </div>
 
         {/* Filters */}

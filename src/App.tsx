@@ -27,6 +27,9 @@ import ApAr from "./pages/finance/ApAr";
 import Cashflow from "./pages/finance/Cashflow";
 import Suppliers from "./pages/crm/Suppliers";
 import Customers from "./pages/crm/Customers";
+import SalesReport from "./pages/SalesReport";
+import InventoryReport from "./pages/InventoryReport";
+import FinanceReports from "./pages/FinanceReports";
 
 const queryClient = new QueryClient();
 
@@ -93,6 +96,9 @@ const App = () => (
             <Route path="/backoffice/hr/schedule" element={<Employees />} />
             <Route path="/backoffice/hr/payroll" element={<EmployeeReports />} />
             <Route path="/backoffice/reports" element={<Reports />} />
+            <Route path="/backoffice/reports/sales" element={<SalesReport />} />
+            <Route path="/backoffice/reports/inventory" element={<InventoryReport />} />
+            <Route path="/backoffice/reports/finance" element={<FinanceReports />} />
             <Route path="/backoffice/settings" element={<Settings />} />
 
             <Route path="*" element={<NotFound />} />

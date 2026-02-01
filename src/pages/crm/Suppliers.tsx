@@ -33,10 +33,12 @@ import {
   MapPin,
   Loader2,
   Building2,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import { query } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
+import * as XLSX from "xlsx";
 
 interface Supplier {
   id: string;
@@ -230,6 +232,40 @@ export default function Suppliers() {
     (s.email && s.email.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
+  const handleExport = () => {
+    if (suppliers.length === 0) {
+      toast.error("Tidak ada data supplier untuk diexport");
+      return;
+    }
+
+    const exportData = suppliers.map(s => ({
+      "Nama Supplier": s.name,
+      "Contact Person": s.contact_person || "-",
+      "Telepon": s.phone || "-",
+      "Email": s.email || "-",
+      "Alamat": s.address || "-",
+      "Low Stock Alert": s.settings?.auto_send_low_stock_alert ? "Ya" : "Tidak"
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Supplier");
+
+    // Auto-width columns
+    const wscols = [
+      { wch: 30 }, // Nama
+      { wch: 20 }, // Contact Person
+      { wch: 15 }, // Telepon
+      { wch: 25 }, // Email
+      { wch: 40 }, // Alamat
+      { wch: 15 }, // Low Stock Alert
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `Data_Supplier_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data supplier");
+  };
+
   return (
     <BackOfficeLayout>
       <div className="flex flex-col gap-6">
@@ -256,6 +292,10 @@ export default function Suppliers() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
+          <Button variant="outline" className="gap-2" onClick={handleExport}>
+            <Download className="w-4 h-4" />
+            Export Excel
+          </Button>
         </div>
 
         <div className="rounded-md border bg-card">

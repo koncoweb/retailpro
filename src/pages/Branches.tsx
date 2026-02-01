@@ -32,8 +32,10 @@ import {
   Building2,
   Phone,
   Edit,
+  Download,
 } from "lucide-react";
 import { query } from "@/lib/db";
+import * as XLSX from "xlsx";
 
 interface Branch {
   id: string; // Changed to string (UUID)
@@ -146,6 +148,49 @@ export default function Branches() {
     } catch (error) {
       toast.error("Gagal mengubah status cabang");
     }
+  };
+
+  const handleExport = () => {
+    if (branches.length === 0) {
+      toast.error("Tidak ada data cabang untuk diexport");
+      return;
+    }
+
+    const exportData = branches.map(b => ({
+      "Nama Cabang": b.name,
+      "Kode": b.code,
+      "Alamat": b.address,
+      "Telepon": b.phone,
+      "Email": b.email,
+      "Manager": b.manager,
+      "Jumlah Karyawan": b.employees,
+      "Jumlah Produk": b.products,
+      "Status": b.status === 'active' ? 'Aktif' : 'Nonaktif',
+      "Target Penjualan": b.salesTarget,
+      "Penjualan Bulan Ini": b.salesThisMonth
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Daftar Cabang");
+
+    const wscols = [
+      { wch: 25 }, // Nama
+      { wch: 10 }, // Kode
+      { wch: 40 }, // Alamat
+      { wch: 15 }, // Telepon
+      { wch: 25 }, // Email
+      { wch: 25 }, // Manager
+      { wch: 15 }, // Karyawan
+      { wch: 15 }, // Produk
+      { wch: 10 }, // Status
+      { wch: 20 }, // Target
+      { wch: 20 }, // Penjualan
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `Daftar_Cabang_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data cabang");
   };
 
   const handleAddBranch = async () => {
@@ -309,11 +354,16 @@ export default function Branches() {
             <h1 className="text-xl md:text-2xl lg:text-3xl font-bold">Manajemen Cabang</h1>
             <p className="text-muted-foreground text-sm md:text-base mt-1">Kelola semua cabang dan pantau performanya</p>
           </div>
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" />Tambah Cabang</Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
+          <div className="flex gap-2">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="w-4 h-4" />
+              Export
+            </Button>
+            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+              <DialogTrigger asChild>
+                <Button className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" />Tambah Cabang</Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
               <DialogHeader><DialogTitle>Tambah Cabang Baru</DialogTitle></DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
@@ -398,6 +448,7 @@ export default function Branches() {
               </div>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         {/* Edit Dialog */}

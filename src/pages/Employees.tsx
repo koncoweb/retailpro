@@ -35,6 +35,16 @@ import {
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Search,
   Plus,
   MoreHorizontal,
@@ -48,9 +58,11 @@ import {
   Mail,
   Loader2,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { query } from "@/lib/db";
 import { toast } from "sonner";
 import { ROLES, DEFAULT_ROLE_PERMISSIONS, PERMISSION_LABELS } from "@/config/roles";
+import { authClient } from "@/lib/auth-client";
 
 interface Employee {
   id: string;
@@ -61,6 +73,7 @@ interface Employee {
   branch_name: string | null;
   is_active: boolean;
   created_at: string;
+  base_salary: number;
 }
 
 interface Branch {
@@ -83,6 +96,7 @@ export default function Employees() {
   const [newEmpPassword, setNewEmpPassword] = useState("");
   const [newEmpRole, setNewEmpRole] = useState("cashier");
   const [newEmpBranch, setNewEmpBranch] = useState("");
+  const [newEmpSalary, setNewEmpSalary] = useState("0");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Edit Employee State
@@ -92,6 +106,10 @@ export default function Employees() {
   const [editRole, setEditRole] = useState("");
   const [editBranch, setEditBranch] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
+  const [editSalary, setEditSalary] = useState("0");
+
+  // Delete State
+  const [deleteId, setDeleteId] = useState<string | null>(null);
 
   const renderPermissions = (roleVal: string) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -126,7 +144,7 @@ export default function Employees() {
 
       // Fetch Employees
       const empRes = await query(`
-        SELECT u.id, u.name, u.email, u.role, u.assigned_branch_id, u.is_active, u.created_at, b.name as branch_name
+        SELECT u.id, u.name, u.email, u.role, u.assigned_branch_id, u.is_active, u.created_at, u.base_salary, b.name as branch_name
         FROM users u
         LEFT JOIN branches b ON u.assigned_branch_id = b.id
         ORDER BY u.created_at DESC
@@ -136,7 +154,8 @@ export default function Employees() {
       setEmployees(empRes.rows.map((r: any) => ({
         ...r,
         // Normalize role to lowercase for consistency
-        role: r.role?.toLowerCase() || 'staff'
+        role: r.role?.toLowerCase() || 'staff',
+        base_salary: Number(r.base_salary) || 0
       })));
     } catch (error) {
       console.error("Failed to fetch data:", error);
@@ -185,11 +204,11 @@ export default function Employees() {
 
       // 2. Insert into users table
       await query(
-        `INSERT INTO users (id, tenant_id, email, role, assigned_branch_id, is_active, name) 
-         VALUES ($1, current_setting('app.current_tenant_id')::uuid, $2, $3, $4, true, $5)
+        `INSERT INTO users (id, tenant_id, email, role, assigned_branch_id, is_active, name, base_salary) 
+         VALUES ($1, current_setting('app.current_tenant_id')::uuid, $2, $3, $4, true, $5, $6)
          ON CONFLICT (id) DO UPDATE 
-         SET role = $3, assigned_branch_id = $4, is_active = true, name = $5`,
-        [userId, newEmpEmail, newEmpRole, newEmpBranch || null, newEmpName]
+         SET role = $3, assigned_branch_id = $4, is_active = true, name = $5, base_salary = $6`,
+        [userId, newEmpEmail, newEmpRole, newEmpBranch || null, newEmpName, parseFloat(newEmpSalary) || 0]
       );
 
       toast.success("Karyawan berhasil ditambahkan");
@@ -213,6 +232,7 @@ export default function Employees() {
     setEditRole(emp.role);
     setEditBranch(emp.assigned_branch_id || "no_branch");
     setEditIsActive(emp.is_active);
+    setEditSalary(emp.base_salary.toString());
     setIsEditOpen(true);
   };
 
@@ -223,8 +243,8 @@ export default function Employees() {
     try {
       const branchId = editBranch === "no_branch" ? null : editBranch;
       await query(
-        `UPDATE users SET role = $1, assigned_branch_id = $2, is_active = $3, name = $4 WHERE id = $5`,
-        [editRole, branchId, editIsActive, editName, editingEmployee.id]
+        `UPDATE users SET role = $1, assigned_branch_id = $2, is_active = $3, name = $4, base_salary = $5 WHERE id = $6`,
+        [editRole, branchId, editIsActive, editName, parseFloat(editSalary) || 0, editingEmployee.id]
       );
 
       toast.success("Data karyawan diperbarui");
@@ -239,16 +259,22 @@ export default function Employees() {
     }
   };
 
-  const handleDeleteEmployee = async (id: string) => {
-    if (!confirm("Apakah Anda yakin ingin menghapus karyawan ini? Tindakan ini tidak dapat dibatalkan.")) return;
+  const handleDeleteEmployee = (id: string) => {
+    setDeleteId(id);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteId) return;
     
     try {
-        await query(`DELETE FROM users WHERE id = $1`, [id]);
+        await query(`DELETE FROM users WHERE id = $1`, [deleteId]);
         toast.success("Karyawan dihapus");
         fetchData();
     } catch (error) {
         console.error("Failed to delete:", error);
         toast.error("Gagal menghapus karyawan");
+    } finally {
+        setDeleteId(null);
     }
   };
 
@@ -268,6 +294,42 @@ export default function Employees() {
   const totalEmployees = employees.length;
   const activeEmployeesCount = employees.filter((e) => e.is_active).length;
 
+  const handleExport = () => {
+    if (employees.length === 0) {
+      toast.error("Tidak ada data karyawan untuk diexport");
+      return;
+    }
+
+    const exportData = employees.map(e => ({
+      "Nama": e.name,
+      "Email": e.email,
+      "Role": e.role,
+      "Cabang": e.branch_name || "-",
+      "Status": e.is_active ? "Aktif" : "Nonaktif",
+      "Gaji Pokok": e.base_salary,
+      "Tanggal Bergabung": new Date(e.created_at).toLocaleDateString('id-ID')
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Karyawan");
+
+    // Auto-width columns
+    const wscols = [
+      { wch: 20 }, // Nama
+      { wch: 25 }, // Email
+      { wch: 15 }, // Role
+      { wch: 15 }, // Cabang
+      { wch: 10 }, // Status
+      { wch: 15 }, // Gaji
+      { wch: 20 }, // Tanggal
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `Data_Karyawan_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data karyawan");
+  };
+
   return (
     <BackOfficeLayout>
       <div className="space-y-6">
@@ -280,7 +342,7 @@ export default function Employees() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="gap-2">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
               <Download className="w-4 h-4" />
               Export
             </Button>
@@ -518,6 +580,16 @@ export default function Employees() {
                 placeholder="******"
               />
             </div>
+            <div className="grid gap-2">
+              <Label htmlFor="salary">Gaji Pokok</Label>
+              <Input
+                id="salary"
+                type="number"
+                value={newEmpSalary}
+                onChange={(e) => setNewEmpSalary(e.target.value)}
+                placeholder="0"
+              />
+            </div>
             <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
                     <Label>Role</Label>
@@ -585,6 +657,15 @@ export default function Employees() {
                     <Label>Email</Label>
                     <Input value={editingEmployee?.email || ""} disabled />
                 </div>
+                <div className="grid gap-2">
+                    <Label>Gaji Pokok</Label>
+                    <Input 
+                        type="number"
+                        value={editSalary} 
+                        onChange={(e) => setEditSalary(e.target.value)}
+                        placeholder="0"
+                    />
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                     <div className="grid gap-2">
                         <Label>Role</Label>
@@ -644,6 +725,23 @@ export default function Employees() {
             </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
+        <AlertDialogContent>
+            <AlertDialogHeader>
+                <AlertDialogTitle>Hapus Karyawan?</AlertDialogTitle>
+                <AlertDialogDescription>
+                    Tindakan ini tidak dapat dibatalkan. Data karyawan akan dihapus permanen dari sistem.
+                </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+                <AlertDialogCancel>Batal</AlertDialogCancel>
+                <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                    Hapus
+                </AlertDialogAction>
+            </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </BackOfficeLayout>
   );
 }

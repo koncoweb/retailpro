@@ -1,6 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { query } from "@/lib/db";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { toast } from "sonner";
+import * as XLSX from "xlsx";
 import { 
   Building2, 
   Users, 
@@ -8,7 +11,8 @@ import {
   Store,
   ArrowUpRight,
   ArrowDownRight,
-  DollarSign
+  DollarSign,
+  Download
 } from "lucide-react";
 import { formatCurrency } from "@/lib/formatters";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -99,17 +103,52 @@ export default function BranchDashboard() {
     }
   });
 
+  const handleExport = () => {
+    if (!performance || performance.length === 0) {
+      toast.error("Tidak ada data performa untuk diexport");
+      return;
+    }
+
+    const exportData = performance.map(b => ({
+      "Nama Cabang": b.name,
+      "Status": b.status,
+      "Jumlah Transaksi": b.transactions,
+      "Total Penjualan": b.sales
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Performa Cabang");
+
+    const wscols = [
+      { wch: 25 }, // Nama
+      { wch: 10 }, // Status
+      { wch: 15 }, // Transaksi
+      { wch: 20 }, // Penjualan
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `Performa_Cabang_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data performa cabang");
+  };
+
   if (statsLoading || perfLoading) {
     return <DashboardSkeleton />;
   }
 
   return (
     <div className="space-y-6 p-6 pb-16">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard Percabangan</h1>
-        <p className="text-muted-foreground">
-          Ringkasan performa dan statistik seluruh cabang bulan ini.
-        </p>
+      <div className="flex items-start justify-between">
+        <div className="flex flex-col gap-2">
+          <h1 className="text-3xl font-bold tracking-tight">Dashboard Percabangan</h1>
+          <p className="text-muted-foreground">
+            Ringkasan performa dan statistik seluruh cabang bulan ini.
+          </p>
+        </div>
+        <Button variant="outline" className="gap-2" onClick={handleExport}>
+          <Download className="w-4 h-4" />
+          Export
+        </Button>
       </div>
 
       {/* Stats Grid */}

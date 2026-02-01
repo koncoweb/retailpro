@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -11,7 +12,9 @@ import {
 } from "@/components/ui/table";
 import { query } from "@/lib/db";
 import { format } from "date-fns";
-import { Loader2 } from "lucide-react";
+import { Loader2, FileSpreadsheet } from "lucide-react";
+import * as XLSX from "xlsx";
+import { toast } from "sonner";
 
 interface JournalEntry {
   id: string;
@@ -123,12 +126,51 @@ export default function Journal() {
     fetchJournal();
   }, []);
 
+  const handleExport = () => {
+    if (entries.length === 0) {
+      toast.error("Tidak ada data jurnal untuk diexport");
+      return;
+    }
+
+    try {
+      const exportData = entries.map(entry => ({
+        "Tanggal": format(new Date(entry.date), "dd/MM/yyyy"),
+        "Keterangan": entry.description,
+        "Ref": entry.ref,
+        "Akun": entry.account,
+        "Debit": entry.debit,
+        "Kredit": entry.credit,
+        "Tipe": entry.type === 'debit' ? 'Debit' : 'Kredit'
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Jurnal Umum");
+
+      // Auto-width
+      const wscols = [{wch: 12}, {wch: 40}, {wch: 15}, {wch: 25}, {wch: 15}, {wch: 15}, {wch: 10}];
+      ws['!cols'] = wscols;
+
+      XLSX.writeFile(wb, `Jurnal_Umum_${format(new Date(), "yyyy-MM-dd")}.xlsx`);
+      toast.success("Berhasil export jurnal umum");
+    } catch (error) {
+      console.error("Export failed:", error);
+      toast.error("Gagal export jurnal");
+    }
+  };
+
   return (
     <BackOfficeLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">Jurnal Umum</h1>
-          <p className="text-muted-foreground">Catatan transaksi debit dan kredit</p>
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">Jurnal Umum</h1>
+            <p className="text-muted-foreground">Catatan transaksi debit dan kredit</p>
+          </div>
+          <Button onClick={handleExport} variant="outline" className="gap-2">
+            <FileSpreadsheet className="h-4 w-4" />
+            Export Excel
+          </Button>
         </div>
 
         <Card>

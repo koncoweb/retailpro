@@ -1,8 +1,11 @@
 import { useState, useEffect } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { query } from "@/lib/db";
-import { Loader2, TrendingUp, TrendingDown, DollarSign } from "lucide-react";
+import { Loader2, TrendingUp, TrendingDown, DollarSign, Download } from "lucide-react";
+import * as XLSX from "xlsx";
+import { toast } from "sonner";
 import {
   BarChart,
   Bar,
@@ -111,12 +114,42 @@ export default function Cashflow() {
     }).format(value);
   };
 
+  const handleExport = () => {
+    if (data.length === 0) {
+      toast.error("Tidak ada data untuk diexport");
+      return;
+    }
+
+    const exportData = data.map(item => ({
+      "Bulan": item.name,
+      "Pemasukan": item.income,
+      "Pengeluaran": item.expense,
+      "Selisih": item.income - item.expense
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Cashflow");
+
+    // Auto-width
+    ws['!cols'] = [{ wch: 10 }, { wch: 20 }, { wch: 20 }, { wch: 20 }];
+
+    XLSX.writeFile(wb, `Cashflow_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data cashflow");
+  };
+
   return (
     <BackOfficeLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">Cash Flow</h1>
-          <p className="text-muted-foreground">Analisis arus kas masuk dan keluar</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Cash Flow</h1>
+            <p className="text-muted-foreground">Analisis arus kas masuk dan keluar</p>
+          </div>
+          <Button variant="outline" className="gap-2" onClick={handleExport}>
+            <Download className="w-4 h-4" />
+            Export Excel
+          </Button>
         </div>
 
         {/* Summary Cards */}

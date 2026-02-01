@@ -48,6 +48,7 @@ Tabel `user` bawaan Neon Auth akan diextend atau direlasikan dengan tabel profil
     *   `role` (enum: 'platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'cashier') - Custom
     *   `assigned_branch_id` (FK -> branches, Nullable) - Custom
     *   `is_active` (boolean, default false for new tenants) - Custom
+    *   `base_salary` (Numeric, Default 0) - Custom
 
 ## 4. Fitur Frontend (Authentication & Onboarding)
 
@@ -81,7 +82,12 @@ Tabel `user` bawaan Neon Auth akan diextend atau direlasikan dengan tabel profil
 ### C. Manajemen Karyawan (Backoffice)
 *   **Daftar Karyawan**: Menampilkan daftar karyawan berdasarkan cabang.
 *   **Tambah Karyawan**: Integrasi dengan Neon Auth untuk pembuatan akun dan assignment role/cabang.
-*   **Edit Karyawan**: Fitur untuk mengubah Role (promosi/demosi) dan Status Aktif karyawan (suspend/activate).
+*   **Edit Karyawan**: Fitur untuk mengubah Role (promosi/demosi), Status Aktif, dan Gaji Pokok.
+*   **Absensi (Attendance)**: Pencatatan Check-in/Check-out harian, status kehadiran (Hadir, Sakit, Alpa), dan perhitungan Overtime.
+*   **Cuti (Leave)**: Pengajuan dan approval cuti (Tahunan, Sakit, Unpaid).
+*   **Payroll**: Perhitungan gaji otomatis berdasarkan Gaji Pokok, Kehadiran, Overtime, dan Tunjangan/Potongan.
+*   **Konfigurasi Payroll Dinamis**: User dapat mengatur variabel penggajian (Hari Kerja, Tunjangan Transport, Uang Makan) secara real-time.
+*   **Role Permission Settings**: Pengaturan hak akses granular per role yang disimpan di database tenant.
 
 ## 5. Struktur Database (Schema Design)
 
@@ -93,178 +99,57 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
     *   `name` (Nama Usaha)
     *   `slug` (Subdomain/Identifier unik)
     *   `company_details` (JSONB: NPWP, SIUP, Alamat Legal, Bentuk Badan Usaha)
-    *   `settings` (JSONB: Tax Rules, Currency, Timezone)
-    *   `subscription_plan` (free, pro, enterprise)
-    *   `status` (enum: 'pending', 'active', 'suspended')
-    *   `created_at`
+    *   `settings` (JSONB: Tax Rules, Currency, Timezone, **Role Permissions**)
+
 2.  **branches**
     *   `id` (UUID, PK)
-    *   `tenant_id` (FK -> tenants)
-    *   `name` (Nama Cabang, cth: "Cabang Pusat")
+    *   `tenant_id` (FK)
+    *   `name` (Nama Cabang)
     *   `address`
     *   `phone`
-3.  **users** (Lihat section Authentication di atas)
+    *   `is_active` (boolean)
 
-### B. CRM (Customer Relationship Management)
-1.  **suppliers**
+### B. HR & Employee Management
+1.  **attendance**
     *   `id` (UUID, PK)
     *   `tenant_id` (FK)
-    *   `name` (Nama PT/CV/Perorangan)
-    *   `contact_person`
-    *   `phone`
-    *   `email`
-    *   `address`
-    *   `settings` (JSONB: Auto-send Low Stock Alert)
-2.  **customers**
+    *   `employee_id` (FK -> users.id)
+    *   `date` (Date)
+    *   `check_in` (Time, Nullable)
+    *   `check_out` (Time, Nullable)
+    *   `status` (enum: 'present', 'sick', 'permission', 'alpha')
+    *   `overtime` (Numeric, hours)
+    *   `location_coordinates` (Point, Optional)
+
+2.  **leaves**
     *   `id` (UUID, PK)
     *   `tenant_id` (FK)
-    *   `name`
-    *   `phone`
-    *   `email`
-    *   `total_spent` (Analisis Marketing)
-    *   `last_purchase_date`
-    *   `preferences` (JSONB: Kategori favorit, kebiasaan beli)
+    *   `employee_id` (FK -> users.id)
+    *   `type` (enum: 'annual', 'sick', 'unpaid')
+    *   `start_date` (Date)
+    *   `end_date` (Date)
+    *   `reason` (Text)
+    *   `status` (enum: 'pending', 'approved', 'rejected')
+    *   `approved_by` (FK -> users.id, Nullable)
 
-### C. Inventory Module (Advanced)
-1.  **products**
-    *   `id` (UUID, PK)
-    *   `tenant_id` (FK)
-    *   `sku`
-    *   `name`
-    *   `unit_type` (pcs, box, karton)
-    *   `has_variants` (boolean: eceran/grosir)
-    *   `min_stock_alert` (Global Setting)
-2.  **product_units** (Konversi Satuan: 1 Karton = 24 Pcs)
-    *   `id` (UUID, PK)
-    *   `product_id` (FK)
-    *   `unit_name` (cth: "Karton")
-    *   `conversion_factor` (cth: 24)
-    *   `barcode` (Barcode khusus untuk satuan ini)
-    *   `price` (Harga jual untuk satuan ini)
-3.  **product_batches** (FIFO & Expiry Tracking)
-    *   `id` (UUID, PK)
-    *   `tenant_id` (FK)
-    *   `product_id` (FK)
-    *   `branch_id` (FK)
-    *   `batch_number`
-    *   `quantity` (Stok di batch ini)
-    *   `cost_price` (Harga beli saat batch ini masuk - History Harga)
-    *   `supplier_id` (FK)
-    *   `received_date`
-    *   `expiry_date` (Prioritas penjualan berdasarkan ini)
-4.  **stock_transfers** (Mutasi Stok Antar Cabang)
-    *   `id` (UUID, PK)
-    *   `tenant_id` (FK)
-    *   `source_branch_id` (FK -> branches)
-    *   `destination_branch_id` (FK -> branches)
-    *   `status` (draft, pending, in_transit, received)
-    *   `requested_by` (FK -> users)
-    *   `approved_by` (FK -> users)
-5.  **transfer_items**
-    *   `id` (UUID, PK)
-    *   `transfer_id` (FK)
-    *   `product_id` (FK)
-    *   `source_batch_id` (FK)
-    *   `quantity_sent`
-    *   `quantity_received`
+## 6. Implementation Updates (UI/UX & Features)
 
-### D. POS & Transaction Module
-1.  **transactions**
-    *   `id` (UUID, PK)
-    *   `tenant_id` (FK)
-    *   `branch_id` (FK -> branches)
-    *   `cashier_id` (FK -> users)
-    *   `customer_id` (FK -> customers, Nullable for Guest)
-    *   `total_amount`
-    *   `payment_method`
-    *   `status`
-    *   `created_at`
-    *   `due_date` (untuk Piutang/AR)
-    *   `amount_paid` (untuk tracking pelunasan Piutang)
-2.  **transaction_items**
-    *   `id` (UUID, PK)
-    *   `tenant_id` (FK)
-    *   `transaction_id` (FK -> transactions)
-    *   `product_id` (FK -> products)
-    *   `batch_id` (FK -> product_batches, untuk FIFO deduction)
-    *   `unit_id` (FK -> product_units, satuan yang dijual)
-    *   `quantity`
-    *   `price_at_purchase`
-    *   `subtotal`
+### A. User Experience (UX)
+*   **Safety Deletion**: Implementasi `AlertDialog` component untuk konfirmasi penghapusan data penting (Karyawan, Absensi, Cuti) menggantikan browser alert standar.
+*   **Feedback System**: Penggunaan `sonner` toast notification yang konsisten untuk feedback sukses/gagal operasi.
 
-### E. Finance Module
-1.  **expenses**
-    *   `id` (UUID, PK)
-    *   `tenant_id` (FK)
-    *   `branch_id` (FK)
-    *   `category` (Operasional, Gaji, Sewa, dll)
-    *   `description`
-    *   `amount`
-    *   `amount_paid` (untuk tracking pelunasan Hutang)
-    *   `date`
-    *   `due_date` (untuk Hutang/AP)
-    *   `status` (paid, unpaid)
-    *   `supplier_id` (FK -> suppliers, opsional)
-    *   `created_by` (FK -> users)
+### B. Functional Improvements
+*   **Dynamic Payroll**: Menambahkan fitur pengaturan variabel gaji (hari kerja, tunjangan) di halaman laporan karyawan tanpa hardcoding.
+*   **Role Persistence**: Implementasi penyimpanan konfigurasi permission role kustom ke kolom `tenants.settings` sehingga perubahan hak akses bersifat permanen.
+*   **Data Correction**: Menambahkan kemampuan menghapus record absensi dan cuti yang salah input langsung dari dashboard laporan.
 
-## 3. Rencana Implementasi Teknis
+## Checklist Implementasi (MVP Phase 1)
 
-### Fase 1: Persiapan Backend & Database
-1.  Setup proyek Neon DB baru.
-2.  Desain schema SQL dengan `tenant_id` di semua tabel.
-3.  Aktifkan RLS (Row Level Security) policies.
-    *   Policy: `CREATE POLICY tenant_isolation ON table_name USING (tenant_id = current_setting('app.current_tenant_id')::uuid);`
-4.  Buat API Layer (bisa menggunakan Neon Serverless Driver langsung di client dengan middleware keamanan, atau membuat backend service sederhana).
-
-### Fase 2: Refactor Frontend (Current App)
-1.  **Authentication:** Implementasi Login/Register (bisa pakai Clerk/Auth0 atau custom).
-2.  **Mobile First UI:** Pastikan semua komponen menggunakan Tailwind Responsive classes (`md:`, `lg:`) dan Touch-friendly controls. Gunakan font **Plus Jakarta Sans** dan density `text-sm tracking-tight` untuk tampilan modern.
-3.  **Context Management:** Buat `TenantProvider` dan `BranchProvider` di React Context untuk menyimpan state "Sedang login sebagai tenant apa" dan "Sedang aktif di cabang mana".
-4.  **Data Fetching:** Ganti semua mock data di komponen (Inventory, POS, Dashboard) dengan `useQuery` (TanStack Query) yang memanggil API database.
-5.  **Multi-Branch Logic:** Update UI Inventory untuk menampilkan stok berdasarkan cabang yang dipilih di dropdown header.
-
-### Fase 3: Fitur Manajemen Tenant & Advanced Features
-1.  **Settings Module:** Implementasi form pengaturan perusahaan, pajak, dan notifikasi.
-2.  **CRM Module:** CRUD Supplier & Customer, History Transaksi per Customer.
-3.  **Advanced Inventory:**
-    *   UI untuk setting konversi satuan (1 Box = X Pcs).
-    *   Logika FIFO saat pengurangan stok (kurangi dari `product_batches` dengan `expiry_date` terdekat).
-    *   Low Stock Alert System (Email/In-App Notification).
-    *   **Stock Transfer:** Fitur request dan approve mutasi stok antar cabang dengan traceability HPP.
-
-## 6. Persyaratan Umum (Non-Functional Requirements)
-
-1.  **Security & Privacy**
-    *   **Data Encryption:** Semua data sensitif (password, PII) harus dienkripsi. Komunikasi wajib menggunakan HTTPS/TLS 1.2+.
-    *   **Data Isolation:** Strict RLS enforcement. Tidak boleh ada kebocoran data antar tenant.
-    *   **Audit Trails:** Setiap aksi kritis (Create/Update/Delete) pada data master dan transaksi harus tercatat di `audit_logs`.
-
-2.  **Reliability & Performance**
-    *   **High Availability:** Target uptime 99.9%.
-    *   **Scalability:** Mendukung auto-scaling untuk menghandle lonjakan transaksi.
-
-3.  **User Experience**
-    *   **Responsive Design:** Layout adaptif untuk Desktop, Tablet, dan HP.
-    *   **Notifications:** Sistem notifikasi real-time untuk stok menipis, approval transfer, dll.
-
-4.  **Documentation**
-    *   **API Docs:** Tersedia dokumentasi API (OpenAPI/Swagger) untuk integrasi pihak ketiga.
-    *   **User Guide:** Panduan penggunaan fitur untuk onboarding tenant baru.
-
-## 7. Requirement Checklist
-- [x] Database Schema (PostgreSQL) siap dengan RLS.
-- [x] Koneksi Database terintegrasi di aplikasi.
-- [ ] Sistem Autentikasi User (Multi-Tenant Login).
-- [x] CRUD Master Data (Produk) terhubung DB (Inventory Page) - Enhanced (SKU Auto-gen, Searchable Dropdown, Barcode).
-- [ ] CRUD Master Data (Karyawan, Cabang) terhubung DB.
-- [ ] Transaksi POS menyimpan data ke DB dan mengurangi stok secara atomik (FIFO).
-- [ ] Fitur Multi-Satuan (Unit Conversion) berfungsi di POS dan Inventory.
-- [ ] Fitur Stock Transfer (Mutasi Stok) berfungsi dengan Approval Workflow.
-- [x] Fitur Finance (Expenses, Cashflow, Journal, AP/AR) berfungsi dengan Neon DB.
-  *   **Cashflow**: Menggunakan metode **Cash Basis** (menghitung `amount_paid`) untuk refleksi arus kas riil.
-  *   **Journal**: Menggunakan pendekatan **Virtual Journal** (generated on-the-fly dari data Transaksi & Expenses) untuk efisiensi storage.
-  *   **Expenses**: Mendukung linkage ke Supplier dan Branch context.
-- [x] Dashboard mengambil data real-time via Aggregation Query.
-- [ ] UI Mobile Responsive terverifikasi di viewport kecil.
-- [ ] Audit Logging system terimplementasi.
-- [ ] Notifikasi system berjalan.
+- [x] Setup Project (Vite + React + TS + Tailwind)
+- [x] Setup Neon Database & Auth
+- [x] CRUD Master Data (Karyawan, Cabang) terhubung DB
+- [x] Fitur Absensi Sederhana (Input Manual)
+- [x] Laporan Gaji Dasar (Estimasi)
+- [x] Role Permission Management (Persisted in DB)
+- [ ] Integrasi POS (Point of Sale) Basic
+- [ ] Manajemen Stok Sederhana

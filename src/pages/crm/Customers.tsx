@@ -32,10 +32,12 @@ import {
   Users,
   ShoppingBag,
   Calendar,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import { query } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
+import * as XLSX from "xlsx";
 
 interface Customer {
   id: string;
@@ -235,6 +237,42 @@ export default function Customers() {
     (c.email && c.email.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
+  const handleExport = () => {
+    if (customers.length === 0) {
+      toast.error("Tidak ada data pelanggan untuk diexport");
+      return;
+    }
+
+    const exportData = customers.map(c => ({
+      "ID Pelanggan": c.id,
+      "Nama": c.name,
+      "Telepon": c.phone || "-",
+      "Email": c.email || "-",
+      "Total Belanja": c.total_spent,
+      "Terakhir Beli": c.last_purchase_date ? new Date(c.last_purchase_date).toLocaleDateString('id-ID') : "-",
+      "Catatan": c.preferences?.notes || "-"
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Pelanggan");
+
+    // Auto-width columns
+    const wscols = [
+      { wch: 30 }, // ID
+      { wch: 25 }, // Nama
+      { wch: 15 }, // Telepon
+      { wch: 25 }, // Email
+      { wch: 15 }, // Total Belanja
+      { wch: 15 }, // Terakhir Beli
+      { wch: 30 }, // Catatan
+    ];
+    ws['!cols'] = wscols;
+
+    XLSX.writeFile(wb, `Data_Pelanggan_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data pelanggan");
+  };
+
   return (
     <BackOfficeLayout>
       <div className="flex flex-col gap-6">
@@ -261,6 +299,10 @@ export default function Customers() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
+          <Button variant="outline" className="gap-2" onClick={handleExport}>
+            <Download className="w-4 h-4" />
+            Export Excel
+          </Button>
         </div>
 
         <div className="rounded-md border bg-card">

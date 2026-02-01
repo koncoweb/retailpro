@@ -20,7 +20,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Plus, Search, Trash2 } from "lucide-react";
+import { Plus, Search, Trash2, Download } from "lucide-react";
+import * as XLSX from "xlsx";
 import { query } from "@/lib/db";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -147,6 +148,40 @@ export default function Expenses() {
       e.description?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const handleExport = () => {
+    if (filteredExpenses.length === 0) {
+      toast.error("Tidak ada data untuk diexport");
+      return;
+    }
+
+    const data = filteredExpenses.map(e => ({
+      "Tanggal": format(new Date(e.date), "dd MMM yyyy"),
+      "Kategori": e.category,
+      "Supplier": e.supplier_name || "-",
+      "Cabang": e.branch_name || "Pusat/Semua",
+      "Deskripsi": e.description || "-",
+      "Jumlah": e.amount
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Pengeluaran");
+
+    // Auto-width
+    ws['!cols'] = [
+      { wch: 15 }, // Tanggal
+      { wch: 20 }, // Kategori
+      { wch: 20 }, // Supplier
+      { wch: 15 }, // Cabang
+      { wch: 30 }, // Deskripsi
+      { wch: 15 }, // Jumlah
+    ];
+
+    const filename = `Pengeluaran_${format(new Date(), "yyyy-MM-dd")}.xlsx`;
+    XLSX.writeFile(wb, filename);
+    toast.success("Berhasil export data pengeluaran");
+  };
+
   return (
     <BackOfficeLayout>
       <div className="space-y-6">
@@ -155,14 +190,18 @@ export default function Expenses() {
             <h1 className="text-2xl font-bold">Pengeluaran</h1>
             <p className="text-muted-foreground">Catat dan pantau pengeluaran operasional</p>
           </div>
-          <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
-            <DialogTrigger asChild>
-              <Button className="gap-2">
-                <Plus className="w-4 h-4" />
-                Tambah Pengeluaran
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="h-4 w-4" /> Export Excel
+            </Button>
+            <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
+              <DialogTrigger asChild>
+                <Button className="gap-2">
+                  <Plus className="w-4 h-4" />
+                  Tambah Pengeluaran
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
               <DialogHeader>
                 <DialogTitle>Tambah Pengeluaran Baru</DialogTitle>
               </DialogHeader>
@@ -225,8 +264,9 @@ export default function Expenses() {
             </DialogContent>
           </Dialog>
         </div>
+      </div>
 
-        <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4">
           <div className="relative flex-1 max-w-sm">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input

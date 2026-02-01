@@ -51,20 +51,27 @@ export function EmployeeRoleSettings() {
   const fetchRoles = async () => {
     setIsLoading(true);
     try {
-        // Fetch user counts from DB
-        const res = await query(`SELECT role, COUNT(*) as count FROM users GROUP BY role`);
+        // Fetch user counts and tenant settings in parallel
+        const [countRes, tenantRes] = await Promise.all([
+            query(`SELECT role, COUNT(*) as count FROM users GROUP BY role`),
+            query(`SELECT settings FROM tenants WHERE id = current_setting('app.current_tenant_id')::uuid`)
+        ]);
+
         const counts: Record<string, number> = {};
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        res.rows.forEach((row: any) => {
+        countRes.rows.forEach((row: any) => {
             if (row.role) counts[row.role.toLowerCase()] = parseInt(row.count);
         });
+
+        const tenantSettings = tenantRes.rows[0]?.settings || {};
+        const customPermissions = tenantSettings.role_permissions || {};
 
         // Map system roles to state
         const mappedRoles = ROLES.map(r => ({
             id: r.value,
             name: r.label,
             description: r.description,
-            permissions: DEFAULT_ROLE_PERMISSIONS[r.value] || {},
+            permissions: customPermissions[r.value] || DEFAULT_ROLE_PERMISSIONS[r.value] || {},
             userCount: counts[r.value] || 0
         }));
 
@@ -77,18 +84,34 @@ export function EmployeeRoleSettings() {
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (editingRole) {
-      setRoles((prev) =>
-        prev.map((r) =>
-          r.id === editingRole.id
-            ? { ...r, permissions: formData.permissions }
-            : r
-        )
-      );
-      toast.success("Permission berhasil diperbarui", {
-        description: "Perubahan ini hanya berlaku untuk sesi ini (Fitur permission dinamis sedang dikembangkan)",
-      });
+      try {
+          const updatedRoles = roles.map((r) =>
+            r.id === editingRole.id
+              ? { ...r, permissions: formData.permissions }
+              : r
+          );
+          
+          setRoles(updatedRoles);
+
+          // Prepare persistence
+          const allPermissions: Record<string, any> = {};
+          updatedRoles.forEach(r => {
+              allPermissions[r.id] = r.permissions;
+          });
+
+          await query(`
+              UPDATE tenants 
+              SET settings = jsonb_set(COALESCE(settings, '{}'), '{role_permissions}', $1) 
+              WHERE id = current_setting('app.current_tenant_id')::uuid
+          `, [JSON.stringify(allPermissions)]);
+
+          toast.success("Permission berhasil diperbarui");
+      } catch (error) {
+          console.error("Failed to save permissions:", error);
+          toast.error("Gagal menyimpan permission ke database");
+      }
     }
 
     setIsDialogOpen(false);

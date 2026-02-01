@@ -24,8 +24,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Plus, Search, DollarSign, Calendar, User } from "lucide-react";
+import { Plus, Search, DollarSign, Calendar, User, Download } from "lucide-react";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 import {
   Select,
   SelectContent,
@@ -85,6 +86,55 @@ export default function ApAr() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  const handleExport = () => {
+    try {
+      const wb = XLSX.utils.book_new();
+
+      // Sheet 1: Piutang (AR)
+      const arData = receivables.map(item => ({
+        "Invoice": item.invoice_number,
+        "Pelanggan": item.customer_name || "Umum",
+        "Tgl Transaksi": format(new Date(item.created_at), "dd/MM/yyyy"),
+        "Jatuh Tempo": item.due_date ? format(new Date(item.due_date), "dd/MM/yyyy") : "-",
+        "Total": item.total_amount,
+        "Terbayar": item.amount_paid,
+        "Sisa": item.total_amount - item.amount_paid
+      }));
+      const wsAr = XLSX.utils.json_to_sheet(arData);
+      // Auto-width for AR
+      const wscolsAr = [
+          {wch: 15}, {wch: 20}, {wch: 15}, {wch: 15}, {wch: 15}, {wch: 15}, {wch: 15}
+      ];
+      wsAr['!cols'] = wscolsAr;
+      XLSX.utils.book_append_sheet(wb, wsAr, "Piutang (AR)");
+
+      // Sheet 2: Hutang (AP)
+      const apData = payables.map(item => ({
+        "Keterangan": item.description,
+        "Kategori": item.category,
+        "Supplier": item.supplier_name || "-",
+        "Tgl Catat": format(new Date(item.date), "dd/MM/yyyy"),
+        "Jatuh Tempo": item.due_date ? format(new Date(item.due_date), "dd/MM/yyyy") : "-",
+        "Total": item.amount,
+        "Terbayar": item.amount_paid,
+        "Sisa": item.amount - item.amount_paid
+      }));
+      const wsAp = XLSX.utils.json_to_sheet(apData);
+      // Auto-width for AP
+      const wscolsAp = [
+          {wch: 30}, {wch: 20}, {wch: 20}, {wch: 15}, {wch: 15}, {wch: 15}, {wch: 15}, {wch: 15}
+      ];
+      wsAp['!cols'] = wscolsAp;
+      XLSX.utils.book_append_sheet(wb, wsAp, "Hutang (AP)");
+
+      XLSX.writeFile(wb, `Hutang_Piutang_${format(new Date(), "yyyy-MM-dd")}.xlsx`);
+      toast.success("Berhasil export data Hutang & Piutang");
+    } catch (error) {
+      console.error("Export failed:", error);
+      toast.error("Gagal export data");
+    }
+  };
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -226,9 +276,14 @@ export default function ApAr() {
   return (
     <BackOfficeLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold">Hutang & Piutang</h1>
-          <p className="text-muted-foreground">Manajemen tagihan supplier dan piutang pelanggan</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">Hutang & Piutang</h1>
+            <p className="text-muted-foreground">Manajemen tagihan supplier dan piutang pelanggan</p>
+          </div>
+          <Button variant="outline" className="gap-2" onClick={handleExport}>
+            <Download className="h-4 w-4" /> Export Excel
+          </Button>
         </div>
 
         <Tabs defaultValue="ar" className="space-y-4">
