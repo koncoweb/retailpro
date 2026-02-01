@@ -174,33 +174,62 @@ export default function Employees() {
     setIsSubmitting(true);
     try {
       // 1. Create User via Neon Auth API
+      // Prioritize Admin API to avoid overwriting current session (Owner)
       const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
       if (!authUrl) throw new Error("Neon Auth URL not configured");
 
-      const defaultPassword = newEmpPassword; // Password dari input
-
-      const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: newEmpEmail,
-          password: defaultPassword,
-          name: newEmpName,
-        }),
-      });
-
+      const passwordToUse = newEmpPassword; 
       let userId: string | undefined;
 
-      if (signUpRes.ok) {
-         const authData = await signUpRes.json();
-         userId = authData.user?.id || authData.session?.userId;
-      } else {
-         const errData = await signUpRes.json();
-         console.warn("Neon Auth creation warning:", errData);
-         if (signUpRes.status === 422 || signUpRes.status === 409) {
-             throw new Error("Email sudah terdaftar di sistem Auth. Silahkan gunakan email lain.");
-         }
-         throw new Error(errData.message || "Gagal membuat akun Neon Auth");
+      // Try Admin API first (doesn't sign in the new user)
+      try {
+        const adminRes = await fetch(`${authUrl}/admin/create-user`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                email: newEmpEmail,
+                password: passwordToUse,
+                name: newEmpName,
+                role: "user" // Default role in Auth system, actual role managed in public.users
+            }),
+        });
+
+        if (adminRes.ok) {
+            const adminData = await adminRes.json();
+            userId = adminData.user?.id || adminData.id;
+        } 
+      } catch (e) {
+        // Ignore network errors here to fall back
+        console.warn("Admin API failed, falling back to sign-up", e);
+      }
+
+      // Fallback to Sign Up if Admin API failed (or not available)
+      // Note: This might overwrite the session if running in same browser context!
+      if (!userId) {
+          const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: newEmpEmail,
+              password: passwordToUse,
+              name: newEmpName,
+            }),
+          });
+
+          if (signUpRes.ok) {
+             const authData = await signUpRes.json();
+             userId = authData.user?.id || authData.session?.userId;
+             
+             // Warning about potential session switch
+             toast.info("Akun auth dibuat. Jika sesi Anda berubah, silakan login kembali.");
+          } else {
+             const errData = await signUpRes.json();
+             console.warn("Neon Auth creation warning:", errData);
+             if (signUpRes.status === 422 || signUpRes.status === 409) {
+                 throw new Error("Email sudah terdaftar di sistem Auth. Silahkan gunakan email lain.");
+             }
+             throw new Error(errData.message || "Gagal membuat akun Neon Auth");
+          }
       }
 
       if (!userId) {

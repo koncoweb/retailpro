@@ -121,6 +121,7 @@ export function BranchDetailModal({
   const [editName, setEditName] = useState("");
   const [editRole, setEditRole] = useState("");
   const [editIsActive, setEditIsActive] = useState(true);
+  const [editPassword, setEditPassword] = useState("");
   const [isUpdatingEmployee, setIsUpdatingEmployee] = useState(false);
 
   useEffect(() => {
@@ -204,6 +205,7 @@ export function BranchDetailModal({
     setEditName(employee.name || "");
     setEditRole(employee.role);
     setEditIsActive(employee.is_active);
+    setEditPassword(""); // Reset password field
     setIsEditEmployeeOpen(true);
   };
 
@@ -212,6 +214,36 @@ export function BranchDetailModal({
 
     setIsUpdatingEmployee(true);
     try {
+      // 1. Update Neon Auth Password (if provided)
+      if (editPassword) {
+        const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
+        if (authUrl) {
+            try {
+                // Try Admin API to update password
+                const updateRes = await fetch(`${authUrl}/admin/update-user`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        userId: selectedEmployee.id,
+                        password: editPassword
+                    }),
+                });
+
+                if (!updateRes.ok) {
+                    // Fallback log or specialized error handling
+                    console.warn("Failed to update password via Admin API", await updateRes.text());
+                    toast.error("Gagal mengupdate password (Admin API error)");
+                } else {
+                    toast.success("Password berhasil diupdate");
+                }
+            } catch (e) {
+                console.error("Auth update error:", e);
+                toast.error("Gagal menghubungi server Auth");
+            }
+        }
+      }
+
+      // 2. Update Application User Data
       await query(
         `UPDATE users SET role = $1, is_active = $2, name = $3 WHERE id = $4`,
         [editRole, editIsActive, editName, selectedEmployee.id]
@@ -240,28 +272,57 @@ export function BranchDetailModal({
     setIsAddingEmployee(true);
     try {
       // 1. Create User via Neon Auth API
-      // We use fetch directly to avoid client-side session state issues if possible,
-      // though browser might still capture the session cookie.
+      // Prioritize Admin API to avoid overwriting current session (Owner)
       const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
       if (!authUrl) throw new Error("Neon Auth URL not configured");
 
-      const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: newEmployeeEmail,
-          password: newEmployeePassword,
-          name: newEmployeeEmail.split("@")[0],
-        }),
-      });
+      const passwordToUse = newEmployeePassword; 
+      let userId: string | undefined;
 
-      if (!signUpRes.ok) {
-        const errData = await signUpRes.json();
-        throw new Error(errData.message || "Gagal membuat akun Neon Auth");
+      // Try Admin API first (doesn't sign in the new user)
+      try {
+        const adminRes = await fetch(`${authUrl}/admin/create-user`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                email: newEmployeeEmail,
+                password: passwordToUse,
+                name: newEmployeeEmail.split("@")[0],
+                role: "user" 
+            }),
+        });
+
+        if (adminRes.ok) {
+            const adminData = await adminRes.json();
+            userId = adminData.user?.id || adminData.id;
+        } 
+      } catch (e) {
+        console.warn("Admin API failed, falling back to sign-up", e);
       }
 
-      const authData = await signUpRes.json();
-      const userId = authData.user?.id || authData.session?.userId;
+      // Fallback to Sign Up if Admin API failed
+      if (!userId) {
+          const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              email: newEmployeeEmail,
+              password: passwordToUse,
+              name: newEmployeeEmail.split("@")[0],
+            }),
+          });
+
+          if (signUpRes.ok) {
+            const authData = await signUpRes.json();
+            userId = authData.user?.id || authData.session?.userId;
+            
+            // Warning about potential session switch
+            toast.info("Akun auth dibuat. Jika sesi Anda berubah, silakan login kembali.");
+          } else {
+            const errData = await signUpRes.json();
+            throw new Error(errData.message || "Gagal membuat akun Neon Auth");
+          }
+      }
 
       if (!userId) {
           throw new Error("Gagal mendapatkan User ID dari Neon Auth");
@@ -674,6 +735,16 @@ export function BranchDetailModal({
             <div className="grid gap-2">
               <Label>Email</Label>
               <Input value={selectedEmployee?.email || ""} disabled />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="edit-password">Password Baru (Opsional)</Label>
+              <Input 
+                id="edit-password"
+                type="password"
+                placeholder="Biarkan kosong jika tidak diubah"
+                value={editPassword}
+                onChange={(e) => setEditPassword(e.target.value)}
+              />
             </div>
             <div className="grid gap-2">
               <Label htmlFor="edit-role">Role</Label>
