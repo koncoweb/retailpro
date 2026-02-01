@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isWeekend, getDay } from "date-fns";
 import { id } from "date-fns/locale";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -35,7 +35,12 @@ import {
     AlertCircle,
     Plus,
     Trash2,
-    Settings
+    Settings,
+    Loader2,
+    Users,
+    Plane,
+    DollarSign,
+    CalendarDays
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { query } from "@/lib/db";
@@ -502,7 +507,7 @@ export default function EmployeeReports() {
           <div className="bg-card rounded-xl border p-4 animate-fade-in">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-success/10">
-                <CheckCircle className="w-5 h-5 text-success" />
+                <CheckCircle2 className="w-5 h-5 text-success" />
               </div>
               <div>
                 <p className="text-sm text-muted-foreground">Hadir Hari Ini</p>

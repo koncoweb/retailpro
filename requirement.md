@@ -98,6 +98,32 @@ Berikut adalah rancangan tabel utama yang dibutuhkan:
     *   `id` (UUID, PK)
     *   `name` (Nama Usaha)
     *   `slug` (Subdomain/Identifier unik)
+    *   `settings` (JSONB) - Menyimpan konfigurasi global seperti Role Permissions.
+
+## 6. Deployment & Infrastructure (Vercel + Neon)
+
+### A. Hosting (Vercel)
+*   **Platform**: Vercel (Frontend Frameworks).
+*   **Type**: Single Page Application (SPA) with Client-Side Rendering.
+*   **Routing**: Rewrite rule pada `vercel.json` untuk mengarahkan semua request ke `index.html`.
+*   **Build**: `vite build` (Output directory: `dist`).
+
+### B. Database (Neon Serverless)
+*   **Connection**: Direct Client-to-Database via `@neondatabase/serverless` (WebSocket/HTTP).
+*   **Security**:
+    *   **Row Level Security (RLS)**: Wajib aktif pada seluruh tabel untuk isolasi data antar tenant.
+    *   **Authentication**: Neon Auth mengelola session dan identitas user.
+    *   **Credentials**: `VITE_DATABASE_URL` menggunakan role aplikasi dengan hak akses terbatas (bukan owner), yang bergantung pada RLS policies.
+*   **Optimization**: Menggunakan Neon Serverless Driver untuk connection pooling yang efisien di lingkungan stateless/browser.
+
+### C. Environment Variables
+Variable berikut wajib dikonfigurasi di Vercel Project Settings:
+1.  `VITE_NEON_AUTH_URL`: URL Endpoint untuk Neon Auth.
+2.  `VITE_DATABASE_URL`: Connection string PostgreSQL (harus support SSL & Pooling).
+
+### D. Monitoring & Logging
+*   **Error Handling**: Global Error Boundary pada React dan try-catch blocks pada operasi database.
+*   **Logging**: Centralized logger utility untuk mencatat error kritis dan aktivitas penting (audit trail).
     *   `company_details` (JSONB: NPWP, SIUP, Alamat Legal, Bentuk Badan Usaha)
     *   `settings` (JSONB: Tax Rules, Currency, Timezone, **Role Permissions**)
 
