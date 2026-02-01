@@ -49,6 +49,7 @@ import {
 } from "lucide-react";
 import { query } from "@/lib/db";
 import { formatCurrency } from "@/lib/formatters";
+import { authClient } from "@/lib/auth-client";
 
 interface Branch {
   id: string | number;
@@ -219,22 +220,62 @@ export function BranchDetailModal({
         const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
         if (authUrl) {
             try {
-                // Try Admin API to update password
-                const updateRes = await fetch(`${authUrl}/admin/update-user`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        userId: selectedEmployee.id,
-                        password: editPassword
-                    }),
-                });
+                // Try using SDK first (if admin plugin is available)
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const client = authClient as any;
+                let sdkSuccess = false;
 
-                if (!updateRes.ok) {
-                    // Fallback log or specialized error handling
-                    console.warn("Failed to update password via Admin API", await updateRes.text());
-                    toast.error("Gagal mengupdate password (Admin API error)");
-                } else {
-                    toast.success("Password berhasil diupdate");
+                if (client.admin?.updateUser) {
+                    console.log("Updating password using SDK admin.updateUser");
+                    const { error } = await client.admin.updateUser({
+                        userId: selectedEmployee.id,
+                        data: { 
+                            password: editPassword.trim(),
+                            emailVerified: true // Ensure user is verified so they can login
+                        }
+                    });
+                    
+                    if (error) {
+                        console.warn("SDK update failed:", error);
+                        // Fall through to fetch
+                    } else {
+                        sdkSuccess = true;
+                        toast.success("Password berhasil diupdate (SDK)");
+                    }
+                }
+
+                if (!sdkSuccess) {
+                    // Use standard /admin/update-user endpoint
+                    // Better Auth typically expects: { userId: "...", data: { password: "..." } }
+                    console.log("Updating password for user via Fetch:", selectedEmployee.id);
+                    
+                    const updateRes = await fetch(`${authUrl}/admin/update-user`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            userId: selectedEmployee.id, 
+                            data: {
+                               password: editPassword.trim(),
+                               emailVerified: true
+                            }
+                        }),
+                        credentials: "include"
+                    });
+
+                    if (!updateRes.ok) {
+                        const errText = await updateRes.text();
+                        console.warn("Failed to update password via Admin API:", updateRes.status, errText);
+                        
+                        // Try to parse error for better message
+                        try {
+                            const errJson = JSON.parse(errText);
+                            toast.error(`Gagal update password: ${errJson.message || errText}`);
+                        } catch {
+                            toast.error(`Gagal update password (${updateRes.status}): ${errText.substring(0, 100)}`);
+                        }
+                    } else {
+                        toast.success("Password berhasil diupdate");
+                    }
                 }
             } catch (e) {
                 console.error("Auth update error:", e);

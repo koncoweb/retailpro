@@ -25,7 +25,12 @@ const getUserId = async (): Promise<string | undefined> => {
   try {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const session = (await authClient.getSession()) as any;
-    return session.data?.user?.id || session.data?.session?.userId;
+    const uid = session.data?.user?.id || session.data?.session?.userId;
+    console.log("Debug getUserId:", { uid, type: typeof uid }); 
+    if (typeof uid === 'string' && uid.trim().length > 0) {
+      return uid;
+    }
+    return undefined;
   } catch (e) {
     console.warn("Auth session check failed, proceeding as unauthenticated:", e);
     return undefined;
@@ -42,6 +47,8 @@ export const query = async (text: string, params?: any[]) => {
   try {
     if (userId) {
        await setupSession(client, userId);
+    } else {
+       await clearSession(client);
     }
       
     const res = await client.query(text, params);
@@ -65,11 +72,29 @@ export const query = async (text: string, params?: any[]) => {
   }
 };
 
+const clearSession = async (client: any) => {
+    // Ensure no leftover session variables from pooled connections
+    const sessionVars = [
+        `SELECT set_config('app.user_role', 'guest', true);`,
+        `SELECT set_config('app.current_user_id', NULL, true);`,
+        `SELECT set_config('app.current_tenant_id', NULL, true);`,
+        `SELECT set_config('app.current_branch_id', NULL, true);`
+    ];
+    await client.query(sessionVars.join('\n'));
+};
+
 const setupSession = async (client: any, userId: string) => {
+    // Extra defensive check to prevent invalid UUID syntax error
+    if (!userId || typeof userId !== 'string' || userId.trim().length === 0) {
+        console.warn("setupSession called with empty userId");
+        return;
+    }
+
     await client.query('BEGIN');
 
     // 1. Set User ID first (needed for RLS on users table)
-    await client.query(`SET LOCAL app.current_user_id = '${userId}'`);
+    // Use set_config for consistency and safety
+    await client.query(`SELECT set_config('app.current_user_id', '${userId}', true)`);
 
     // 2. Refresh cache if needed
     if (!userCache || userCache.userId !== userId || Date.now() - userCache.timestamp > 60000) {
@@ -100,10 +125,26 @@ const setupSession = async (client: any, userId: string) => {
     const tenantId = userCache?.tenantId;
     const branchId = userCache?.branchId;
     
-    const sessionVars = [`SET LOCAL app.user_role = '${role}';`];
-    if (tenantId) sessionVars.push(`SET LOCAL app.current_tenant_id = '${tenantId}';`);
-    if (branchId) sessionVars.push(`SET LOCAL app.current_branch_id = '${branchId}';`);
+    // Always start by resetting potentially dirty variables from reused connections
+    // Using set_config with NULL is safer/cleaner for clearing
+    const sessionVars = [
+        `SELECT set_config('app.user_role', '${role}', true);`,
+        `SELECT set_config('app.current_user_id', '${userId}', true);` // Re-assert user_id just in case
+    ];
+
+    if (tenantId && typeof tenantId === 'string' && tenantId.trim().length > 0) {
+        sessionVars.push(`SELECT set_config('app.current_tenant_id', '${tenantId}', true);`);
+    } else {
+        sessionVars.push(`SELECT set_config('app.current_tenant_id', NULL, true);`);
+    }
+
+    if (branchId && typeof branchId === 'string' && branchId.trim().length > 0) {
+        sessionVars.push(`SELECT set_config('app.current_branch_id', '${branchId}', true);`);
+    } else {
+        sessionVars.push(`SELECT set_config('app.current_branch_id', NULL, true);`);
+    }
     
+    console.log("Debug sessionVars:", sessionVars);
     await client.query(sessionVars.join('\n'));
 };
 
@@ -116,6 +157,7 @@ export const runTransaction = async <T>(callback: (client: any) => Promise<T>) =
     if (userId) {
         await setupSession(client, userId);
     } else {
+        await clearSession(client); // Ensure clean state even for transactions without user
         await client.query('BEGIN');
     }
 

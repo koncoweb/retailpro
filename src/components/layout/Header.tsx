@@ -1,4 +1,4 @@
-import { Bell, Search, Sun, Moon, ChevronDown } from "lucide-react";
+import { Bell, Search, Sun, Moon, ChevronDown, LogOut, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,6 +11,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useState } from "react";
 import { useTheme } from "@/hooks/use-theme";
+import { useNavigate } from "react-router-dom";
+import { authClient } from "@/lib/auth-client";
+import { useQueryClient } from "@tanstack/react-query";
 
 const branches = [
   { id: 1, name: "Cabang Pusat Jakarta" },
@@ -22,6 +25,15 @@ const branches = [
 export function Header() {
   const [selectedBranch, setSelectedBranch] = useState(branches[0]);
   const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const handleLogout = async () => {
+    await authClient.signOut();
+    queryClient.setQueryData(["auth-session"], null);
+    await queryClient.invalidateQueries({ queryKey: ["auth-session"] });
+    navigate("/login");
+  };
 
   return (
     <header className="h-16 border-b border-border bg-card/50 backdrop-blur-sm px-4 lg:px-6 flex items-center justify-between gap-4">
@@ -98,6 +110,22 @@ export function Header() {
               <span className="text-sm text-muted-foreground">
                 Shift siang belum tutup kasir
               </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon">
+              <User className="w-5 h-5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuLabel>Akun Saya</DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={handleLogout} className="text-destructive cursor-pointer">
+              <LogOut className="w-4 h-4 mr-2" />
+              Logout
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

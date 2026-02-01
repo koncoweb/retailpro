@@ -61,7 +61,7 @@ const App = () => (
             <Route 
               path="/backoffice/branches" 
               element={
-                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']}>
+                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']}>
                   <Branches />
                 </RoleBasedRoute>
               } 
@@ -69,7 +69,7 @@ const App = () => (
             <Route 
               path="/backoffice/branches/dashboard" 
               element={
-                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']}>
+                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']}>
                   <BranchDashboard />
                 </RoleBasedRoute>
               } 
@@ -77,7 +77,7 @@ const App = () => (
             <Route 
               path="/backoffice/branches/transfer" 
               element={
-                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']}>
+                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']}>
                   <BranchTransfers />
                 </RoleBasedRoute>
               } 

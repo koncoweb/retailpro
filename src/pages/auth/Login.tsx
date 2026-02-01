@@ -50,12 +50,6 @@ export default function Login() {
       });
 
       if (error) {
-        // If we are in dev mode and no Auth URL is set, fall back to mock for demonstration
-        if (import.meta.env.DEV && !import.meta.env.VITE_NEON_AUTH_URL) {
-           console.warn("Neon Auth not configured, using mock login");
-           mockLogin(data.email);
-           return;
-        }
         toast.error(error.message || "Gagal login. Periksa email dan password Anda.");
         setIsLoading(false);
         return;
@@ -74,35 +68,10 @@ export default function Login() {
       
     } catch (err) {
       console.error("Login error:", err);
-      // Fallback to mock if network error in dev
-      if (import.meta.env.DEV) {
-          mockLogin(data.email);
-      } else {
-          toast.error("Terjadi kesalahan sistem");
-          setIsLoading(false);
-      }
+      toast.error("Terjadi kesalahan sistem saat mencoba login");
+      setIsLoading(false);
     }
   }
-
-  const mockLogin = (email: string) => {
-      // Mock Login Logic (Original)
-      setTimeout(() => {
-        setIsLoading(false);
-        if (email.includes("admin")) {
-          toast.success("Login berhasil sebagai Tenant Admin (Mock)");
-          navigate("/backoffice");
-        } else if (email.includes("kasir")) {
-          toast.success("Login berhasil sebagai Kasir (Mock)");
-          navigate("/pos");
-        } else if (email.includes("super")) {
-          toast.success("Login berhasil sebagai Super Admin (Mock)");
-          navigate("/admin/dashboard");
-        } else {
-          toast.success("Login berhasil (Mock)");
-          navigate("/backoffice");
-        }
-      }, 1000);
-  };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-muted/50 p-4">

@@ -48,19 +48,19 @@ const navItems: NavItem[] = [
         title: "Dashboard", 
         path: "/backoffice/branches/dashboard", 
         icon: LayoutDashboard,
-        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']
+        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']
       },
       { 
         title: "Daftar Cabang", 
         path: "/backoffice/branches", 
         icon: Store,
-        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin']
+        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'admin']
       },
       { 
         title: "Transfer Stok", 
         path: "/backoffice/branches/transfer", 
         icon: ArrowLeftRight,
-        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager']
+        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']
       },
     ],
   },

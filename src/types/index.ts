@@ -1,4 +1,4 @@
-export type UserRole = 'platform_owner' | 'tenant_owner' | 'tenant_admin' | 'store_manager' | 'cashier';
+export type UserRole = 'platform_owner' | 'tenant_owner' | 'tenant_admin' | 'store_manager' | 'cashier' | 'admin';
 
 export interface Tenant {
   id: string;
