@@ -72,13 +72,14 @@ export default function POSTransactions() {
           SELECT 
             t.id, t.tenant_id, t.branch_id, t.cashier_id, t.customer_id, 
             t.invoice_number, t.total_amount, t.payment_method, t.status, t.created_at,
+            u.name as cashier_name,
             COALESCE(
               json_agg(
                 json_build_object(
                   'id', ti.id,
                   'tenant_id', ti.tenant_id,
                   'product_id', ti.product_id,
-                  'product_name', ti.product_name,
+                  'product_name', p.name,
                   'quantity', ti.quantity,
                   'unit_price', ti.unit_price,
                   'subtotal', ti.subtotal,
@@ -89,7 +90,9 @@ export default function POSTransactions() {
             ) as items
           FROM transactions t
           LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
-          GROUP BY t.id
+          LEFT JOIN products p ON ti.product_id = p.id
+          LEFT JOIN users u ON t.cashier_id = u.id
+          GROUP BY t.id, u.name
           ORDER BY t.created_at DESC
           LIMIT 100
         `;
@@ -143,12 +146,12 @@ export default function POSTransactions() {
       "Invoice": trx.invoice_number,
       "Tanggal": new Date(trx.created_at).toLocaleDateString('id-ID'),
       "Waktu": new Date(trx.created_at).toLocaleTimeString('id-ID'),
+      "Kasir": (trx as any).cashier_name || "Unknown",
       "Customer": trx.customer_id || "Walk-in",
       "Cabang": getBranchName(trx.branch_id),
       "Pembayaran": trx.payment_method,
       "Total Items": trx.items.reduce((sum, item) => sum + item.quantity, 0),
       "Total Amount": trx.total_amount,
-      "Status": trx.status
     }));
 
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -345,7 +348,7 @@ export default function POSTransactions() {
                         <div>
                             <p className="font-medium">{trx.customer_id || "Walk-in Customer"}</p>
                             <p className="text-sm text-muted-foreground">
-                            {trx.cashier_id} • {branchName}
+                            {(trx as any).cashier_name || trx.cashier_id} • {branchName}
                             </p>
                         </div>
                         </TableCell>

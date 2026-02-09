@@ -478,7 +478,7 @@ export default function Employees() {
         </div>
 
         {/* Employees Table */}
-        <div className="bg-card rounded-xl border overflow-hidden animate-fade-in">
+        <div className="bg-card rounded-xl border overflow-x-auto animate-fade-in">
           <Table>
             <TableHeader>
               <TableRow>

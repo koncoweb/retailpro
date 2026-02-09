@@ -101,6 +101,22 @@ export interface TransactionItem {
   conversion_factor?: number;
 }
 
+export interface Shift {
+  id: string;
+  tenant_id: string;
+  branch_id: string;
+  user_id: string;
+  start_time: string;
+  end_time?: string;
+  initial_cash: number;
+  final_cash?: number;
+  expected_cash?: number;
+  difference?: number;
+  notes?: string;
+  status: 'open' | 'closed';
+  created_at: string;
+}
+
 // Mock Session State
 export interface SessionState {
   tenant: Tenant;

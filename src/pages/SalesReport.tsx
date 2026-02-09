@@ -60,7 +60,7 @@ export default function SalesReport() {
           u.name as cashier_name
         FROM transactions t
         LEFT JOIN branches b ON t.branch_id = b.id
-        LEFT JOIN users u ON t.user_id = u.id
+        LEFT JOIN users u ON t.cashier_id = u.id
         WHERE t.created_at >= $1 AND t.created_at <= $2
       `;
       

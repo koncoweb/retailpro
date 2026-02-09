@@ -222,8 +222,9 @@ export default function BranchDashboard() {
             <CardTitle>Peringkat Cabang</CardTitle>
           </CardHeader>
           <CardContent>
-            <Table>
-              <TableHeader>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
                 <TableRow>
                   <TableHead>Cabang</TableHead>
                   <TableHead>Status</TableHead>
@@ -251,6 +252,7 @@ export default function BranchDashboard() {
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       </div>

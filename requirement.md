@@ -178,4 +178,41 @@ Variable berikut wajib dikonfigurasi di Vercel Project Settings:
 - [x] Laporan Gaji Dasar (Estimasi)
 - [x] Role Permission Management (Persisted in DB)
 - [ ] Integrasi POS (Point of Sale) Basic
+- [x] Manajemen Shift (POS)
 - [ ] Manajemen Stok Sederhana
+
+## 7. Manajemen Shift (POS)
+
+Fitur untuk mengatur shift kasir, memastikan akurasi uang kas, dan pelaporan harian.
+
+### A. Konsep Shift
+*   **Satu Shift per User**: Shift terikat pada satu user (kasir) di satu cabang.
+*   **Status Shift**: `open` (sedang berjalan) atau `closed` (sudah selesai).
+*   **Validasi**: User tidak bisa melakukan transaksi POS jika belum membuka shift.
+*   **Single Active Shift**: Satu user hanya boleh memiliki satu shift aktif dalam satu waktu.
+
+### B. Alur Kerja
+1.  **Buka Shift (Open Shift)**:
+    *   Input modal awal (Petty Cash).
+    *   Sistem mencatat waktu mulai (`start_time`).
+2.  **Operasional**:
+    *   Semua transaksi penjualan tercatat dalam shift aktif.
+3.  **Tutup Shift (Close Shift)**:
+    *   Sistem menghitung total uang tunai yang seharusnya ada (`expected_cash` = modal awal + total penjualan tunai).
+    *   Kasir menginput jumlah uang tunai fisik (`final_cash`).
+    *   Sistem menghitung selisih (`difference`).
+    *   Laporan ringkasan metode pembayaran (Tunai, Kartu, QRIS).
+
+### C. Database Schema (shifts)
+*   `id` (UUID, PK)
+*   `tenant_id` (FK)
+*   `branch_id` (FK)
+*   `user_id` (FK)
+*   `start_time` (Timestamp)
+*   `end_time` (Timestamp, Nullable)
+*   `initial_cash` (Numeric)
+*   `final_cash` (Numeric, Nullable)
+*   `expected_cash` (Numeric, Nullable)
+*   `difference` (Numeric, Nullable)
+*   `status` (enum: 'open', 'closed')
+

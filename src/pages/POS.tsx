@@ -1,4 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "@/hooks/use-auth";
 import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +33,8 @@ function formatCurrency(value: number) {
 }
 
 export default function POS() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Semua");
@@ -42,6 +46,7 @@ export default function POS() {
   const [shiftData, setShiftData] = useState<ShiftDataState | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [showLowStock, setShowLowStock] = useState(true);
+  const [currentShiftId, setCurrentShiftId] = useState<string | null>(null);
   
   const [products, setProducts] = useState<Product[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -49,6 +54,43 @@ export default function POS() {
 
   const [isUnitSelectionOpen, setIsUnitSelectionOpen] = useState(false);
   const [selectedProductForUnit, setSelectedProductForUnit] = useState<Product | null>(null);
+
+  // Check for active shift
+  useEffect(() => {
+    const checkShift = async () => {
+      if (!user) return;
+      
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const userId = (user as any).id;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const branchId = currentBranchId || (user as any).assigned_branch_id;
+
+        if (userId && branchId) {
+          const res = await query(
+            `SELECT id FROM shifts WHERE user_id = $1 AND branch_id = $2 AND status = 'open'`,
+            [userId, branchId]
+          );
+          
+          if (res.rows.length === 0) {
+            // No active shift found
+            toast.warning("Silakan buka shift terlebih dahulu untuk melakukan transaksi.");
+            navigate("/pos/shifts");
+          } else {
+            setIsShiftOpen(true);
+            setIsShiftActive(true);
+            setCurrentShiftId(res.rows[0].id);
+          }
+        }
+      } catch (error) {
+        console.error("Error checking shift:", error);
+      }
+    };
+
+    if (currentBranchId) {
+      checkShift();
+    }
+  }, [user, currentBranchId, navigate]);
 
   const currentBranch = useMemo(() => 
     branches.find(b => b.id === currentBranchId) || { id: "", name: "Loading...", tenant_id: "" } as Branch,
@@ -247,15 +289,17 @@ export default function POS() {
         }
 
         const invoiceNumber = `INV/${Date.now()}`;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const cashierId = (user as any)?.id;
         
         await runTransaction(async (client) => {
             // 1. Create Transaction
             const trxRes = await client.query(`
                 INSERT INTO transactions 
-                (branch_id, cashier_id, invoice_number, total_amount, payment_method, status, created_at, amount_paid)
-                VALUES ($1, $2, $3, $4, $5, 'completed', NOW(), $4)
+                (branch_id, cashier_id, invoice_number, total_amount, payment_method, status, created_at, amount_paid, shift_id)
+                VALUES ($1, $2, $3, $4, $5, 'completed', NOW(), $4, $6)
                 RETURNING id
-            `, [currentBranchId, 'user-001', invoiceNumber, total, finalMethod]);
+            `, [currentBranchId, cashierId, invoiceNumber, total, finalMethod, currentShiftId]);
             
             const transactionId = trxRes.rows[0].id;
 

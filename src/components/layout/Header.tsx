@@ -1,4 +1,4 @@
-import { Bell, Search, Sun, Moon, ChevronDown, LogOut, User } from "lucide-react";
+import { Bell, Search, Sun, Moon, ChevronDown, LogOut, User, Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -14,6 +14,7 @@ import { useTheme } from "@/hooks/use-theme";
 import { useNavigate } from "react-router-dom";
 import { authClient } from "@/lib/auth-client";
 import { useQueryClient } from "@tanstack/react-query";
+import { useSidebar } from "@/contexts/SidebarContext";
 
 const branches = [
   { id: 1, name: "Cabang Pusat Jakarta" },
@@ -27,6 +28,7 @@ export function Header() {
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { setMobileOpen } = useSidebar();
 
   const handleLogout = async () => {
     await authClient.signOut();
@@ -37,6 +39,16 @@ export function Header() {
 
   return (
     <header className="h-16 border-b border-border bg-card/50 backdrop-blur-sm px-4 lg:px-6 flex items-center justify-between gap-4">
+      {/* Mobile Menu Trigger */}
+      <Button
+        variant="ghost"
+        size="icon"
+        className="lg:hidden mr-2"
+        onClick={() => setMobileOpen(true)}
+      >
+        <Menu className="w-5 h-5" />
+      </Button>
+
       {/* Search */}
       <div className="flex-1 max-w-md hidden md:block">
         <div className="relative">

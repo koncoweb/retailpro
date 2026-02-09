@@ -9,6 +9,7 @@ import RegisterTenant from "./pages/auth/RegisterTenant";
 import ModeSelect from "./pages/ModeSelect";
 import POS from "./pages/POS";
 import POSTransactions from "./pages/POSTransactions";
+import POSShifts from "./pages/POSShifts";
 import Dashboard from "./pages/Dashboard";
 import Branches from "./pages/Branches";
 import Inventory from "./pages/Inventory";
@@ -50,7 +51,7 @@ const App = () => (
             {/* POS Routes */}
             <Route path="/pos" element={<POS />} />
             <Route path="/pos/transactions" element={<POSTransactions />} />
-            <Route path="/pos/shifts" element={<POS />} />
+            <Route path="/pos/shifts" element={<POSShifts />} />
 
             {/* Back Office Routes */}
             <Route path="/backoffice" element={<Dashboard />} />
