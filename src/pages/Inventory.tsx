@@ -126,6 +126,12 @@ export default function Inventory() {
   };
 
   // Fetch Products
+  useEffect(() => {
+    if (!isAddProductOpen) {
+      document.body.style.pointerEvents = "auto";
+    }
+  }, [isAddProductOpen]);
+
   const fetchProducts = async () => {
     try {
       setIsLoading(true);
@@ -143,15 +149,11 @@ export default function Inventory() {
             ORDER BY created_at ASC 
             LIMIT 1
           ) as price,
-          COALESCE(NULLIF(p.cost_price, 0), (
-            SELECT AVG(pb.cost_price) 
-            FROM product_batches pb 
-            WHERE pb.product_id = p.id AND pb.quantity_current > 0
-          ), 0) as cost,
+          COALESCE(p.cost_price, 0) as cost,
           COALESCE((
-            SELECT SUM(pb.quantity_current) 
-            FROM product_batches pb 
-            WHERE pb.product_id = p.id
+            SELECT SUM(quantity_current) 
+            FROM product_batches 
+            WHERE product_id = p.id
           ), 0) as stock,
           (
             SELECT jsonb_object_agg(b.id, COALESCE(sum_qty, 0))
@@ -469,7 +471,9 @@ export default function Inventory() {
 
       setIsAddProductOpen(false);
       setEditingProduct(null);
-      fetchProducts();
+      setTimeout(() => {
+        fetchProducts();
+      }, 100);
     } catch (error) {
       console.error("Failed to save product:", error);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

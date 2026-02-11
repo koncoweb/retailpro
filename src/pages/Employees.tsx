@@ -135,6 +135,12 @@ export default function Employees() {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (!isAddOpen) {
+      document.body.style.pointerEvents = "auto";
+    }
+  }, [isAddOpen]);
+
   const fetchData = async () => {
     setIsLoading(true);
     try {

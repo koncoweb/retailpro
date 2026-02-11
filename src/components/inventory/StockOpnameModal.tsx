@@ -80,7 +80,11 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
     }
 
     const items = locationProducts.map(product => {
-      const actualStock = parseInt(actualStocks[product.id] || "") || product.locationStock;
+      const actualStockStr = actualStocks[product.id];
+      const actualStock = actualStockStr !== undefined && actualStockStr !== "" 
+        ? parseInt(actualStockStr) 
+        : product.locationStock;
+      
       return {
         productId: product.id,
         systemStock: product.locationStock,
@@ -104,7 +108,10 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
 
   const getTotalDifference = () => {
     return locationProducts.reduce((sum, product) => {
-      const actual = parseInt(actualStocks[product.id] || "") || product.locationStock;
+      const actualStockStr = actualStocks[product.id];
+      const actual = actualStockStr !== undefined && actualStockStr !== "" 
+        ? parseInt(actualStockStr) 
+        : product.locationStock;
       return sum + (actual - product.locationStock);
     }, 0);
   };
@@ -181,7 +188,10 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
                 </TableHeader>
                 <TableBody>
                   {locationProducts.map((product) => {
-                    const actualStock = parseInt(actualStocks[product.id] || "") || product.locationStock;
+                    const actualStockStr = actualStocks[product.id];
+                    const actualStock = actualStockStr !== undefined && actualStockStr !== "" 
+                      ? parseInt(actualStockStr) 
+                      : product.locationStock;
                     const difference = actualStock - product.locationStock;
                     
                     return (

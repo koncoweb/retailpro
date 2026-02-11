@@ -17,6 +17,15 @@ Kita akan menggunakan strategi **Shared Database, Shared Schema** dengan kolom d
 *   **RLS**: Menggunakan fitur **Row Level Security (RLS)** di PostgreSQL (Neon DB) untuk menjamin keamanan data antar tenant.
 *   Aplikasi tidak perlu menyaring `WHERE tenant_id = X` di setiap query secara manual, melainkan diatur via session variable di database.
 
+### C. Inventory & Stock Management (New)
+1.  **Stock FIFO (First-In-First-Out)**: Pengurangan stok (penjualan, transfer keluar, opname negatif) wajib mengambil data dari batch stok tertua (`product_batches` diurutkan berdasarkan `received_at ASC`).
+2.  **Product Costing**: 
+    *   Harga modal (`cost_price`) di tabel `products` berfungsi sebagai harga referensi/default.
+    *   Harga modal aktual disimpan di setiap baris `product_batches` saat barang masuk (Stock In / PO / Opname Positif).
+    *   Perhitungan total nilai inventaris menggunakan harga modal di tabel `products` untuk konsistensi tampilan, namun audit stok tetap mengacu pada batch.
+3.  **Audit Trail**: Setiap perubahan stok (Manual, Import, Opname, Transfer, PO) wajib dicatat dalam tabel `audit_logs` dengan aksi yang sesuai (`create_product`, `stock_adjustment`, `create_transfer`, `approve_transfer`, `create_po`).
+4.  **Unit Conversion**: Mendukung multi-satuan per produk dengan `conversion_factor` relatif terhadap satuan terkecil (Base Unit).
+
 ## 2. Authentication & Authorization (Neon Auth)
 
 Menggunakan **Neon Auth** (yang berbasis Better Auth) untuk menyimpan data user, session, dan role langsung di dalam database PostgreSQL.
@@ -50,7 +59,7 @@ Tabel `user` bawaan Neon Auth akan diextend atau direlasikan dengan tabel profil
     *   `is_active` (boolean, default false for new tenants) - Custom
     *   `base_salary` (Numeric, Default 0) - Custom
 
-## 4. Fitur Frontend (Authentication & Onboarding)
+## 6. Fitur Frontend (Authentication & Onboarding)
 
 ### A. Halaman Registrasi Tenant (RegisterTenant)
 *   **Formulir Pendaftaran**:
