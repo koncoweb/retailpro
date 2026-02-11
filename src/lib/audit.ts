@@ -10,7 +10,8 @@ export type AuditAction =
   | "transfer_approval"
   | "create_product"
   | "create_transfer"
-  | "approve_transfer";
+  | "approve_transfer"
+  | "create_po";
 
 export interface AuditLogParams {
   action: AuditAction;

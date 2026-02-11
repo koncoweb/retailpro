@@ -143,7 +143,7 @@ export default function Inventory() {
             ORDER BY created_at ASC 
             LIMIT 1
           ) as price,
-          COALESCE((
+          COALESCE(NULLIF(p.cost_price, 0), (
             SELECT AVG(pb.cost_price) 
             FROM product_batches pb 
             WHERE pb.product_id = p.id AND pb.quantity_current > 0
@@ -248,7 +248,7 @@ export default function Inventory() {
     return "products";
   };
 
-  const handleImport = (importedProducts: Array<{
+  const handleImport = async (importedProducts: Array<{
     sku: string;
     name: string;
     category: string;
@@ -258,46 +258,53 @@ export default function Inventory() {
     minStock: number;
     supplier: string;
   }>) => {
-    const newProducts = importedProducts.map((p, index) => {
-      const existingProduct = products.find(ep => ep.sku === p.sku);
-      if (existingProduct) {
-        return {
-          ...existingProduct,
-          name: p.name,
-          category: p.category,
-          price: p.price,
-          cost: p.cost,
-          stock: p.stock,
-          minStock: p.minStock,
-          supplier: p.supplier,
-        };
+    try {
+      for (const p of importedProducts) {
+        // Find or Create Supplier
+        let supplierId: string | null = null;
+        if (p.supplier) {
+          const supplierRes = await query("SELECT id FROM suppliers WHERE name = $1", [p.supplier]);
+          if (supplierRes.rows.length > 0) {
+            supplierId = supplierRes.rows[0].id;
+          } else {
+            const newSupRes = await query("INSERT INTO suppliers (name) VALUES ($1) RETURNING id", [p.supplier]);
+            supplierId = newSupRes.rows[0].id;
+          }
+        }
+
+        const existingRes = await query("SELECT id FROM products WHERE sku = $1", [p.sku]);
+        if (existingRes.rows.length > 0) {
+          // Update
+          await query(
+            `UPDATE products SET name=$1, category=$2, cost_price=$3, min_stock_level=$4, supplier_id=$5 WHERE sku=$6`,
+            [p.name, p.category, p.cost, p.minStock, supplierId, p.sku]
+          );
+        } else {
+          // Insert
+          const res = await query(
+            `INSERT INTO products (sku, name, category, cost_price, min_stock_level, supplier_id) 
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+            [p.sku, p.name, p.category, p.cost, p.minStock, supplierId]
+          );
+          const productId = res.rows[0].id;
+
+          // Add Initial Stock to default branch (Pusat)
+          const branchesRes = await query("SELECT id FROM branches ORDER BY created_at ASC LIMIT 1");
+          if (branchesRes.rows.length > 0 && p.stock > 0) {
+            await query(
+              `INSERT INTO product_batches (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price)
+               VALUES ($1, $2, $3, $4, $4, $5)`,
+              [branchesRes.rows[0].id, productId, 'INITIAL-IMPORT', p.stock, p.cost]
+            );
+          }
+        }
       }
-      return {
-        id: String(Date.now() + index),
-        sku: p.sku,
-        name: p.name,
-        category: p.category,
-        price: p.price,
-        cost: p.cost,
-        stock: p.stock,
-        minStock: p.minStock,
-        branches: { pusat: p.stock },
-        lastRestock: new Date().toISOString().split("T")[0],
-        supplier: p.supplier,
-        units: [],
-      };
-    });
-
-    const updatedProducts = products.map(p => {
-      const imported = newProducts.find(np => np.sku === p.sku);
-      return imported || p;
-    });
-
-    const existingSKUs = products.map(p => p.sku);
-    const trulyNewProducts = newProducts.filter(np => !existingSKUs.includes(np.sku));
-    
-    setProducts([...updatedProducts, ...trulyNewProducts]);
-    toast.success(`${importedProducts.length} produk berhasil diimport`);
+      toast.success(`${importedProducts.length} produk berhasil diimport`);
+      fetchProducts();
+    } catch (error) {
+      console.error("Import failed:", error);
+      toast.error("Gagal mengimport produk");
+    }
   };
 
   const handleSaveProduct = async (productData: {
@@ -334,8 +341,8 @@ export default function Inventory() {
       if (editingProduct) {
         // UPDATE Product
         await query(
-          `UPDATE products SET sku=$1, name=$2, category=$3, min_stock_level=$4, supplier_id=$5 WHERE id=$6`,
-          [productData.sku, productData.name, productData.category, productData.minStock, supplierId, editingProduct.id]
+          `UPDATE products SET sku=$1, name=$2, category=$3, min_stock_level=$4, supplier_id=$5, cost_price=$6 WHERE id=$7`,
+          [productData.sku, productData.name, productData.category, productData.minStock, supplierId, productData.cost, editingProduct.id]
         );
 
         // Update Units
@@ -404,10 +411,10 @@ export default function Inventory() {
       } else {
         // INSERT (Create)
         const productRes = await query(
-          `INSERT INTO products (sku, name, category, min_stock_level, is_tracked, supplier_id) 
-           VALUES ($1, $2, $3, $4, true, $5) 
+          `INSERT INTO products (sku, name, category, min_stock_level, is_tracked, supplier_id, cost_price) 
+           VALUES ($1, $2, $3, $4, true, $5, $6) 
            RETURNING id`,
-          [productData.sku, productData.name, productData.category, productData.minStock, supplierId]
+          [productData.sku, productData.name, productData.category, productData.minStock, supplierId, productData.cost]
         );
         const productId = productRes.rows[0].id;
 
@@ -507,7 +514,7 @@ export default function Inventory() {
       }
 
       await logAudit({
-        action: "create",
+        action: "create_transfer",
         entity: "stock_transfers",
         entityId: transferId,
         details: { 
@@ -616,12 +623,13 @@ export default function Inventory() {
 
   const handleOpname = async (opname: {
     location: string;
-    items: Array<{ productId: string; actualStock: number }>;
+    items: Array<{ productId: string; actualStock: number; notes?: string }>;
   }) => {
     try {
+      // Start Transaction-like sequence
       for (const item of opname.items) {
          const prodRes = await query(
-            `SELECT SUM(quantity_current) as current_stock 
+            `SELECT COALESCE(SUM(quantity_current), 0) as current_stock 
              FROM product_batches 
              WHERE product_id = $1 AND branch_id = $2`,
             [item.productId, opname.location]
@@ -631,11 +639,15 @@ export default function Inventory() {
 
          if (diff !== 0) {
             if (diff > 0) {
+                // Get product cost for initial batch
+                const pRes = await query(`SELECT cost_price FROM products WHERE id = $1`, [item.productId]);
+                const cost = parseFloat(pRes.rows[0]?.cost_price || '0');
+
                 await query(
                   `INSERT INTO product_batches 
                    (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at)
-                   VALUES ($1, $2, $3, $4, $4, 0, NOW())`,
-                  [opname.location, item.productId, `OPNAME-${Date.now()}`, diff]
+                   VALUES ($1, $2, $3, $4, $4, $5, NOW())`,
+                  [opname.location, item.productId, `OPNAME-${Date.now()}`, diff, cost]
                 );
             } else {
                 let remainingToReduce = Math.abs(diff);
@@ -671,7 +683,8 @@ export default function Inventory() {
                 reason: "Stock Opname",
                 branchId: opname.location,
                 diff,
-                actualStock: item.actualStock
+                actualStock: item.actualStock,
+                notes: item.notes || "Stock Opname Adjustment"
               },
               userId: user?.id
             });
@@ -686,11 +699,70 @@ export default function Inventory() {
     }
   };
 
-  const handlePO = (po: any) => {
-    // In a real app, this would create a PO record
-    console.log("PO Created:", po);
-    toast.success(`Purchase Order ${po.poNumber} berhasil dibuat`);
-    setIsPOOpen(false);
+  const handlePO = async (po: {
+    poNumber: string;
+    supplier: string;
+    destination: string;
+    items: Array<{
+      productId: string;
+      quantity: number;
+      unitName: string;
+      conversionFactor: number;
+      unitCost: number;
+    }>;
+    notes: string;
+    expectedDate: string;
+    totalAmount: number;
+  }) => {
+    try {
+      // Find or Create Supplier
+      let supplierId: string | null = null;
+      if (po.supplier) {
+        const supplierRes = await query("SELECT id FROM suppliers WHERE name = $1", [po.supplier]);
+        if (supplierRes.rows.length > 0) {
+          supplierId = supplierRes.rows[0].id;
+        } else {
+          const newSupRes = await query("INSERT INTO suppliers (name) VALUES ($1) RETURNING id", [po.supplier]);
+          supplierId = newSupRes.rows[0].id;
+        }
+      }
+
+      // 1. In a real app, we'd create a 'purchase_orders' table. 
+      // For now, let's just complete it by adding stock directly (simulating PO arrival)
+      // or at least log it properly.
+      
+      for (const item of po.items) {
+        const totalBaseQty = item.quantity * item.conversionFactor;
+        const baseCost = item.unitCost / item.conversionFactor;
+
+        await query(
+          `INSERT INTO product_batches 
+           (branch_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at, supplier_id)
+           VALUES ($1, $2, $3, $4, $4, $5, NOW(), $6)`,
+          [po.destination, item.productId, po.poNumber, totalBaseQty, baseCost, supplierId]
+        );
+      }
+
+      await logAudit({
+        action: "create_po",
+        entity: "product_batches",
+        entityId: po.poNumber,
+        details: {
+          poNumber: po.poNumber,
+          supplier: po.supplier,
+          itemsCount: po.items.length,
+          totalAmount: po.totalAmount
+        },
+        userId: user?.id
+      });
+
+      toast.success(`Purchase Order ${po.poNumber} berhasil diproses dan stok ditambahkan`);
+      setIsPOOpen(false);
+      fetchProducts();
+    } catch (error) {
+      console.error("PO failed:", error);
+      toast.error("Gagal memproses Purchase Order");
+    }
   };
 
   const handleDeleteProduct = async (productId: string) => {
@@ -730,10 +802,14 @@ export default function Inventory() {
 
   const totalProducts = products.length;
   const lowStockProducts = products.filter((p) => p.stock <= p.minStock).length;
-  const totalValue = products.reduce((sum, p) => sum + p.stock * p.cost, 0);
-  const avgMargin =
-    products.reduce((sum, p) => sum + ((p.price - p.cost) / p.price) * 100, 0) /
-    products.length;
+  const totalValue = products.reduce((sum, p) => sum + (parseFloat(String(p.stock)) * parseFloat(String(p.cost || 0))), 0);
+  const avgMargin = products.length > 0 
+    ? products.reduce((sum, p) => {
+        const price = parseFloat(String(p.price || 0));
+        const cost = parseFloat(String(p.cost || 0));
+        return sum + (price > 0 ? ((price - cost) / price) * 100 : 0);
+      }, 0) / products.length 
+    : 0;
 
   return (
     <BackOfficeLayout>
