@@ -61,14 +61,6 @@ export default function BranchTransfers() {
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      // Ensure Schema exists for multi-unit support
-      try {
-        await query(`ALTER TABLE transfer_items ADD COLUMN IF NOT EXISTS unit_name VARCHAR(50)`);
-        await query(`ALTER TABLE transfer_items ADD COLUMN IF NOT EXISTS conversion_factor DECIMAL(10,2) DEFAULT 1`);
-      } catch (e) {
-        console.warn("Auto-migration for transfer_items failed (columns might exist or permission denied):", e);
-      }
-
       await Promise.all([
         fetchBranches(),
         fetchProducts(),
