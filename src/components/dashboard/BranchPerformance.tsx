@@ -39,29 +39,30 @@ export function BranchPerformance() {
             COALESCE(prod.count, 0) as product_count
           FROM branches b
           LEFT JOIN (
-            SELECT branch_id, SUM(amount_paid) as total 
+            SELECT branch_id, SUM(total_amount) as total 
             FROM transactions 
-            WHERE created_at >= date_trunc('month', CURRENT_DATE) 
+            WHERE created_at >= date('now','start of month') 
             GROUP BY branch_id
           ) curr_sales ON b.id = curr_sales.branch_id
           LEFT JOIN (
-            SELECT branch_id, SUM(amount_paid) as total 
+            SELECT branch_id, SUM(total_amount) as total 
             FROM transactions 
-            WHERE created_at >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month') 
-            AND created_at < date_trunc('month', CURRENT_DATE) 
+            WHERE created_at >= date('now','start of month','-1 month') 
+            AND created_at < date('now','start of month') 
             GROUP BY branch_id
           ) prev_sales ON b.id = prev_sales.branch_id
           LEFT JOIN (
             SELECT assigned_branch_id, COUNT(*) as count 
             FROM users 
-            WHERE is_active = true 
+            WHERE is_active = 1 
             GROUP BY assigned_branch_id
           ) emp ON b.id = emp.assigned_branch_id
           LEFT JOIN (
-            SELECT branch_id, COUNT(DISTINCT product_id) as count 
-            FROM product_batches 
-            WHERE quantity_current > 0 
-            GROUP BY branch_id
+            SELECT bw.branch_id, COUNT(DISTINCT pb.product_id) as count
+            FROM product_batches pb
+            JOIN branch_warehouses bw ON bw.warehouse_id = pb.warehouse_id
+            WHERE pb.quantity_current > 0
+            GROUP BY bw.branch_id
           ) prod ON b.id = prod.branch_id
           ORDER BY b.name
         `);

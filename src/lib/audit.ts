@@ -9,45 +9,64 @@ export type AuditAction =
   | "stock_adjustment" 
   | "transfer_approval"
   | "create_product"
+  | "update_product"
   | "create_transfer"
   | "approve_transfer"
-  | "create_po";
+  | "create_po"
+  | "checkout"
+  | "refund"
+  | "create_employee"
+  | "update_employee"
+  | "create_expense"
+  | "create_payment";
+
+/** Minimal shape of `runTransaction`'s client, so an entry can be written atomically. */
+export interface AuditExecutor {
+  query<T = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[]
+  ): Promise<{ rows: T[]; rowCount: number }>;
+}
 
 export interface AuditLogParams {
   action: AuditAction;
   entity: string;
   entityId?: string;
-  details?: Record<string, any>;
+  details?: Record<string, unknown>;
   userId?: string; // Optional, if not provided will try to infer or leave null
 }
 
 export const logAudit = async ({ action, entity, entityId, details, userId }: AuditLogParams) => {
   try {
-    // Note: userId might be automatically handled by the database default if we set app.current_user_id
-    // But since audit_logs has a user_id column, we can explicitly set it if we have it.
-    // If called from frontend component where we have useAuth(), we can pass userId.
-    // If called from backend-ish logic where we might not have it easily, we might rely on session.
-
-    const queryText = `
-      INSERT INTO audit_logs (action, entity, entity_id, details, user_id)
-      VALUES ($1, $2, $3, $4, $5)
-    `;
-
-    // If userId is not provided, we might want to let the DB handle it or pass null.
-    // However, our table schema has user_id as UUID NULL.
-    // We should try to pass it if possible.
-    
-    await query(queryText, [
-      action,
-      entity,
-      entityId || null,
-      JSON.stringify(details || {}),
-      userId || null
-    ]);
+    // The tenant database is per company, so `user_id` is the only scoping
+    // needed — there is no RLS session variable to fall back on any more.
+    await query(
+      `INSERT INTO audit_logs (action, entity, entity_id, details, user_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [action, entity, entityId || null, JSON.stringify(details || {}), userId || null]
+    );
   } catch (error) {
     console.error("Failed to write audit log:", error);
     // We generally don't want to fail the main operation if logging fails, 
     // but in strict compliance environments we might. 
     // For now, we just log the error.
   }
+};
+
+/**
+ * Write an audit entry on an already-open transaction.
+ *
+ * Money-moving operations (checkout, expense, employee changes) must not be
+ * able to commit without their audit trail, so those paths pass the
+ * transaction client in and let the write roll back together with the change.
+ */
+export const logAuditTx = async (
+  executor: AuditExecutor,
+  { action, entity, entityId, details, userId }: AuditLogParams
+): Promise<void> => {
+  await executor.query(
+    `INSERT INTO audit_logs (action, entity, entity_id, details, user_id)
+     VALUES ($1, $2, $3, $4, $5)`,
+    [action, entity, entityId || null, JSON.stringify(details || {}), userId || null]
+  );
 };

@@ -20,6 +20,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PaginationBar } from "@/components/ui/pagination-bar";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { 
@@ -43,7 +44,9 @@ import {
     CalendarDays
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { query } from "@/lib/db";
+import { query, batchQuery } from "@/lib/db";
+import { getPeriodRange } from "@/lib/date-range";
+import { readTenantSettings, setTenantSetting } from "@/lib/tenant-settings";
 import { toast } from "sonner";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -106,6 +109,9 @@ function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(value);
 }
 
+/** Rows per page for the attendance and leave tables. */
+const PAGE_SIZE = 25;
+
 export default function EmployeeReports() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [attendanceData, setAttendanceData] = useState<Attendance[]>([]);
@@ -144,52 +150,89 @@ export default function EmployeeReports() {
   const [newLeaveEndDate, setNewLeaveEndDate] = useState("");
   const [newLeaveReason, setNewLeaveReason] = useState("");
 
+  // Pagination: attendance and leave histories grow without bound, so both
+  // lists are paged in SQL instead of being capped at a magic LIMIT.
+  const [attendancePage, setAttendancePage] = useState(0);
+  const [leavePage, setLeavePage] = useState(0);
+  const [attendanceTotal, setAttendanceTotal] = useState(0);
+  const [leaveTotal, setLeaveTotal] = useState(0);
+
+  useEffect(() => {
+    setAttendancePage(0);
+  }, [selectedMonth]);
+
   const fetchData = async () => {
     setIsLoading(true);
     try {
-        // Fetch Tenant Settings
-        const settingsRes = await query(`SELECT settings FROM tenants WHERE id = current_setting('app.current_tenant_id')::uuid`);
-        const settings = settingsRes.rows[0]?.settings || {};
-        
+        // Attendance is scoped to the selected month: a calendar month is the
+        // only useful window for payroll, and the bound range keeps the scan on
+        // idx_attendance_emp_date instead of reading the whole table.
+        const [monthStart, monthEnd] = getPeriodRange(
+          "thismonth",
+          new Date(`${selectedMonth}-01T00:00:00`)
+        );
+
+        const [empRes, attRes, attCountRes, leaveRes, leaveCountRes] = await batchQuery([
+          {
+            sql: `
+                SELECT u.id, u.name, u.role, u.base_salary, b.name as branch_name
+                FROM users u
+                LEFT JOIN branches b ON u.assigned_branch_id = b.id
+                WHERE u.is_active = 1
+            `,
+          },
+          {
+            sql: `
+                SELECT * FROM attendance
+                WHERE date >= $1 AND date < $2
+                ORDER BY date DESC, id DESC
+                LIMIT $3 OFFSET $4
+            `,
+            params: [monthStart, monthEnd, PAGE_SIZE, attendancePage * PAGE_SIZE],
+          },
+          {
+            sql: `SELECT COUNT(*) as total FROM attendance WHERE date >= $1 AND date < $2`,
+            params: [monthStart, monthEnd],
+          },
+          {
+            sql: `
+                SELECT * FROM leaves
+                ORDER BY start_date DESC, id DESC
+                LIMIT $1 OFFSET $2
+            `,
+            params: [PAGE_SIZE, leavePage * PAGE_SIZE],
+          },
+          { sql: `SELECT COUNT(*) as total FROM leaves` },
+        ]);
+
+        // Tenant settings: one JSON document, read through the shared helper.
+        const settings = await readTenantSettings();
         if (settings.payroll_config) {
-            setConfig(settings.payroll_config);
+            setConfig(settings.payroll_config as typeof config);
         }
 
-        // Fetch Employees
-        const empRes = await query(`
-            SELECT u.id, u.name, u.role, u.base_salary, b.name as branch_name
-            FROM users u
-            LEFT JOIN branches b ON u.assigned_branch_id = b.id
-            WHERE u.is_active = true
-        `);
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        setEmployees(empRes.rows.map((r: any) => ({
+        setEmployees((empRes.rows as any[]).map((r) => ({
             ...r,
             base_salary: Number(r.base_salary) || 0
         })));
 
-        // Fetch Attendance
-        const attRes = await query(`
-            SELECT * FROM attendance ORDER BY date DESC LIMIT 500
-        `);
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        setAttendanceData(attRes.rows.map((r: any) => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setAttendanceData((attRes.rows as any[]).map((r) => ({
             ...r,
             overtime: Number(r.overtime) || 0,
             date: format(new Date(r.date), 'yyyy-MM-dd')
         })));
+        setAttendanceTotal(Number((attCountRes.rows[0] as { total: number })?.total ?? 0));
 
-        // Fetch Leaves
-        const leaveRes = await query(`
-            SELECT * FROM leaves ORDER BY start_date DESC LIMIT 100
-        `);
-         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        setLeaveData(leaveRes.rows.map((r: any) => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setLeaveData((leaveRes.rows as any[]).map((r) => ({
             ...r,
             start_date: format(new Date(r.start_date), 'yyyy-MM-dd'),
             end_date: format(new Date(r.end_date), 'yyyy-MM-dd'),
             days: Math.ceil((new Date(r.end_date).getTime() - new Date(r.start_date).getTime()) / (1000 * 3600 * 24)) + 1
         })));
+        setLeaveTotal(Number((leaveCountRes.rows[0] as { total: number })?.total ?? 0));
 
     } catch (error) {
         console.error("Failed to fetch data", error);
@@ -201,7 +244,8 @@ export default function EmployeeReports() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendancePage, leavePage, selectedMonth]);
 
   const handleAddAttendance = async () => {
     if(!newAttEmployeeId || !newAttDate) {
@@ -211,8 +255,8 @@ export default function EmployeeReports() {
     setIsSubmitting(true);
     try {
         await query(`
-            INSERT INTO attendance (tenant_id, employee_id, date, check_in, check_out, status, overtime)
-            VALUES (current_setting('app.current_tenant_id')::uuid, $1, $2, $3, $4, $5, 0)
+            INSERT INTO attendance (employee_id, date, check_in, check_out, status, overtime)
+            VALUES ($1, $2, $3, $4, $5, 0)
         `, [newAttEmployeeId, newAttDate, newAttCheckIn || null, newAttCheckOut || null, newAttStatus]);
         toast.success("Absensi berhasil ditambahkan");
         setIsAddAttendanceOpen(false);
@@ -236,8 +280,8 @@ export default function EmployeeReports() {
     setIsSubmitting(true);
     try {
         await query(`
-            INSERT INTO leaves (tenant_id, employee_id, type, start_date, end_date, reason, status)
-            VALUES (current_setting('app.current_tenant_id')::uuid, $1, $2, $3, $4, $5, 'approved')
+            INSERT INTO leaves (employee_id, type, start_date, end_date, reason, status)
+            VALUES ($1, $2, $3, $4, $5, 'approved')
         `, [newLeaveEmployeeId, newLeaveType, newLeaveStartDate, newLeaveEndDate, newLeaveReason]);
         toast.success("Cuti berhasil ditambahkan");
         setIsAddLeaveOpen(false);
@@ -315,11 +359,8 @@ export default function EmployeeReports() {
 
   const saveConfig = async () => {
     try {
-        await query(`
-            UPDATE tenants 
-            SET settings = jsonb_set(COALESCE(settings, '{}'), '{payroll_config}', $1) 
-            WHERE id = current_setting('app.current_tenant_id')::uuid
-        `, [JSON.stringify(config)]);
+        // libSQL has no jsonb_set: read → merge → write in one transaction.
+        await setTenantSetting("payroll_config", config);
         toast.success("Konfigurasi payroll disimpan");
     } catch (error) {
         console.error("Failed to save config:", error);
@@ -640,6 +681,13 @@ export default function EmployeeReports() {
                   })}
                 </TableBody>
               </Table>
+              <PaginationBar
+                page={attendancePage}
+                pageSize={PAGE_SIZE}
+                total={attendanceTotal}
+                onPageChange={setAttendancePage}
+                label="absensi"
+              />
             </div>
           </TabsContent>
 
@@ -708,6 +756,13 @@ export default function EmployeeReports() {
                   })}
                 </TableBody>
               </Table>
+              <PaginationBar
+                page={leavePage}
+                pageSize={PAGE_SIZE}
+                total={leaveTotal}
+                onPageChange={setLeavePage}
+                label="cuti"
+              />
             </div>
           </TabsContent>
 

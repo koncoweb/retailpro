@@ -95,9 +95,9 @@ export function TransactionDetailModal({
         SELECT 
           b.name, 
           COUNT(t.id) as tx_count, 
-          COALESCE(SUM(t.amount_paid), 0) as total_amount
+          COALESCE(SUM(t.total_amount), 0) as total_amount
         FROM branches b
-        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= CURRENT_DATE
+        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= date('now')
         GROUP BY b.id, b.name
         ORDER BY total_amount DESC
       `);

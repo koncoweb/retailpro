@@ -12,6 +12,7 @@ import POSTransactions from "./pages/POSTransactions";
 import POSShifts from "./pages/POSShifts";
 import Dashboard from "./pages/Dashboard";
 import Branches from "./pages/Branches";
+import Warehouses from "./pages/Warehouses";
 import Inventory from "./pages/Inventory";
 import Employees from "./pages/Employees";
 import EmployeeReports from "./pages/EmployeeReports";
@@ -22,17 +23,60 @@ import NotFound from "./pages/NotFound";
 import BranchDashboard from "./pages/branches/Dashboard";
 import BranchTransfers from "./pages/BranchTransfers";
 import { RoleBasedRoute } from "./components/auth/RoleBasedRoute";
+import { TenantProvider, RequireTenant } from "./contexts/TenantContext";
 import Expenses from "./pages/finance/Expenses";
 import Journal from "./pages/finance/Journal";
 import ApAr from "./pages/finance/ApAr";
 import Cashflow from "./pages/finance/Cashflow";
-import Suppliers from "./pages/crm/Suppliers";
+import Vendors from "./pages/vendors/Vendors";
+import VendorDetail from "./pages/vendors/VendorDetail";
 import Customers from "./pages/crm/Customers";
 import SalesReport from "./pages/SalesReport";
 import InventoryReport from "./pages/InventoryReport";
 import FinanceReports from "./pages/FinanceReports";
+import type { UserRole } from "./types";
 
 const queryClient = new QueryClient();
+
+/**
+ * Every authenticated route is gated twice:
+ *   RoleBasedRoute -> is this person allowed on this screen?
+ *   RequireTenant  -> is their company database reachable?
+ * Nothing below mounts until both hold, so no page can issue a query without a
+ * tenant client.
+ */
+const ALL_ROLES: UserRole[] = [
+  "platform_owner",
+  "tenant_owner",
+  "tenant_admin",
+  "store_manager",
+  "cashier",
+  "warehouse",
+  "staff",
+  "admin",
+];
+
+const MANAGERS: UserRole[] = [
+  "platform_owner",
+  "tenant_owner",
+  "tenant_admin",
+  "store_manager",
+  "admin",
+];
+
+const FRONT_OFFICE: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "store_manager", "cashier", "admin"];
+
+const BACK_OFFICE: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "store_manager", "admin"];
+
+const HR_ONLY: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "admin"];
+
+function guarded(element: React.ReactNode, allowedRoles: UserRole[]) {
+  return (
+    <RoleBasedRoute allowedRoles={allowedRoles}>
+      <RequireTenant>{element}</RequireTenant>
+    </RoleBasedRoute>
+  );
+}
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
@@ -41,69 +85,62 @@ const App = () => (
         <Toaster />
         <Sonner />
         <BrowserRouter>
-          <Routes>
-            {/* Auth Routes */}
-            <Route path="/" element={<Navigate to="/login" replace />} />
-            <Route path="/login" element={<Login />} />
-            <Route path="/register-tenant" element={<RegisterTenant />} />
-            <Route path="/mode-select" element={<ModeSelect />} />
+          <TenantProvider>
+            <Routes>
+              {/* Auth Routes */}
+              <Route path="/" element={<Navigate to="/login" replace />} />
+              <Route path="/login" element={<Login />} />
+              <Route path="/register-tenant" element={<RegisterTenant />} />
+              <Route path="/mode-select" element={<ModeSelect />} />
 
-            {/* POS Routes */}
-            <Route path="/pos" element={<POS />} />
-            <Route path="/pos/transactions" element={<POSTransactions />} />
-            <Route path="/pos/shifts" element={<POSShifts />} />
+              {/* POS Routes */}
+              <Route path="/pos" element={guarded(<POS />, FRONT_OFFICE)} />
+              <Route path="/pos/transactions" element={guarded(<POSTransactions />, ALL_ROLES)} />
+              <Route path="/pos/shifts" element={guarded(<POSShifts />, FRONT_OFFICE)} />
 
-            {/* Back Office Routes */}
-            <Route path="/backoffice" element={<Dashboard />} />
-            <Route path="/backoffice/crm/suppliers" element={<Suppliers />} />
-            <Route path="/backoffice/crm/customers" element={<Customers />} />
-            
-            {/* Branch Management Routes */}
-            <Route 
-              path="/backoffice/branches" 
-              element={
-                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']}>
-                  <Branches />
-                </RoleBasedRoute>
-              } 
-            />
-            <Route 
-              path="/backoffice/branches/dashboard" 
-              element={
-                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']}>
-                  <BranchDashboard />
-                </RoleBasedRoute>
-              } 
-            />
-            <Route 
-              path="/backoffice/branches/transfer" 
-              element={
-                <RoleBasedRoute allowedRoles={['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']}>
-                  <BranchTransfers />
-                </RoleBasedRoute>
-              } 
-            />
-            
-            <Route path="/backoffice/inventory/products" element={<Inventory />} />
-            <Route path="/backoffice/inventory/stock-in" element={<Inventory />} />
-            <Route path="/backoffice/inventory/opname" element={<Inventory />} />
-            <Route path="/backoffice/inventory/po" element={<Inventory />} />
-            <Route path="/backoffice/finance/journal" element={<Journal />} />
-            <Route path="/backoffice/finance/ap-ar" element={<ApAr />} />
-            <Route path="/backoffice/finance/cashflow" element={<Cashflow />} />
-            <Route path="/backoffice/finance/expenses" element={<Expenses />} />
-            <Route path="/backoffice/hr/employees" element={<Employees />} />
-            <Route path="/backoffice/hr/attendance" element={<EmployeeReports />} />
-            <Route path="/backoffice/hr/schedule" element={<Employees />} />
-            <Route path="/backoffice/hr/payroll" element={<EmployeeReports />} />
-            <Route path="/backoffice/reports" element={<Reports />} />
-            <Route path="/backoffice/reports/sales" element={<SalesReport />} />
-            <Route path="/backoffice/reports/inventory" element={<InventoryReport />} />
-            <Route path="/backoffice/reports/finance" element={<FinanceReports />} />
-            <Route path="/backoffice/settings" element={<Settings />} />
+              {/* Back Office Routes */}
+              <Route path="/backoffice" element={guarded(<Dashboard />, BACK_OFFICE)} />
+              <Route path="/backoffice/crm/suppliers" element={guarded(<Vendors />, BACK_OFFICE)} />
+              <Route path="/backoffice/vendors" element={guarded(<Vendors />, BACK_OFFICE)} />
+              <Route path="/backoffice/vendors/:id" element={guarded(<VendorDetail />, BACK_OFFICE)} />
+              <Route path="/backoffice/crm/customers" element={guarded(<Customers />, BACK_OFFICE)} />
 
-            <Route path="*" element={<NotFound />} />
-          </Routes>
+              {/* Branch Management Routes */}
+              <Route path="/backoffice/branches" element={guarded(<Branches />, MANAGERS)} />
+              <Route path="/backoffice/warehouses" element={guarded(<Warehouses />, MANAGERS)} />
+              <Route
+                path="/backoffice/branches/dashboard"
+                element={guarded(<BranchDashboard />, MANAGERS)}
+              />
+              <Route
+                path="/backoffice/branches/transfer"
+                element={guarded(<BranchTransfers />, MANAGERS)}
+              />
+
+              <Route path="/backoffice/inventory/products" element={guarded(<Inventory />, BACK_OFFICE)} />
+              <Route path="/backoffice/inventory/stock-in" element={guarded(<Inventory />, BACK_OFFICE)} />
+              <Route path="/backoffice/inventory/opname" element={guarded(<Inventory />, BACK_OFFICE)} />
+              <Route path="/backoffice/inventory/po" element={guarded(<Inventory />, BACK_OFFICE)} />
+              <Route path="/backoffice/finance/journal" element={guarded(<Journal />, BACK_OFFICE)} />
+              <Route path="/backoffice/finance/ap-ar" element={guarded(<ApAr />, BACK_OFFICE)} />
+              <Route path="/backoffice/finance/cashflow" element={guarded(<Cashflow />, BACK_OFFICE)} />
+              <Route path="/backoffice/finance/expenses" element={guarded(<Expenses />, BACK_OFFICE)} />
+              <Route path="/backoffice/hr/employees" element={guarded(<Employees />, HR_ONLY)} />
+              <Route path="/backoffice/hr/attendance" element={guarded(<EmployeeReports />, HR_ONLY)} />
+              <Route path="/backoffice/hr/schedule" element={guarded(<Employees />, HR_ONLY)} />
+              <Route path="/backoffice/hr/payroll" element={guarded(<EmployeeReports />, HR_ONLY)} />
+              <Route path="/backoffice/reports" element={guarded(<Reports />, BACK_OFFICE)} />
+              <Route path="/backoffice/reports/sales" element={guarded(<SalesReport />, BACK_OFFICE)} />
+              <Route
+                path="/backoffice/reports/inventory"
+                element={guarded(<InventoryReport />, BACK_OFFICE)}
+              />
+              <Route path="/backoffice/reports/finance" element={guarded(<FinanceReports />, BACK_OFFICE)} />
+              <Route path="/backoffice/settings" element={guarded(<Settings />, HR_ONLY)} />
+
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </TenantProvider>
         </BrowserRouter>
       </TooltipProvider>
     </ThemeProvider>

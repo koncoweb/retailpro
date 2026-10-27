@@ -60,9 +60,20 @@ import {
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { query } from "@/lib/db";
+import { logAudit } from "@/lib/audit";
+import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
 import { ROLES, DEFAULT_ROLE_PERMISSIONS, PERMISSION_LABELS } from "@/config/roles";
 import { authClient } from "@/lib/auth-client";
+
+/** Same-origin by default; `VITE_API_BASE_URL` only for split-origin dev. */
+const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+
+/** Temporary password returned once by /api/admin/users. */
+interface GeneratedCredentials {
+  email: string;
+  password: string;
+}
 
 interface Employee {
   id: string;
@@ -82,6 +93,9 @@ interface Branch {
 }
 
 export default function Employees() {
+  // The acting user is recorded on every audit entry, so an employee change
+  // can be traced back to whoever made it.
+  const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -110,6 +124,9 @@ export default function Employees() {
 
   // Delete State
   const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // One-time password dialog (never a toast: it is the only copy of the password)
+  const [generatedCredentials, setGeneratedCredentials] = useState<GeneratedCredentials | null>(null);
 
   const renderPermissions = (roleVal: string) => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -179,78 +196,62 @@ export default function Employees() {
 
     setIsSubmitting(true);
     try {
-      // 1. Create User via Neon Auth API
-      // Prioritize Admin API to avoid overwriting current session (Owner)
-      const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
-      if (!authUrl) throw new Error("Neon Auth URL not configured");
+      // 1. Create the identity on the control plane.
+      //    `/api/admin/users` wraps Better Auth's admin API: it never switches the
+      //    caller's session and it returns the generated password exactly once.
+      const response = await fetch(`${apiBase}/api/admin/users`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: newEmpEmail,
+          name: newEmpName,
+          role: newEmpRole,
+          branchId: newEmpBranch || null,
+        }),
+      });
 
-      const passwordToUse = newEmpPassword; 
-      let userId: string | undefined;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const created: any = await response.json().catch(() => ({}));
 
-      // Try Admin API first (doesn't sign in the new user)
-      try {
-        const adminRes = await fetch(`${authUrl}/admin/create-user`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                email: newEmpEmail,
-                password: passwordToUse,
-                name: newEmpName,
-                role: "user" // Default role in Auth system, actual role managed in public.users
-            }),
-        });
-
-        if (adminRes.ok) {
-            const adminData = await adminRes.json();
-            userId = adminData.user?.id || adminData.id;
-        } 
-      } catch (e) {
-        // Ignore network errors here to fall back
-        console.warn("Admin API failed, falling back to sign-up", e);
+      if (!response.ok) {
+        if (response.status === 409) {
+          throw new Error("Email sudah terdaftar. Silakan gunakan email lain.");
+        }
+        throw new Error(created?.message || "Gagal membuat akun karyawan");
       }
 
-      // Fallback to Sign Up if Admin API failed (or not available)
-      // Note: This might overwrite the session if running in same browser context!
+      const userId: string | undefined = created?.userId;
       if (!userId) {
-          const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email: newEmpEmail,
-              password: passwordToUse,
-              name: newEmpName,
-            }),
-          });
-
-          if (signUpRes.ok) {
-             const authData = await signUpRes.json();
-             userId = authData.user?.id || authData.session?.userId;
-             
-             // Warning about potential session switch
-             toast.info("Akun auth dibuat. Jika sesi Anda berubah, silakan login kembali.");
-          } else {
-             const errData = await signUpRes.json();
-             console.warn("Neon Auth creation warning:", errData);
-             if (signUpRes.status === 422 || signUpRes.status === 409) {
-                 throw new Error("Email sudah terdaftar di sistem Auth. Silahkan gunakan email lain.");
-             }
-             throw new Error(errData.message || "Gagal membuat akun Neon Auth");
-          }
+        throw new Error("Gagal mendapatkan User ID dari server auth");
       }
 
-      if (!userId) {
-         throw new Error("Gagal mendapatkan User ID dari Neon Auth");
-      }
-
-      // 2. Insert into users table
+      // 2. Mirror the identity into this tenant's own `users` table so joins
+      //    (cashier names, branch assignment) keep working.
       await query(
-        `INSERT INTO users (id, tenant_id, email, role, assigned_branch_id, is_active, name, base_salary) 
-         VALUES ($1, current_setting('app.current_tenant_id')::uuid, $2, $3, $4, true, $5, $6)
+        `INSERT INTO users (id, email, role, assigned_branch_id, is_active, name, base_salary) 
+         VALUES ($1, $2, $3, $4, 1, $5, $6)
          ON CONFLICT (id) DO UPDATE 
-         SET role = $3, assigned_branch_id = $4, is_active = true, name = $5, base_salary = $6`,
+         SET role = $3, assigned_branch_id = $4, is_active = 1, name = $5, base_salary = $6`,
         [userId, newEmpEmail, newEmpRole, newEmpBranch || null, newEmpName, parseFloat(newEmpSalary) || 0]
       );
 
+      // The temporary password is shown once, in a copy dialog rather than a toast.
+      await logAudit({
+        action: "create_employee",
+        entity: "users",
+        entityId: userId,
+        userId: user?.id,
+        details: {
+          email: newEmpEmail,
+          name: newEmpName,
+          role: newEmpRole,
+          branch_id: newEmpBranch || null,
+          base_salary: parseFloat(newEmpSalary) || 0,
+        },
+      });
+
+      setGeneratedCredentials({ email: newEmpEmail, password: created.tempPassword });
       toast.success("Karyawan berhasil ditambahkan");
       setIsAddOpen(false);
       setNewEmpName("");
@@ -287,6 +288,31 @@ export default function Employees() {
         [editRole, branchId, editIsActive, editName, parseFloat(editSalary) || 0, editingEmployee.id]
       );
 
+      // Record the before/after so a role or salary change is auditable —
+      // this is the screen that can grant someone manager permissions.
+      await logAudit({
+        action: "update_employee",
+        entity: "users",
+        entityId: editingEmployee.id,
+        userId: user?.id,
+        details: {
+          before: {
+            name: editingEmployee.name,
+            role: editingEmployee.role,
+            branch_id: editingEmployee.assigned_branch_id,
+            is_active: editingEmployee.is_active,
+            base_salary: editingEmployee.base_salary,
+          },
+          after: {
+            name: editName,
+            role: editRole,
+            branch_id: branchId,
+            is_active: editIsActive,
+            base_salary: parseFloat(editSalary) || 0,
+          },
+        },
+      });
+
       toast.success("Data karyawan diperbarui");
       setIsEditOpen(false);
       setEditingEmployee(null);
@@ -307,7 +333,15 @@ export default function Employees() {
     if (!deleteId) return;
     
     try {
+        const removed = employees.find((emp) => emp.id === deleteId);
         await query(`DELETE FROM users WHERE id = $1`, [deleteId]);
+        await logAudit({
+            action: "delete",
+            entity: "users",
+            entityId: deleteId,
+            userId: user?.id,
+            details: { email: removed?.email ?? null, name: removed?.name ?? null, role: removed?.role ?? null },
+        });
         toast.success("Karyawan dihapus");
         fetchData();
     } catch (error) {
@@ -782,6 +816,46 @@ export default function Employees() {
             </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Temporary password: the server returns it exactly once. */}
+      <Dialog open={!!generatedCredentials} onOpenChange={(open) => !open && setGeneratedCredentials(null)}>
+        <DialogContent className="max-w-md">
+            <DialogHeader>
+                <DialogTitle>Password Sementara</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-3 text-sm">
+                <p className="text-muted-foreground">
+                    Catat password ini sekarang. Password tidak dapat ditampilkan lagi dan harus
+                    segera diganti oleh karyawan setelah login pertama.
+                </p>
+                <div className="rounded-md border bg-muted/40 p-3 font-mono text-xs space-y-1">
+                    <div className="break-all">
+                        <span className="text-muted-foreground">Email: </span>
+                        {generatedCredentials?.email}
+                    </div>
+                    <div className="break-all">
+                        <span className="text-muted-foreground">Password: </span>
+                        {generatedCredentials?.password}
+                    </div>
+                </div>
+            </div>
+            <DialogFooter>
+                <Button
+                    type="button"
+                    onClick={() => {
+                        const value = `Email: ${generatedCredentials?.email}\nPassword: ${generatedCredentials?.password}`;
+                        void navigator.clipboard?.writeText(value);
+                        toast.success("Kredensial disalin");
+                    }}
+                >
+                    Salin
+                </Button>
+                <Button variant="outline" onClick={() => setGeneratedCredentials(null)}>
+                    Tutup
+                </Button>
+            </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </BackOfficeLayout>
   );
 }

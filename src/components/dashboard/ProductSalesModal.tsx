@@ -78,7 +78,7 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
         JOIN transactions t ON ti.transaction_id = t.id
         JOIN products p ON ti.product_id = p.id
         JOIN branches b ON t.branch_id = b.id
-        WHERE t.created_at >= CURRENT_DATE
+        WHERE t.created_at >= date('now')
         GROUP BY p.id, p.name, p.sku, b.id, b.name
         ORDER BY total_sold DESC
         LIMIT 5
@@ -98,7 +98,7 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
           b.name as branch_name, 
           COALESCE(SUM(ti.quantity), 0) as total_products
         FROM branches b
-        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= CURRENT_DATE
+        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= date('now')
         LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
         GROUP BY b.id, b.name
         ORDER BY total_products DESC

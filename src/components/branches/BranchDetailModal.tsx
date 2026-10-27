@@ -49,7 +49,9 @@ import {
 } from "lucide-react";
 import { query } from "@/lib/db";
 import { formatCurrency } from "@/lib/formatters";
-import { authClient } from "@/lib/auth-client";
+
+/** Same-origin by default; `VITE_API_BASE_URL` only for split-origin dev. */
+const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 
 interface Branch {
   id: string | number;
@@ -107,7 +109,11 @@ export function BranchDetailModal({
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [transactions, setTransactions] = useState<RecentTransaction[]>([]);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
-  const [tenantId, setTenantId] = useState<string | null>(null);
+  /** Temporary password returned once by /api/admin/users. */
+  const [generatedCredentials, setGeneratedCredentials] = useState<{
+    email: string;
+    password: string;
+  } | null>(null);
 
   // Add Employee State
   const [isAddEmployeeOpen, setIsAddEmployeeOpen] = useState(false);
@@ -134,27 +140,21 @@ export function BranchDetailModal({
   const fetchBranchDetails = async (branchId: string | number) => {
     setIsLoadingDetails(true);
     try {
-      // Fetch Tenant ID & Branch Details
-      const branchRes = await query(
-        `SELECT tenant_id FROM branches WHERE id = $1`,
-        [branchId]
-      );
-      if (branchRes.rows.length > 0) {
-        setTenantId(branchRes.rows[0].tenant_id);
-      }
-
       // Fetch Employees
       const empRes = await query(
         `SELECT id, email, name, role, is_active FROM users WHERE assigned_branch_id = $1`,
         [branchId]
       );
       
-      // Fetch Inventory (Top 50 items)
+      // Fetch Inventory (Top 50 items). Stock sits in warehouses, so the tab
+      // shows everything this store can actually sell: batches in any warehouse
+      // mapped to it (its own backroom plus any shared/central warehouse).
       const invRes = await query(
         `SELECT pb.id, p.name as product_name, pb.batch_number, pb.quantity_current, pb.expiry_date 
          FROM product_batches pb 
          JOIN products p ON pb.product_id = p.id 
-         WHERE pb.branch_id = $1 AND pb.quantity_current > 0
+         JOIN branch_warehouses bw ON bw.warehouse_id = pb.warehouse_id
+         WHERE bw.branch_id = $1 AND pb.quantity_current > 0
          ORDER BY p.name ASC LIMIT 50`,
         [branchId]
       );
@@ -215,73 +215,30 @@ export function BranchDetailModal({
 
     setIsUpdatingEmployee(true);
     try {
-      // 1. Update Neon Auth Password (if provided)
+      // 1. Reset the password on the control plane when the field is filled.
+      //    Single endpoint, admin-role checked, password generated if left empty.
       if (editPassword) {
-        const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
-        if (authUrl) {
-            try {
-                // Try using SDK first (if admin plugin is available)
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const client = authClient as any;
-                let sdkSuccess = false;
+        const response = await fetch(
+          `${apiBase}/api/admin/users/${encodeURIComponent(selectedEmployee.id)}/password`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: editPassword.trim() }),
+          }
+        );
 
-                if (client.admin?.updateUser) {
-                    console.log("Updating password using SDK admin.updateUser");
-                    const { error } = await client.admin.updateUser({
-                        userId: selectedEmployee.id,
-                        data: { 
-                            password: editPassword.trim(),
-                            emailVerified: true // Ensure user is verified so they can login
-                        }
-                    });
-                    
-                    if (error) {
-                        console.warn("SDK update failed:", error);
-                        // Fall through to fetch
-                    } else {
-                        sdkSuccess = true;
-                        toast.success("Password berhasil diupdate (SDK)");
-                    }
-                }
-
-                if (!sdkSuccess) {
-                    // Use standard /admin/update-user endpoint
-                    // Better Auth typically expects: { userId: "...", data: { password: "..." } }
-                    console.log("Updating password for user via Fetch:", selectedEmployee.id);
-                    
-                    const updateRes = await fetch(`${authUrl}/admin/update-user`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            userId: selectedEmployee.id, 
-                            data: {
-                               password: editPassword.trim(),
-                               emailVerified: true
-                            }
-                        }),
-                        credentials: "include"
-                    });
-
-                    if (!updateRes.ok) {
-                        const errText = await updateRes.text();
-                        console.warn("Failed to update password via Admin API:", updateRes.status, errText);
-                        
-                        // Try to parse error for better message
-                        try {
-                            const errJson = JSON.parse(errText);
-                            toast.error(`Gagal update password: ${errJson.message || errText}`);
-                        } catch {
-                            toast.error(`Gagal update password (${updateRes.status}): ${errText.substring(0, 100)}`);
-                        }
-                    } else {
-                        toast.success("Password berhasil diupdate");
-                    }
-                }
-            } catch (e) {
-                console.error("Auth update error:", e);
-                toast.error("Gagal menghubungi server Auth");
-            }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const payload: any = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          toast.error(payload?.message || "Gagal mengganti password");
+          setIsUpdatingEmployee(false);
+          return;
         }
+        if (payload?.tempPassword) {
+          setGeneratedCredentials({ email: selectedEmployee.email, password: payload.tempPassword });
+        }
+        toast.success("Password berhasil diganti");
       }
 
       // 2. Update Application User Data
@@ -312,71 +269,38 @@ export function BranchDetailModal({
     
     setIsAddingEmployee(true);
     try {
-      // 1. Create User via Neon Auth API
-      // Prioritize Admin API to avoid overwriting current session (Owner)
-      const authUrl = import.meta.env.VITE_NEON_AUTH_URL;
-      if (!authUrl) throw new Error("Neon Auth URL not configured");
+      // 1. Create the identity on the control plane.
+      const response = await fetch(`${apiBase}/api/admin/users`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: newEmployeeEmail,
+          name: newEmployeeEmail.split("@")[0],
+          role: newEmployeeRole,
+          branchId: branch.id,
+        }),
+      });
 
-      const passwordToUse = newEmployeePassword; 
-      let userId: string | undefined;
-
-      // Try Admin API first (doesn't sign in the new user)
-      try {
-        const adminRes = await fetch(`${authUrl}/admin/create-user`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                email: newEmployeeEmail,
-                password: passwordToUse,
-                name: newEmployeeEmail.split("@")[0],
-                role: "user" 
-            }),
-        });
-
-        if (adminRes.ok) {
-            const adminData = await adminRes.json();
-            userId = adminData.user?.id || adminData.id;
-        } 
-      } catch (e) {
-        console.warn("Admin API failed, falling back to sign-up", e);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const created: any = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(created?.message || "Gagal membuat akun karyawan");
       }
 
-      // Fallback to Sign Up if Admin API failed
+      const userId: string | undefined = created?.userId;
       if (!userId) {
-          const signUpRes = await fetch(`${authUrl}/sign-up/email`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              email: newEmployeeEmail,
-              password: passwordToUse,
-              name: newEmployeeEmail.split("@")[0],
-            }),
-          });
-
-          if (signUpRes.ok) {
-            const authData = await signUpRes.json();
-            userId = authData.user?.id || authData.session?.userId;
-            
-            // Warning about potential session switch
-            toast.info("Akun auth dibuat. Jika sesi Anda berubah, silakan login kembali.");
-          } else {
-            const errData = await signUpRes.json();
-            throw new Error(errData.message || "Gagal membuat akun Neon Auth");
-          }
+        throw new Error("Gagal mendapatkan User ID dari server auth");
       }
 
-      if (!userId) {
-          throw new Error("Gagal mendapatkan User ID dari Neon Auth");
-      }
-
-      // 2. Insert into Application Users Table
-      // We use ON CONFLICT DO UPDATE to handle cases where user might exist in public.users but not properly linked
+      // 2. Mirror into this tenant's own `users` table (no tenant_id column any
+      //    more: the database itself is the tenant).
       await query(
-        `INSERT INTO users (id, tenant_id, email, role, assigned_branch_id, is_active) 
-         VALUES ($1, $2, $3, $4, $5, true)
+        `INSERT INTO users (id, email, role, assigned_branch_id, is_active) 
+         VALUES ($1, $2, $3, $4, 1)
          ON CONFLICT (id) DO UPDATE 
-         SET role = $4, assigned_branch_id = $5, is_active = true`,
-        [userId, tenantId, newEmployeeEmail, newEmployeeRole, branch.id]
+         SET role = $3, assigned_branch_id = $4, is_active = 1`,
+        [userId, newEmployeeEmail, newEmployeeRole, branch.id]
       );
 
       // Refresh employees list
@@ -387,8 +311,9 @@ export function BranchDetailModal({
       setNewEmployeePassword("");
       setNewEmployeeRole("cashier");
       setIsAddEmployeeOpen(false);
+      setGeneratedCredentials({ email: newEmployeeEmail, password: created.tempPassword });
       toast.success("Karyawan berhasil ditambahkan", {
-        description: "Akun Neon Auth telah dibuat. User bisa login dengan email & password.",
+        description: "Bagikan password sementara yang tampil sekarang — password tidak bisa dilihat lagi.",
       });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
@@ -818,6 +743,45 @@ export function BranchDetailModal({
             <Button onClick={handleUpdateEmployee} disabled={isUpdatingEmployee}>
               {isUpdatingEmployee && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
               Simpan Perubahan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Temporary password: shown once, never stored anywhere else. */}
+      <Dialog open={!!generatedCredentials} onOpenChange={(open) => !open && setGeneratedCredentials(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Password Sementara</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              Catat dan bagikan sekarang. Password tidak dapat ditampilkan lagi.
+            </p>
+            <div className="rounded-md border bg-muted/40 p-3 font-mono text-xs space-y-1">
+              <div className="break-all">
+                <span className="text-muted-foreground">Email: </span>
+                {generatedCredentials?.email}
+              </div>
+              <div className="break-all">
+                <span className="text-muted-foreground">Password: </span>
+                {generatedCredentials?.password}
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              onClick={() => {
+                const value = `Email: ${generatedCredentials?.email}\nPassword: ${generatedCredentials?.password}`;
+                void navigator.clipboard?.writeText(value);
+                toast.success("Kredensial disalin");
+              }}
+            >
+              Salin
+            </Button>
+            <Button variant="outline" onClick={() => setGeneratedCredentials(null)}>
+              Tutup
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -31,7 +31,8 @@ import {
   Loader2,
 } from "lucide-react";
 import { Transaction, Branch } from "@/types";
-import { query } from "@/lib/db";
+import { PaginationBar } from "@/components/ui/pagination-bar";
+import { batchQuery, parseJson } from "@/lib/db";
 import * as XLSX from 'xlsx';
 import { toast } from "sonner";
 
@@ -50,64 +51,128 @@ const paymentIcons: Record<string, React.ElementType> = {
   qris: Wallet,
 };
 
+const PAGE_SIZE = 50;
+
 export default function POSTransactions() {
   const [searchQuery, setSearchQuery] = useState("");
+  // Debounced copy of the search box: one query per pause, not per keystroke.
+  const [searchTerm, setSearchTerm] = useState("");
   const [selectedPayment, setSelectedPayment] = useState("all");
   const [selectedBranch, setSelectedBranch] = useState("all");
+  const [page, setPage] = useState(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [totals, setTotals] = useState({ count: 0, sales: 0, card: 0, wallet: 0 });
   const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchTerm(searchQuery);
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        // Fetch branches
-        const branchesRes = await query('SELECT * FROM branches');
-        setBranches(branchesRes.rows);
+        // Filters run in SQL, not on the already-fetched rows: the list is
+        // paginated, so client-side filtering would only ever search the
+        // current page and the headline totals would be wrong.
+        const where: string[] = [];
+        const args: unknown[] = [];
 
-        // Fetch transactions with items
-        // We use json_agg to bundle items with the transaction
-        const sql = `
-          SELECT 
-            t.id, t.tenant_id, t.branch_id, t.cashier_id, t.customer_id, 
-            t.invoice_number, t.total_amount, t.payment_method, t.status, t.created_at,
-            u.name as cashier_name,
-            COALESCE(
-              json_agg(
-                json_build_object(
-                  'id', ti.id,
-                  'tenant_id', ti.tenant_id,
-                  'product_id', ti.product_id,
-                  'product_name', p.name,
-                  'quantity', ti.quantity,
-                  'unit_price', ti.unit_price,
-                  'subtotal', ti.subtotal,
-                  'unit_name', ti.unit_name
-                )
-              ) FILTER (WHERE ti.id IS NOT NULL),
-              '[]'
-            ) as items
-          FROM transactions t
-          LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
-          LEFT JOIN products p ON ti.product_id = p.id
-          LEFT JOIN users u ON t.cashier_id = u.id
-          GROUP BY t.id, u.name
-          ORDER BY t.created_at DESC
-          LIMIT 100
-        `;
-        const trxRes = await query(sql);
-        
+        if (selectedBranch !== "all") {
+          args.push(selectedBranch);
+          where.push(`t.branch_id = $${args.length}`);
+        }
+        if (selectedPayment !== "all") {
+          args.push(selectedPayment);
+          where.push(`t.payment_method = $${args.length}`);
+        }
+        const term = searchTerm.trim();
+        if (term) {
+          args.push(`%${term}%`, `%${term}%`);
+          where.push(`(t.invoice_number LIKE $${args.length - 1} OR t.id LIKE $${args.length})`);
+        }
+        const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+
+        const limitIdx = args.length + 1;
+        const offsetIdx = args.length + 2;
+
+        // JSON1 bundles the items with the transaction, and the aggregate row
+        // covers every matching transaction, not just this page. One batch =
+        // one round trip for list, totals and branches.
+        const [trxRes, totalsRes, branchesRes] = await batchQuery([
+          {
+            sql: `
+              SELECT 
+                t.id, t.branch_id, t.cashier_id, t.customer_id, 
+                t.invoice_number, t.total_amount, t.amount_paid, t.payment_method, t.status, t.created_at,
+                u.name as cashier_name,
+                COALESCE(
+                  json_group_array(
+                    json_object(
+                      'id', ti.id,
+                      'product_id', ti.product_id,
+                      'product_name', p.name,
+                      'quantity', ti.quantity,
+                      'unit_price', ti.unit_price,
+                      'subtotal', ti.subtotal,
+                      'unit_name', ti.unit_name
+                    )
+                  ) FILTER (WHERE ti.id IS NOT NULL),
+                  '[]'
+                ) as items
+              FROM transactions t
+              LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
+              LEFT JOIN products p ON ti.product_id = p.id
+              LEFT JOIN users u ON t.cashier_id = u.id
+              ${whereSql}
+              GROUP BY t.id, u.name
+              ORDER BY t.created_at DESC
+              LIMIT $${limitIdx} OFFSET $${offsetIdx}
+            `,
+            params: [...args, PAGE_SIZE, page * PAGE_SIZE],
+          },
+          {
+            sql: `
+              SELECT 
+                COUNT(*) as total,
+                COALESCE(SUM(t.total_amount), 0) as sales,
+                COALESCE(SUM(CASE WHEN t.payment_method = 'card' THEN t.total_amount ELSE 0 END), 0) as card_sales,
+                COALESCE(SUM(CASE WHEN t.payment_method IN ('ewallet','e-wallet','qris') THEN t.total_amount ELSE 0 END), 0) as wallet_sales
+              FROM transactions t
+              ${whereSql}
+            `,
+            params: args,
+          },
+          { sql: 'SELECT * FROM branches ORDER BY name' },
+        ]);
+
         // Map to Transaction type
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const mappedTrx: Transaction[] = trxRes.rows.map((row: any) => ({
+        const mappedTrx: Transaction[] = (trxRes.rows as any[]).map((row) => ({
             ...row,
             created_at: new Date(row.created_at).toISOString(),
-            // items is already an array of objects due to json_agg
-            items: row.items || []
+            // JSON columns arrive as TEXT — parse them before use.
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            items: parseJson<any[]>(row.items, [])
         }));
 
+        const aggregate = totalsRes.rows[0] as {
+          total: number; sales: number; card_sales: number; wallet_sales: number;
+        };
+
         setTransactions(mappedTrx);
+        setBranches(branchesRes.rows as unknown as Branch[]);
+        setTotals({
+          count: Number(aggregate?.total ?? 0),
+          sales: Number(aggregate?.sales ?? 0),
+          card: Number(aggregate?.card_sales ?? 0),
+          wallet: Number(aggregate?.wallet_sales ?? 0),
+        });
       } catch (error) {
         console.error("Failed to fetch data:", error);
       } finally {
@@ -116,32 +181,23 @@ export default function POSTransactions() {
     };
 
     fetchData();
-  }, []);
+  }, [page, searchTerm, selectedPayment, selectedBranch]);
 
   const getBranchName = (branchId: string) => {
     const branch = branches.find((b) => b.id === branchId);
     return branch ? branch.name : branchId;
   };
 
-  const filteredTransactions = transactions.filter((trx) => {
-    const matchesSearch =
-      trx.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      trx.invoice_number.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesPayment = selectedPayment === "all" || trx.payment_method === selectedPayment;
-    const matchesBranch = selectedBranch === "all" || trx.branch_id === selectedBranch;
-    return matchesSearch && matchesPayment && matchesBranch;
-  });
-
-  const totalSales = filteredTransactions.reduce((sum, trx) => sum + trx.total_amount, 0);
-  const totalTransactions = filteredTransactions.length;
+  const totalSales = totals.sales;
+  const totalTransactions = totals.count;
 
   const handleExport = () => {
-    if (filteredTransactions.length === 0) {
+    if (transactions.length === 0) {
       toast.error("Tidak ada data untuk diexport");
       return;
     }
 
-    const exportData = filteredTransactions.map(trx => ({
+    const exportData = transactions.map(trx => ({
       "ID Transaksi": trx.id,
       "Invoice": trx.invoice_number,
       "Tanggal": new Date(trx.created_at).toLocaleDateString('id-ID'),
@@ -241,9 +297,7 @@ export default function POSTransactions() {
               <div>
                 <p className="text-sm text-muted-foreground">Via Kartu</p>
                 <p className="text-xl font-bold">
-                  {formatCurrency(
-                    filteredTransactions.filter((t) => t.payment_method === "card").reduce((s, t) => s + t.total_amount, 0)
-                  )}
+                  {formatCurrency(totals.card)}
                 </p>
               </div>
             </div>
@@ -256,9 +310,7 @@ export default function POSTransactions() {
               <div>
                 <p className="text-sm text-muted-foreground">Via E-Wallet/QRIS</p>
                 <p className="text-xl font-bold">
-                  {formatCurrency(
-                    filteredTransactions.filter((t) => t.payment_method === "ewallet" || t.payment_method === "qris").reduce((s, t) => s + t.total_amount, 0)
-                  )}
+                  {formatCurrency(totals.wallet)}
                 </p>
               </div>
             </div>
@@ -276,7 +328,7 @@ export default function POSTransactions() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <Select value={selectedPayment} onValueChange={setSelectedPayment}>
+          <Select value={selectedPayment} onValueChange={(v) => { setSelectedPayment(v); setPage(0); }}>
             <SelectTrigger className="w-40">
               <SelectValue placeholder="Pembayaran" />
             </SelectTrigger>
@@ -288,7 +340,7 @@ export default function POSTransactions() {
               <SelectItem value="qris">QRIS</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={selectedBranch} onValueChange={setSelectedBranch}>
+          <Select value={selectedBranch} onValueChange={(v) => { setSelectedBranch(v); setPage(0); }}>
             <SelectTrigger className="w-40">
               <SelectValue placeholder="Cabang" />
             </SelectTrigger>
@@ -319,14 +371,14 @@ export default function POSTransactions() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredTransactions.length === 0 ? (
+              {transactions.length === 0 ? (
                 <TableRow>
                     <TableCell colSpan={8} className="text-center h-24 text-muted-foreground">
                         Tidak ada transaksi ditemukan
                     </TableCell>
                 </TableRow>
               ) : (
-                filteredTransactions.map((trx) => {
+                transactions.map((trx) => {
                     const PaymentIcon = paymentIcons[trx.payment_method] || Receipt;
                     const totalItems = trx.items.reduce((sum, item) => sum + item.quantity, 0);
                     const branchName = getBranchName(trx.branch_id);
@@ -395,6 +447,16 @@ export default function POSTransactions() {
             </TableBody>
           </Table>
         </div>
+
+        {/* Pagination: the list is server-paged so a long history never loads
+            all at once. */}
+        <PaginationBar
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={totals.count}
+          onPageChange={setPage}
+          label="transaksi"
+        />
       </div>
     </POSLayout>
   );

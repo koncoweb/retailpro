@@ -2,7 +2,9 @@ import { useState, useEffect } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { query } from "@/lib/db";
+import { query, runTransaction } from "@/lib/db";
+import { logAudit, logAuditTx } from "@/lib/audit";
+import { useAuth } from "@/hooks/use-auth";
 import { format } from "date-fns";
 import { id as idLocale } from "date-fns/locale";
 import { Button } from "@/components/ui/button";
@@ -34,6 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { VENDOR_PAYMENT_METHODS, isoDate } from "@/lib/vendor";
 
 interface Transaction {
   id: string;
@@ -63,6 +66,7 @@ interface Supplier {
 }
 
 export default function ApAr() {
+  const { user } = useAuth();
   const [receivables, setReceivables] = useState<Transaction[]>([]);
   const [payables, setPayables] = useState<Expense[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -80,8 +84,18 @@ export default function ApAr() {
 
   // States for Payment
   const [paymentOpen, setPaymentOpen] = useState(false);
-  const [selectedItem, setSelectedItem] = useState<{id: string, type: 'ar' | 'ap', current_paid: number, total: number} | null>(null);
+  const [selectedItem, setSelectedItem] = useState<{
+    id: string;
+    type: 'ar' | 'ap';
+    current_paid: number;
+    total: number;
+    /** AP only: vendor whose ledger records the payment. */
+    supplier_id?: string | null;
+    description?: string;
+  } | null>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("transfer");
+  const [paymentReference, setPaymentReference] = useState("");
 
   useEffect(() => {
     fetchData();
@@ -147,10 +161,10 @@ export default function ApAr() {
         WHERE t.total_amount > t.amount_paid
         ORDER BY t.created_at DESC
       `);
-      setReceivables(arRes.rows.map((row: any) => ({
+      setReceivables((arRes.rows as unknown as Transaction[]).map((row) => ({
         ...row,
-        total_amount: parseFloat(row.total_amount),
-        amount_paid: parseFloat(row.amount_paid)
+        total_amount: Number(row.total_amount),
+        amount_paid: Number(row.amount_paid)
       })));
 
       // Fetch AP (Hutang)
@@ -161,15 +175,15 @@ export default function ApAr() {
         WHERE e.amount > e.amount_paid
         ORDER BY e.date DESC
       `);
-      setPayables(apRes.rows.map((row: any) => ({
+      setPayables((apRes.rows as unknown as Expense[]).map((row) => ({
         ...row,
-        amount: parseFloat(row.amount),
-        amount_paid: parseFloat(row.amount_paid)
+        amount: Number(row.amount),
+        amount_paid: Number(row.amount_paid)
       })));
 
       // Fetch Suppliers
       const supRes = await query("SELECT id, name FROM suppliers ORDER BY name ASC");
-      setSuppliers(supRes.rows.filter((s: any) => s.id && s.id !== ""));
+      setSuppliers((supRes.rows as unknown as Supplier[]).filter((s) => s.id && s.id !== ""));
 
     } catch (error) {
       console.error("Failed to fetch AP/AR data:", error);
@@ -186,9 +200,10 @@ export default function ApAr() {
     }
 
     try {
-      await query(`
+      const inserted = await query<{ id: string }>(`
         INSERT INTO expenses (description, amount, date, due_date, supplier_id, category, status, amount_paid)
-        VALUES ($1, $2, CURRENT_DATE, $3, $4, $5, 'unpaid', 0)
+        VALUES ($1, $2, date('now'), $3, $4, $5, 'unpaid', 0)
+        RETURNING id
       `, [
         newAp.description,
         parseFloat(newAp.amount),
@@ -196,7 +211,23 @@ export default function ApAr() {
         newAp.supplier_id || null,
         newAp.category
       ]);
-      
+
+      // Recording a payable creates a liability; it must be traceable.
+      await logAudit({
+        action: "create_expense",
+        entity: "expenses",
+        entityId: inserted.rows[0]?.id,
+        userId: user?.id,
+        details: {
+          kind: "payable",
+          category: newAp.category,
+          amount: parseFloat(newAp.amount),
+          due_date: newAp.due_date,
+          description: newAp.description,
+          supplier_id: newAp.supplier_id || null,
+        },
+      });
+
       toast.success("Hutang berhasil dicatat");
       setIsAddApOpen(false);
       setNewAp({
@@ -213,14 +244,22 @@ export default function ApAr() {
     }
   };
 
-  const handleOpenPayment = (item: any, type: 'ar' | 'ap') => {
+  const handleOpenPayment = (item: Expense | Transaction, type: 'ar' | 'ap') => {
+    // Both shapes carry `amount_paid`; only AP has a vendor to credit.
+    const isAp = type === 'ap';
+    const ap = isAp ? (item as Expense) : null;
+    const total = isAp ? (item as Expense).amount : (item as Transaction).total_amount;
     setSelectedItem({
       id: item.id,
       type,
       current_paid: item.amount_paid,
-      total: type === 'ar' ? item.total_amount : item.amount
+      total,
+      supplier_id: ap?.supplier_id ?? null,
+      description: ap?.description,
     });
-    setPaymentAmount((type === 'ar' ? item.total_amount - item.amount_paid : item.amount - item.amount_paid).toString());
+    setPaymentAmount((total - item.amount_paid).toString());
+    setPaymentMethod(isAp ? "transfer" : "cash");
+    setPaymentReference("");
     setPaymentOpen(true);
   };
 
@@ -247,13 +286,61 @@ export default function ApAr() {
               status = CASE WHEN $1 >= total_amount THEN 'paid' ELSE status END
           WHERE id = $2
         `, [newTotalPaid, selectedItem.id]);
+
+        await logAudit({
+          action: "create_payment",
+          entity: "transactions",
+          entityId: selectedItem.id,
+          details: { kind: "receivable_payment", amount },
+          userId: user?.id,
+        });
       } else {
-        await query(`
-          UPDATE expenses 
-          SET amount_paid = $1, 
-              status = CASE WHEN $1 >= amount THEN 'paid' ELSE status END
-          WHERE id = $2
-        `, [newTotalPaid, selectedItem.id]);
+        // Vendor payment: the payable balance and the payment ledger move
+        // together, so the vendor screen and the finance screen cannot disagree.
+        await runTransaction(async (tx) => {
+          const updated = await tx.query(
+            `UPDATE expenses
+             SET amount_paid = amount_paid + $1,
+                 status = CASE WHEN amount_paid + $1 >= amount THEN 'paid' ELSE 'unpaid' END
+             WHERE id = $2 AND amount_paid + $1 <= amount`,
+            [amount, selectedItem.id]
+          );
+          if (updated.rowCount !== 1) {
+            throw new Error("Tagihan berubah, muat ulang data terlebih dahulu");
+          }
+
+          if (selectedItem.supplier_id) {
+            await tx.query(
+              `INSERT INTO vendor_payments
+                 (vendor_id, expense_id, amount, payment_date, method, reference_number, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+              [
+                selectedItem.supplier_id,
+                selectedItem.id,
+                amount,
+                isoDate(),
+                paymentMethod,
+                paymentReference.trim() || null,
+                user?.id ?? null,
+              ]
+            );
+          }
+
+          await logAuditTx(tx, {
+            action: "create_payment",
+            entity: "expenses",
+            entityId: selectedItem.id,
+            details: {
+              kind: "payable_payment",
+              amount,
+              method: paymentMethod,
+              reference: paymentReference.trim() || null,
+              supplier_id: selectedItem.supplier_id ?? null,
+              description: selectedItem.description,
+            },
+            userId: user?.id,
+          });
+        });
       }
 
       toast.success("Pembayaran berhasil dicatat");
@@ -261,7 +348,7 @@ export default function ApAr() {
       fetchData();
     } catch (error) {
       console.error("Failed to process payment:", error);
-      toast.error("Gagal memproses pembayaran");
+      toast.error(error instanceof Error ? error.message : "Gagal memproses pembayaran");
     }
   };
 
@@ -493,6 +580,34 @@ export default function ApAr() {
                   onChange={(e) => setPaymentAmount(e.target.value)}
                 />
               </div>
+              {selectedItem?.type === 'ap' && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <Label>Metode Bayar</Label>
+                    <Select value={paymentMethod} onValueChange={setPaymentMethod}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {VENDOR_PAYMENT_METHODS.map((method) => (
+                          <SelectItem key={method.value} value={method.value}>
+                            {method.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="pay_ref">No. Referensi</Label>
+                    <Input
+                      id="pay_ref"
+                      placeholder="Transfer / cek / giro"
+                      value={paymentReference}
+                      onChange={(e) => setPaymentReference(e.target.value)}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setPaymentOpen(false)}>Batal</Button>

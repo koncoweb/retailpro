@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { query } from "@/lib/db";
+import { getPeriodRange, sqliteTzModifier, startOfMonthOffset } from "@/lib/date-range";
 import * as XLSX from 'xlsx';
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
@@ -89,44 +90,60 @@ const reportTypes = [
 export default function Reports() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState("thismonth");
+  /**
+   * `all` is not a branch id — it means "aggregate every branch". Read-side
+   * screens may aggregate; a write (a POS sale) never can.
+   */
+  const [branchFilter, setBranchFilter] = useState("all");
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
 
-  const getStartDate = () => {
-    const now = new Date();
-    switch (period) {
-      case "today":
-        return new Date(now.setHours(0, 0, 0, 0)).toISOString();
-      case "thisweek":
-        const firstDay = now.getDate() - now.getDay();
-        return new Date(now.setDate(firstDay)).toISOString();
-      case "thismonth":
-        return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-      case "thisyear":
-        return new Date(now.getFullYear(), 0, 1).toISOString();
-      default:
-        return new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    }
-  };
+  useEffect(() => {
+    query<{ id: string; name: string }>("SELECT id, name FROM branches ORDER BY name")
+      .then((res) => setBranches(res.rows))
+      .catch((error) => console.error("Failed to load branches:", error));
+  }, []);
+
+  /**
+   * `[start, endExclusive)` for the selected period. Both bounds are bound as
+   * parameters instead of relying on `CURRENT_DATE` or an open-ended `>=`, so
+   * the window is reproducible and the `idx_tx_created` index serves the scan.
+   */
+  const getDateRange = () => getPeriodRange(period);
+
+  /**
+   * Builds the shared `WHERE` fragment for the sales queries. The branch
+   * predicate is appended only when a specific branch is selected, because the
+   * aggregate view must still include every branch.
+   */
+  const scopeArgs = (start: string, end: string) =>
+    branchFilter === "all" ? [start, end] : [start, end, branchFilter];
+  const scopeWhere = (alias: string) =>
+    branchFilter === "all"
+      ? `${alias}.created_at >= $1 AND ${alias}.created_at < $2`
+      : `${alias}.created_at >= $1 AND ${alias}.created_at < $2 AND ${alias}.branch_id = $3`;
 
   const { data: salesByBranch = [], isLoading: loadingBranch } = useQuery({
-    queryKey: ['salesByBranch', period],
+    queryKey: ['salesByBranch', period, branchFilter],
     queryFn: async () => {
+      const [start, end] = getDateRange();
       const res = await query(`
         SELECT
           b.name,
           COALESCE(SUM(t.total_amount), 0) as value
         FROM transactions t
         JOIN branches b ON t.branch_id = b.id
-        WHERE t.created_at >= $1
+        WHERE ${scopeWhere("t")}
         GROUP BY b.name
         ORDER BY value DESC
-      `, [getStartDate()]);
+      `, scopeArgs(start, end));
       return res.rows.map(r => ({ name: r.name, value: Number(r.value) }));
     }
   });
 
   const { data: salesByCategory = [], isLoading: loadingCategory } = useQuery({
-    queryKey: ['salesByCategory', period],
+    queryKey: ['salesByCategory', period, branchFilter],
     queryFn: async () => {
+      const [start, end] = getDateRange();
       const res = await query(`
         SELECT
           COALESCE(p.category, 'Uncategorized') as name,
@@ -134,10 +151,10 @@ export default function Reports() {
         FROM transaction_items ti
         JOIN products p ON ti.product_id = p.id
         JOIN transactions t ON ti.transaction_id = t.id
-        WHERE t.created_at >= $1
+        WHERE ${scopeWhere("t")}
         GROUP BY p.category
         ORDER BY value DESC
-      `, [getStartDate()]);
+      `, scopeArgs(start, end));
       
       const total = res.rows.reduce((acc, curr) => acc + Number(curr.value), 0);
       return res.rows.map(r => ({ 
@@ -149,19 +166,32 @@ export default function Reports() {
   });
 
   const { data: monthlySales = [], isLoading: loadingMonthly } = useQuery({
-    queryKey: ['monthlySales'],
+    queryKey: ['monthlySales', branchFilter],
     queryFn: async () => {
+      // Six-month rolling trend with both bounds bound, and the month bucket
+      // shifted into local time: a sale at 00:30 local on the 1st is stored as
+      // the previous day in UTC and would otherwise fall into the wrong month.
+      const start = startOfMonthOffset(5);
+      const end = new Date();
+      end.setMonth(end.getMonth() + 1, 1);
+      const branchClause = branchFilter === "all" ? "" : " AND branch_id = $4";
       const res = await query(`
         SELECT
-          TO_CHAR(date_trunc('month', created_at), 'Mon') as month,
+          strftime('%Y-%m', created_at, $1) as month_key,
           COALESCE(SUM(total_amount), 0) as sales
         FROM transactions
-        WHERE created_at >= date_trunc('month', CURRENT_DATE - INTERVAL '5 months')
-        GROUP BY date_trunc('month', created_at)
-        ORDER BY date_trunc('month', created_at)
-      `);
+        WHERE created_at >= $2 AND created_at < $3${branchClause}
+        GROUP BY 1
+        ORDER BY 1
+      `, [sqliteTzModifier(), start, end.toISOString(), ...(branchFilter === "all" ? [] : [branchFilter])]);
+      // SQLite has no locale-aware TO_CHAR; build the short month label in JS.
+      const monthLabel = (key: string) => {
+        const [year, month] = key.split("-");
+        return new Date(Number(year), Number(month) - 1, 1)
+          .toLocaleDateString("id-ID", { month: "short" });
+      };
       return res.rows.map(r => ({ 
-        month: r.month, 
+        month: monthLabel(r.month_key), 
         sales: Number(r.sales),
         target: Number(r.sales) * 1.1 // Mock target as 110% of sales
       }));
@@ -170,8 +200,8 @@ export default function Reports() {
 
   const handleExport = async (type?: string) => {
     try {
-        let wb = XLSX.utils.book_new();
-        let filename = `Report_${period}_${new Date().getTime()}.xlsx`;
+        const wb = XLSX.utils.book_new();
+        const filename = `Report_${period}_${new Date().getTime()}.xlsx`;
 
         if (type === 'sales' || !type) {
              // Sheet 1: Sales Summary
@@ -187,7 +217,8 @@ export default function Reports() {
             const wsSales = XLSX.utils.aoa_to_sheet(salesData);
             XLSX.utils.book_append_sheet(wb, wsSales, "Ringkasan Penjualan");
 
-            // Sheet 2: Transactions Detail
+            // Sheet 2: Transactions Detail — same scope as the on-screen cards.
+            const [detailStart, detailEnd] = getDateRange();
             const transactionsRes = await query(`
                 SELECT 
                     t.invoice_number, 
@@ -198,9 +229,9 @@ export default function Reports() {
                     t.status
                 FROM transactions t
                 JOIN branches b ON t.branch_id = b.id
-                WHERE t.created_at >= $1
+                WHERE ${scopeWhere("t")}
                 ORDER BY t.created_at DESC
-            `, [getStartDate()]);
+            `, scopeArgs(detailStart, detailEnd));
             
             const transData = transactionsRes.rows.map(t => ({
                 "Invoice": t.invoice_number,
@@ -222,7 +253,7 @@ export default function Reports() {
                     p.name, 
                     p.category, 
                     p.min_stock_level,
-                    p.unit_type
+                    COALESCE((SELECT pu.name FROM product_units pu WHERE pu.product_id = p.id ORDER BY pu.conversion_factor ASC LIMIT 1), '-') as unit_type
                 FROM products p
                 ORDER BY p.name ASC
             `);
@@ -240,17 +271,20 @@ export default function Reports() {
 
         if (type === 'employees' || !type) {
             // Sheet: Employees
+            // This used to read a `employees` table that nothing ever wrote to,
+            // so the sheet always came out empty. Employees are users with a
+            // branch, which is what Employees.tsx maintains.
             try {
                 const employeesRes = await query(`
                     SELECT 
-                        e.name, 
-                        e.role, 
-                        e.email, 
+                        u.name, 
+                        u.role, 
+                        u.email, 
                         b.name as branch, 
-                        e.status
-                    FROM employees e
-                    LEFT JOIN branches b ON e.branch_id = b.id
-                    ORDER BY e.name ASC
+                        CASE WHEN u.is_active = 1 THEN 'active' ELSE 'inactive' END as status
+                    FROM users u
+                    LEFT JOIN branches b ON u.assigned_branch_id = b.id
+                    ORDER BY u.name ASC
                 `);
                 const empData = employeesRes.rows.map(e => ({
                     "Nama": e.name,
@@ -270,18 +304,19 @@ export default function Reports() {
         if (type === 'finance' || !type) {
              // Sheet: Finance Summary
              try {
+                 const [finStart, finEnd] = getDateRange();
                  const expensesRes = await query(`
                     SELECT category, SUM(amount) as total
                     FROM expenses
-                    WHERE date >= $1
+                    WHERE date >= $1 AND date < $2
                     GROUP BY category
-                 `, [getStartDate()]);
+                 `, [finStart, finEnd]);
                  
                  const incomeRes = await query(`
                     SELECT SUM(total_amount) as total
-                    FROM transactions
-                    WHERE created_at >= $1
-                 `, [getStartDate()]);
+                    FROM transactions t
+                    WHERE ${scopeWhere("t")}
+                 `, scopeArgs(finStart, finEnd));
 
                  const totalIncome = Number(incomeRes.rows[0].total || 0);
                  const totalExpense = expensesRes.rows.reduce((acc, curr) => acc + Number(curr.total), 0);
@@ -328,6 +363,19 @@ export default function Reports() {
             </p>
           </div>
           <div className="flex gap-2">
+            <Select value={branchFilter} onValueChange={setBranchFilter}>
+              <SelectTrigger className="w-44">
+                <SelectValue placeholder="Cabang" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Semua Cabang</SelectItem>
+                {branches.map((branch) => (
+                  <SelectItem key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select value={period} onValueChange={setPeriod}>
               <SelectTrigger className="w-40">
                 <SelectValue placeholder="Periode" />

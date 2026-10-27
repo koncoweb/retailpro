@@ -12,9 +12,10 @@ import {
 import { useState } from "react";
 import { useTheme } from "@/hooks/use-theme";
 import { useNavigate } from "react-router-dom";
-import { authClient } from "@/lib/auth-client";
+import { signOut } from "@/lib/auth-client";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSidebar } from "@/contexts/SidebarContext";
+import { useTenant } from "@/contexts/TenantContext";
 
 const branches = [
   { id: 1, name: "Cabang Pusat Jakarta" },
@@ -29,11 +30,15 @@ export function Header() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { setMobileOpen } = useSidebar();
+  const { clear } = useTenant();
 
   const handleLogout = async () => {
-    await authClient.signOut();
+    await signOut();
+    // Drop the in-memory tenant token and client: this browser tab must not keep
+    // access to the company database after sign-out.
+    clear();
     queryClient.setQueryData(["auth-session"], null);
-    await queryClient.invalidateQueries({ queryKey: ["auth-session"] });
+    queryClient.clear();
     navigate("/login");
   };
 

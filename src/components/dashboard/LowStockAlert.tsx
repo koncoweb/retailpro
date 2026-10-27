@@ -29,7 +29,10 @@ export function LowStockAlert() {
             p.min_stock_level
           FROM products p
           CROSS JOIN branches b
-          LEFT JOIN product_batches pb ON p.id = pb.product_id AND b.id = pb.branch_id
+          -- Availability is warehouse stock reachable through the branch
+          -- mapping: a shared DC therefore counts for every branch it serves.
+          LEFT JOIN branch_warehouses bw ON bw.branch_id = b.id
+          LEFT JOIN product_batches pb ON p.id = pb.product_id AND bw.warehouse_id = pb.warehouse_id
           GROUP BY p.id, p.sku, p.name, b.id, b.name, p.min_stock_level
           HAVING COALESCE(SUM(pb.quantity_current), 0) <= p.min_stock_level
           ORDER BY current_stock ASC

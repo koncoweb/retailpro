@@ -9,10 +9,17 @@ interface RoleBasedRouteProps {
   children?: React.ReactNode;
 }
 
-export function RoleBasedRoute({ 
-  allowedRoles, 
-  redirectPath = "/backoffice", 
-  children 
+/**
+ * Role gate for every authenticated area.
+ *
+ * Fail-closed by design: the previous version rendered the page whenever `role`
+ * was `undefined`, which silently let an unresolved session into owner-only
+ * screens. Now a missing role is treated the same as a wrong role.
+ */
+export function RoleBasedRoute({
+  allowedRoles,
+  redirectPath = "/mode-select",
+  children,
 }: RoleBasedRouteProps) {
   const { role, isLoading, isAuthenticated } = useAuth();
 
@@ -24,13 +31,16 @@ export function RoleBasedRoute({
     );
   }
 
-  // If not authenticated, let the auth guard handle it (or redirect to login)
   if (!isAuthenticated) {
-     // Assuming there's a higher level Auth Guard, but if not:
-     return <Navigate to="/login" replace />;
+    return <Navigate to="/login" replace />;
   }
 
-  if (role && !allowedRoles.includes(role)) {
+  // No role => cannot prove authorisation => treat as unauthorised.
+  if (!role) {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (!allowedRoles.includes(role)) {
     return <Navigate to={redirectPath} replace />;
   }
 

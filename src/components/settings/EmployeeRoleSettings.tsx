@@ -23,6 +23,7 @@ import { Edit, Shield, Users, AlertCircle } from "lucide-react";
 import { toast } from "sonner";
 import { ROLES, PERMISSION_GROUPS, PERMISSION_LABELS, DEFAULT_ROLE_PERMISSIONS } from "@/config/roles";
 import { query } from "@/lib/db";
+import { readTenantSettings, setTenantSetting } from "@/lib/tenant-settings";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 interface Role {
@@ -52,9 +53,9 @@ export function EmployeeRoleSettings() {
     setIsLoading(true);
     try {
         // Fetch user counts and tenant settings in parallel
-        const [countRes, tenantRes] = await Promise.all([
+        const [countRes, tenantSettings] = await Promise.all([
             query(`SELECT role, COUNT(*) as count FROM users GROUP BY role`),
-            query(`SELECT settings FROM tenants WHERE id = current_setting('app.current_tenant_id')::uuid`)
+            readTenantSettings()
         ]);
 
         const counts: Record<string, number> = {};
@@ -63,8 +64,7 @@ export function EmployeeRoleSettings() {
             if (row.role) counts[row.role.toLowerCase()] = parseInt(row.count);
         });
 
-        const tenantSettings = tenantRes.rows[0]?.settings || {};
-        const customPermissions = tenantSettings.role_permissions || {};
+        const customPermissions = (tenantSettings.role_permissions ?? {}) as Record<string, Record<string, boolean>>;
 
         // Map system roles to state
         const mappedRoles = ROLES.map(r => ({
@@ -101,11 +101,8 @@ export function EmployeeRoleSettings() {
               allPermissions[r.id] = r.permissions;
           });
 
-          await query(`
-              UPDATE tenants 
-              SET settings = jsonb_set(COALESCE(settings, '{}'), '{role_permissions}', $1) 
-              WHERE id = current_setting('app.current_tenant_id')::uuid
-          `, [JSON.stringify(allPermissions)]);
+          // libSQL has no jsonb_set: read → merge → write in one transaction.
+          await setTenantSetting("role_permissions", allPermissions);
 
           toast.success("Permission berhasil diperbarui");
       } catch (error) {

@@ -63,11 +63,11 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
       const todayRes = await query(`
         SELECT 
           b.name as branch_name, 
-          COALESCE(SUM(t.amount_paid), 0) as total_sales,
+          COALESCE(SUM(t.total_amount), 0) as total_sales,
           COUNT(t.id) as tx_count
         FROM branches b
         LEFT JOIN transactions t ON b.id = t.branch_id 
-          AND date(t.created_at) = CURRENT_DATE
+          AND date(t.created_at) = date('now')
         GROUP BY b.id, b.name
         ORDER BY total_sales DESC
       `);
@@ -79,7 +79,7 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
           COALESCE(SUM(t.amount_paid), 0) as total_sales
         FROM branches b
         LEFT JOIN transactions t ON b.id = t.branch_id 
-          AND date(t.created_at) = CURRENT_DATE - 1
+          AND date(t.created_at) = date('now', '-1 day')
         GROUP BY b.id, b.name
       `);
 

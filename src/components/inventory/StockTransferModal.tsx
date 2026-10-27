@@ -27,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { ArrowRight, Package, Plus, Trash2 } from "lucide-react";
 import { Product, ProductUnit } from "@/types";
+import { warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 
 interface TransferItem {
   productId: string;
@@ -42,7 +43,7 @@ interface StockTransferModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   products: Product[];
-  branches: Array<{ id: string; name: string }>;
+  warehouses: WarehouseOption[];
   onTransfer: (transfer: {
     from: string;
     to: string;
@@ -51,20 +52,20 @@ interface StockTransferModalProps {
   }) => void;
 }
 
-export function StockTransferModal({ open, onOpenChange, products, branches, onTransfer }: StockTransferModalProps) {
-  const [fromLocation, setFromLocation] = useState("");
-  const [toLocation, setToLocation] = useState("");
+export function StockTransferModal({ open, onOpenChange, products, warehouses, onTransfer }: StockTransferModalProps) {
+  const [fromWarehouse, setFromWarehouse] = useState("");
+  const [toWarehouse, setToWarehouse] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
   const [quantity, setQuantity] = useState("");
   const [transferItems, setTransferItems] = useState<TransferItem[]>([]);
   const [notes, setNotes] = useState("");
 
-  const getAvailableStock = (productId: string, location: string) => {
+  const getAvailableStock = (productId: string, warehouseId: string) => {
     const product = products.find(p => p.id === productId);
     if (!product) return 0;
-    // stock_by_branch keys might vary, assuming ID matches location ID
-    return product.stock_by_branch?.[location] || 0;
+    // Keys are warehouse ids.
+    return product.stock_by_warehouse?.[warehouseId] || 0;
   };
 
   const handleAddItem = () => {
@@ -88,7 +89,7 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
       }
     }
 
-    const baseAvailableStock = getAvailableStock(product.id, fromLocation);
+    const baseAvailableStock = getAvailableStock(product.id, fromWarehouse);
     const availableStockInUnit = Math.floor(baseAvailableStock / conversionFactor);
     const qty = parseInt(quantity);
 
@@ -136,13 +137,13 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
   };
 
   const handleSubmit = () => {
-    if (!fromLocation || !toLocation) {
-      toast.error("Pilih lokasi asal dan tujuan");
+    if (!fromWarehouse || !toWarehouse) {
+      toast.error("Pilih gudang asal dan tujuan");
       return;
     }
 
-    if (fromLocation === toLocation) {
-      toast.error("Lokasi asal dan tujuan tidak boleh sama");
+    if (fromWarehouse === toWarehouse) {
+      toast.error("Gudang asal dan tujuan tidak boleh sama");
       return;
     }
 
@@ -152,8 +153,8 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
     }
 
     onTransfer({
-      from: fromLocation,
-      to: toLocation,
+      from: fromWarehouse,
+      to: toWarehouse,
       items: transferItems,
       notes,
     });
@@ -164,8 +165,8 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
   };
 
   const resetForm = () => {
-    setFromLocation("");
-    setToLocation("");
+    setFromWarehouse("");
+    setToWarehouse("");
     setSelectedProduct("");
     setSelectedUnit("");
     setQuantity("");
@@ -173,8 +174,8 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
     setNotes("");
   };
 
-  const filteredProducts = fromLocation 
-    ? products.filter(p => (p.stock_by_branch?.[fromLocation] || 0) > 0)
+  const filteredProducts = fromWarehouse 
+    ? products.filter(p => (p.stock_by_warehouse?.[fromWarehouse] || 0) > 0)
     : products;
 
   const selectedProductData = products.find(p => p.id === selectedProduct);
@@ -187,31 +188,31 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {/* Location Selection */}
+          {/* Warehouse Selection */}
           <div className="flex items-center gap-4">
             <div className="flex-1">
-              <Label>Dari Lokasi</Label>
-              <Select value={fromLocation} onValueChange={setFromLocation}>
+              <Label>Dari Gudang</Label>
+              <Select value={fromWarehouse} onValueChange={setFromWarehouse}>
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Pilih lokasi asal" />
+                  <SelectValue placeholder="Pilih gudang asal" />
                 </SelectTrigger>
                 <SelectContent>
-                  {branches.map((loc) => (
-                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  {warehouses.map((warehouse) => (
+                    <SelectItem key={warehouse.id} value={warehouse.id}>{warehouseLabel(warehouse)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <ArrowRight className="w-5 h-5 text-muted-foreground mt-6" />
             <div className="flex-1">
-              <Label>Ke Lokasi</Label>
-              <Select value={toLocation} onValueChange={setToLocation}>
+              <Label>Ke Gudang</Label>
+              <Select value={toWarehouse} onValueChange={setToWarehouse}>
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Pilih lokasi tujuan" />
+                  <SelectValue placeholder="Pilih gudang tujuan" />
                 </SelectTrigger>
                 <SelectContent>
-                  {branches.filter(loc => loc.id !== fromLocation).map((loc) => (
-                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  {warehouses.filter((warehouse) => warehouse.id !== fromWarehouse).map((warehouse) => (
+                    <SelectItem key={warehouse.id} value={warehouse.id}>{warehouseLabel(warehouse)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -219,7 +220,7 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
           </div>
 
           {/* Add Product */}
-          {fromLocation && (
+          {fromWarehouse && (
             <div className="border rounded-lg p-4 bg-muted/50">
               <Label className="text-sm font-medium">Tambah Produk</Label>
               <div className="flex gap-2 mt-2">
@@ -233,7 +234,7 @@ export function StockTransferModal({ open, onOpenChange, products, branches, onT
                   <SelectContent>
                     {filteredProducts.map((product) => (
                       <SelectItem key={product.id} value={product.id.toString()}>
-                        {product.name} (Stok: {product.stock_by_branch?.[fromLocation] || 0})
+                        {product.name} (Stok: {product.stock_by_warehouse?.[fromWarehouse] || 0})
                       </SelectItem>
                     ))}
                   </SelectContent>

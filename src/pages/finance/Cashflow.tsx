@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { query } from "@/lib/db";
+import { batchQuery } from "@/lib/db";
+import { sqliteTzModifier, startOfMonthOffset } from "@/lib/date-range";
 import { Loader2, TrendingUp, TrendingDown, DollarSign, Download } from "lucide-react";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
@@ -25,29 +26,41 @@ export default function Cashflow() {
   const fetchCashflow = async () => {
     setIsLoading(true);
     try {
-      // Fetch Income (Sales) by Month (Last 6 months) - Cash Basis (amount_paid)
-      const incomeRes = await query(`
-        SELECT 
-          to_char(created_at, 'Mon') as month,
-          to_char(created_at, 'YYYY-MM') as sort_key,
-          SUM(amount_paid) as total
-        FROM transactions
-        WHERE created_at >= date_trunc('month', CURRENT_DATE - INTERVAL '5 months')
-        GROUP BY 1, 2
-        ORDER BY 2
-      `);
+      // Six-month rolling window with both bounds bound, and the bucket shifted
+      // into local time so a 00:30 sale on the 1st is not counted in the month
+      // before. Income and expenses are one batch: one round-trip.
+      const start = startOfMonthOffset(5);
+      const rangeEnd = new Date();
+      rangeEnd.setMonth(rangeEnd.getMonth() + 1, 1);
+      const end = rangeEnd.toISOString();
+      const tz = sqliteTzModifier();
 
-      // Fetch Expenses by Month (Last 6 months) - Cash Basis (amount_paid)
-      const expenseRes = await query(`
-        SELECT 
-          to_char(date, 'Mon') as month,
-          to_char(date, 'YYYY-MM') as sort_key,
-          SUM(amount_paid) as total
-        FROM expenses
-        WHERE date >= date_trunc('month', CURRENT_DATE - INTERVAL '5 months')
-        GROUP BY 1, 2
-        ORDER BY 2
-      `);
+      const [incomeRes, expenseRes] = await batchQuery([
+        {
+          sql: `
+            SELECT 
+              strftime('%Y-%m', created_at, $1) as sort_key,
+              SUM(total_amount) as total
+            FROM transactions
+            WHERE created_at >= $2 AND created_at < $3
+            GROUP BY 1
+            ORDER BY 1
+          `,
+          params: [tz, start, end],
+        },
+        {
+          sql: `
+            SELECT 
+              strftime('%Y-%m', date) as sort_key,
+              SUM(amount_paid) as total
+            FROM expenses
+            WHERE date >= $1 AND date < $2
+            GROUP BY 1
+            ORDER BY 1
+          `,
+          params: [start, end],
+        },
+      ]);
 
       // Merge Data
       const mergedData = [];
@@ -55,32 +68,30 @@ export default function Cashflow() {
       const expenseMap = new Map();
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      incomeRes.rows.forEach((row: any) => incomeMap.set(row.month, parseFloat(row.total)));
+      incomeRes.rows.forEach((row: any) => incomeMap.set(row.sort_key, parseFloat(row.total)));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      expenseRes.rows.forEach((row: any) => expenseMap.set(row.month, parseFloat(row.total)));
+      expenseRes.rows.forEach((row: any) => expenseMap.set(row.sort_key, parseFloat(row.total)));
 
-      // Get all unique months from both
-      const months = Array.from(new Set([...incomeMap.keys(), ...expenseMap.keys()]));
-      // Sort months logic (simplified, assuming query order is mostly correct or we rely on sort_key if we stored it)
-      // Since we can't easily sort 'Mon' strings without a map, let's rely on the DB sort order mostly, 
-      // but here we just iterate the months set which might be unordered.
-      // Better approach: use the sort_key from query to sort.
-      
-      const allRows = [...incomeRes.rows, ...expenseRes.rows].map((r: any) => ({
-        month: r.month,
-        sort_key: r.sort_key
-      })).sort((a, b) => a.sort_key.localeCompare(b.sort_key));
-      
-      const uniqueMonths = Array.from(new Set(allRows.map(r => r.month)));
+      // SQLite has no locale-aware TO_CHAR, so the month label is built in JS.
+      const monthLabel = (sortKey: string) => {
+        const [year, month] = sortKey.split("-");
+        const label = new Date(Number(year), Number(month) - 1, 1)
+          .toLocaleDateString("id-ID", { month: "short" });
+        return label;
+      };
+
+      const uniqueMonths = Array.from(
+        new Set([...incomeMap.keys(), ...expenseMap.keys()])
+      ).sort() as string[];
 
       let tIncome = 0;
       let tExpense = 0;
 
-      uniqueMonths.forEach(month => {
-        const income = incomeMap.get(month) || 0;
-        const expense = expenseMap.get(month) || 0;
+      uniqueMonths.forEach(sortKey => {
+        const income = incomeMap.get(sortKey) || 0;
+        const expense = expenseMap.get(sortKey) || 0;
         mergedData.push({
-          name: month,
+          name: monthLabel(sortKey),
           income,
           expense
         });

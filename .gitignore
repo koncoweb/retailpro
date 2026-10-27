@@ -12,6 +12,14 @@ dist
 dist-ssr
 *.local
 
+# Environment (never commit credentials)
+.env
+.env.local
+.env.*.local
+
+# Local libSQL test databases
+.data
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

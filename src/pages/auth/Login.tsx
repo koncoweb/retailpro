@@ -19,6 +19,8 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 
 import { authClient } from "@/lib/auth-client";
+import { useTenant } from "@/contexts/TenantContext";
+import { useQueryClient } from "@tanstack/react-query";
 
 const loginSchema = z.object({
   email: z.string().email("Email tidak valid"),
@@ -29,6 +31,8 @@ type LoginFormValues = z.infer<typeof loginSchema>;
 
 export default function Login() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { bootstrap, clear } = useTenant();
   const [isLoading, setIsLoading] = useState(false);
 
   const form = useForm<LoginFormValues>({
@@ -41,10 +45,13 @@ export default function Login() {
 
   async function onSubmit(data: LoginFormValues) {
     setIsLoading(true);
-    
+
     try {
-      // Attempt Neon Auth Login
-      const { data: session, error } = await authClient.signIn.email({
+      // A new identity must never inherit the previous tenant's in-memory token.
+      clear();
+      queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== "auth-session" });
+
+      const { error } = await authClient.signIn.email({
         email: data.email,
         password: data.password,
       });
@@ -55,17 +62,18 @@ export default function Login() {
         return;
       }
 
-      // Success
+      // Session is live; now resolve the company database and its token.
+      const tenantSession = await bootstrap();
+      queryClient.invalidateQueries({ queryKey: ["auth-session"] });
+
+      if (!tenantSession) {
+        toast.info("Akun ini belum memiliki perusahaan. Silakan daftarkan perusahaan Anda.");
+        navigate("/register-tenant");
+        return;
+      }
+
       toast.success("Login berhasil");
-      
-      // Redirect logic based on role would ideally come from session data
-      // For now we redirect to a central dashboard or check session
-      // const userRole = session.user.role; 
-      // But standard better-auth might not have role on sign-in response immediately without plugin
-      
-      // We will fetch session to be sure or just redirect to mode-select/dashboard
       navigate("/mode-select");
-      
     } catch (err) {
       console.error("Login error:", err);
       toast.error("Terjadi kesalahan sistem saat mencoba login");

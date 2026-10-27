@@ -23,6 +23,8 @@ import { Label } from "@/components/ui/label";
 import { Plus, Search, Trash2, Download } from "lucide-react";
 import * as XLSX from "xlsx";
 import { query } from "@/lib/db";
+import { logAudit } from "@/lib/audit";
+import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import {
@@ -50,6 +52,7 @@ interface Supplier {
 }
 
 export default function Expenses() {
+  const { user } = useAuth();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -115,9 +118,10 @@ export default function Expenses() {
     }
 
     try {
-      await query(`
+      const inserted = await query<{ id: string }>(`
         INSERT INTO expenses (category, amount, date, description, status, amount_paid, supplier_id)
         VALUES ($1, $2, $3, $4, 'paid', $2, $5)
+        RETURNING id
       `, [
         newExpense.category,
         parseFloat(newExpense.amount),
@@ -125,6 +129,23 @@ export default function Expenses() {
         newExpense.description,
         newExpense.supplier_id === "none" || newExpense.supplier_id === "" ? null : newExpense.supplier_id
       ]);
+
+      // An expense moves money out of the business, so it gets an audit entry
+      // like every other financial posting (checkout, transfer approval, PO).
+      await logAudit({
+        action: "create_expense",
+        entity: "expenses",
+        entityId: inserted.rows[0]?.id,
+        userId: user?.id,
+        details: {
+          category: newExpense.category,
+          amount: parseFloat(newExpense.amount),
+          date: newExpense.date,
+          description: newExpense.description,
+          supplier_id: newExpense.supplier_id === "none" ? null : newExpense.supplier_id,
+          status: "paid",
+        },
+      });
 
       toast.success("Pengeluaran berhasil disimpan");
       setIsAddOpen(false);

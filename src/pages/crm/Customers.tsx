@@ -35,9 +35,13 @@ import {
   Download,
 } from "lucide-react";
 import { toast } from "sonner";
-import { query } from "@/lib/db";
+import { query, batchQuery } from "@/lib/db";
+import { PaginationBar } from "@/components/ui/pagination-bar";
 import { logAudit } from "@/lib/audit";
 import * as XLSX from "xlsx";
+
+/** Rows per page for the customer list. */
+const PAGE_SIZE = 25;
 
 interface Customer {
   id: string;
@@ -58,6 +62,10 @@ export default function Customers() {
   const [isLoading, setIsLoading] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  // Debounced copy of the search box plus server-side paging state.
+  const [searchTerm, setSearchTerm] = useState("");
+  const [page, setPage] = useState(0);
+  const [total, setTotal] = useState(0);
   
   // Dialog State
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -90,18 +98,40 @@ export default function Customers() {
   const fetchCustomers = async () => {
     try {
       setIsLoading(true);
-      const res = await query(`
-        SELECT * FROM customers 
-        ORDER BY created_at DESC
-      `);
-      
-      const mappedCustomers: Customer[] = res.rows.map((row: any) => ({
+      // Search and paging run in SQL: the list can grow past what is sane to
+      // ship to the browser in one response, and filtering only the fetched
+      // rows would quietly hide matches.
+      const term = searchTerm.trim();
+      const where = term ? "WHERE name LIKE $1 OR phone LIKE $1 OR email LIKE $1" : "";
+      const filterArgs = term ? [`%${term}%`] : [];
+      const limitIdx = filterArgs.length + 1;
+      const offsetIdx = filterArgs.length + 2;
+
+      const [listRes, countRes] = await batchQuery([
+        {
+          sql: `
+            SELECT * FROM customers 
+            ${where}
+            ORDER BY created_at DESC
+            LIMIT $${limitIdx} OFFSET $${offsetIdx}
+          `,
+          params: [...filterArgs, PAGE_SIZE, page * PAGE_SIZE],
+        },
+        {
+          sql: `SELECT COUNT(*) as total FROM customers ${where}`,
+          params: filterArgs,
+        },
+      ]);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mappedCustomers: Customer[] = (listRes.rows as any[]).map((row) => ({
         ...row,
         total_spent: parseFloat(row.total_spent || "0"),
         preferences: row.preferences || {},
       }));
       
       setCustomers(mappedCustomers);
+      setTotal(Number((countRes.rows[0] as { total: number })?.total ?? 0));
     } catch (error) {
       console.error("Failed to fetch customers:", error);
       toast.error("Gagal mengambil data pelanggan");
@@ -111,8 +141,17 @@ export default function Customers() {
   };
 
   useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchTerm(searchQuery);
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
     fetchCustomers();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, searchTerm]);
 
   const handleOpenAdd = () => {
     setIsEditing(false);
@@ -155,7 +194,7 @@ export default function Customers() {
       if (isEditing && currentId) {
         await query(
           `UPDATE customers 
-           SET name=$1, phone=$2, email=$3, preferences=coalesce(preferences, '{}'::jsonb) || $4::jsonb
+           SET name=$1, phone=$2, email=$3, preferences=json_patch(COALESCE(preferences, '{}'), $4)
            WHERE id=$5`,
           [
             formData.name,
@@ -230,12 +269,6 @@ export default function Customers() {
       }
     }
   };
-
-  const filteredCustomers = customers.filter(c => 
-    c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (c.phone && c.phone.includes(searchQuery)) ||
-    (c.email && c.email.toLowerCase().includes(searchQuery.toLowerCase()))
-  );
 
   const handleExport = () => {
     if (customers.length === 0) {
@@ -325,14 +358,14 @@ export default function Customers() {
                     Memuat data...
                   </TableCell>
                 </TableRow>
-              ) : filteredCustomers.length === 0 ? (
+              ) : customers.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
                     Tidak ada pelanggan ditemukan.
                   </TableCell>
                 </TableRow>
               ) : (
-                filteredCustomers.map((customer) => (
+                customers.map((customer) => (
                   <TableRow key={customer.id}>
                     <TableCell className="font-medium">
                       <div className="flex items-center gap-2">
@@ -396,6 +429,13 @@ export default function Customers() {
               )}
             </TableBody>
           </Table>
+          <PaginationBar
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={total}
+            onPageChange={setPage}
+            label="pelanggan"
+          />
         </div>
       </div>
 

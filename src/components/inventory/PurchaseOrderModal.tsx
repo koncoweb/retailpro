@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/popover";
 import { Package, Plus, Trash2, AlertTriangle, ShoppingCart, Check, ChevronsUpDown } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 
 import { ProductUnit } from "@/components/inventory/AddProductModal";
 
@@ -52,8 +53,20 @@ interface Product {
   minStock: number;
   cost: number;
   supplier: string;
-  branches: Record<string, number>;
+  /** Main vendor of the product, plus every vendor linked through vendor_products. */
+  supplierId?: string | null;
+  vendorIds?: string[];
+  warehouses: Record<string, number>;
   units: ProductUnit[];
+}
+
+/** Vendor master fields the purchasing screen needs. */
+export interface VendorOption {
+  id: string;
+  name: string;
+  code?: string | null;
+  payment_terms_days?: number;
+  lead_time_days?: number;
 }
 
 interface POItem {
@@ -72,12 +85,17 @@ interface PurchaseOrderModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   products: Product[];
-  branches: Array<{ id: string; name: string }>;
-  suppliers: Array<{ id: string; name: string }>;
+  warehouses: WarehouseOption[];
+  suppliers: VendorOption[];
   onSubmit: (po: {
     poNumber: string;
+    /** Vendor that receives the order; becomes purchase_orders.supplier_id. */
+    supplierId: string;
     supplier: string;
-    destination: string;
+    /** Payment terms copied from the vendor, used to date the payable. */
+    paymentTermsDays: number;
+    /** Receiving warehouse; goods land here when the PO is received. */
+    destinationWarehouseId: string;
     items: POItem[];
     notes: string;
     expectedDate: string;
@@ -85,8 +103,8 @@ interface PurchaseOrderModalProps {
   }) => void;
 }
 
-export function PurchaseOrderModal({ open, onOpenChange, products, branches, suppliers, onSubmit }: PurchaseOrderModalProps) {
-  const [destination, setDestination] = useState("");
+export function PurchaseOrderModal({ open, onOpenChange, products, warehouses, suppliers, onSubmit }: PurchaseOrderModalProps) {
+  const [destinationWarehouse, setDestinationWarehouse] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
   const [quantity, setQuantity] = useState("");
@@ -99,6 +117,12 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
 
   // Get low stock products
   const lowStockProducts = products.filter(p => p.stock <= p.minStock);
+
+  /** Does this product come from the selected vendor (main vendor or linked)? */
+  const belongsToVendor = (product: Product, vendorId: string) =>
+    product.supplierId === vendorId || (product.vendorIds ?? []).includes(vendorId);
+
+  const selectedVendor = suppliers.find((vendor) => vendor.id === selectedSupplier) ?? null;
 
   const generatePONumber = () => {
     const date = new Date();
@@ -167,14 +191,14 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
   };
 
   const handleAutoFillLowStock = () => {
-    if (!destination) {
-      toast.error("Pilih lokasi tujuan terlebih dahulu");
+    if (!destinationWarehouse) {
+      toast.error("Pilih gudang tujuan terlebih dahulu");
       return;
     }
 
     const itemsToAdd: POItem[] = [];
     lowStockProducts.forEach(product => {
-      const locationStock = product.branches[destination] || 0;
+      const locationStock = product.warehouses[destinationWarehouse] || 0;
       const needed = product.minStock - locationStock;
       if (needed > 0) {
         const existing = poItems.find(item => item.productId === product.id);
@@ -203,8 +227,13 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
   };
 
   const handleSubmit = () => {
-    if (!destination) {
-      toast.error("Pilih lokasi tujuan");
+    if (!selectedVendor) {
+      toast.error("Pilih vendor terlebih dahulu");
+      return;
+    }
+
+    if (!destinationWarehouse) {
+      toast.error("Pilih gudang tujuan");
       return;
     }
 
@@ -217,8 +246,10 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
 
     onSubmit({
       poNumber: generatePONumber(),
-      supplier: selectedSupplier || "Multiple Suppliers",
-      destination,
+      supplierId: selectedVendor.id,
+      supplier: selectedVendor.name,
+      paymentTermsDays: Number(selectedVendor.payment_terms_days ?? 0),
+      destinationWarehouseId: destinationWarehouse,
       items: poItems,
       notes,
       expectedDate,
@@ -231,7 +262,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
   };
 
   const resetForm = () => {
-    setDestination("");
+    setDestinationWarehouse("");
     setSelectedProduct("");
     setQuantity("");
     setCostPrice("");
@@ -243,8 +274,8 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
 
   const totalAmount = poItems.reduce((sum, item) => sum + item.totalCost, 0);
 
-  const filteredProducts = (selectedSupplier && selectedSupplier !== "all")
-    ? products.filter(p => p.supplier === selectedSupplier)
+  const filteredProducts = selectedSupplier
+    ? products.filter((p) => belongsToVendor(p, selectedSupplier))
     : products;
 
   const selectedProductObj = products.find(p => p.id === selectedProduct);
@@ -278,31 +309,51 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
           {/* Form Fields */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <Label>Lokasi Tujuan *</Label>
-              <Select value={destination} onValueChange={setDestination}>
+              <Label>Gudang Tujuan *</Label>
+              <Select value={destinationWarehouse} onValueChange={setDestinationWarehouse}>
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Pilih lokasi" />
+                  <SelectValue placeholder="Pilih gudang" />
                 </SelectTrigger>
                 <SelectContent>
-                  {branches.map((loc) => (
-                    <SelectItem key={loc.id} value={loc.id}>{loc.name}</SelectItem>
+                  {warehouses.map((warehouse) => (
+                    <SelectItem key={warehouse.id} value={warehouse.id}>{warehouseLabel(warehouse)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div>
-              <Label>Filter Supplier</Label>
-              <Select value={selectedSupplier} onValueChange={setSelectedSupplier}>
+              <Label>Vendor *</Label>
+              <Select
+                value={selectedSupplier}
+                onValueChange={(value) => {
+                  setSelectedSupplier(value);
+                  // The vendor lead time gives a sensible expected arrival date.
+                  const vendor = suppliers.find((item) => item.id === value);
+                  const leadTime = Number(vendor?.lead_time_days ?? 0);
+                  if (leadTime > 0 && !expectedDate) {
+                    const date = new Date();
+                    date.setDate(date.getDate() + leadTime);
+                    setExpectedDate(date.toISOString().slice(0, 10));
+                  }
+                }}
+              >
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Semua supplier" />
+                  <SelectValue placeholder="Pilih vendor" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Semua Supplier</SelectItem>
                   {suppliers.map((supplier) => (
-                    <SelectItem key={supplier.id} value={supplier.name}>{supplier.name}</SelectItem>
+                    <SelectItem key={supplier.id} value={supplier.id}>
+                      {supplier.code ? `${supplier.code} · ${supplier.name}` : supplier.name}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
+              {selectedVendor && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  Termin {Number(selectedVendor.payment_terms_days ?? 0)} hari · Lead time{" "}
+                  {Number(selectedVendor.lead_time_days ?? 0)} hari
+                </p>
+              )}
             </div>
             <div>
               <Label>Tanggal Diharapkan</Label>
@@ -431,7 +482,6 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
                 <TableHeader>
                   <TableRow>
                     <TableHead>Produk</TableHead>
-                    <TableHead>Supplier</TableHead>
                     <TableHead className="text-center">Qty</TableHead>
                     <TableHead className="text-center">Satuan</TableHead>
                     <TableHead className="text-right">Harga Satuan</TableHead>
@@ -450,9 +500,6 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
                             <p className="text-xs text-muted-foreground">{item.sku}</p>
                           </div>
                         </div>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-sm">{item.supplier}</span>
                       </TableCell>
                       <TableCell className="text-center">
                         <Badge variant="secondary">{item.quantity}</Badge>
@@ -478,7 +525,7 @@ export function PurchaseOrderModal({ open, onOpenChange, products, branches, sup
                     </TableRow>
                   ))}
                   <TableRow className="bg-muted/50">
-                    <TableCell colSpan={5} className="text-right font-semibold">
+                    <TableCell colSpan={4} className="text-right font-semibold">
                       Total Amount:
                     </TableCell>
                     <TableCell className="text-right font-bold text-lg">

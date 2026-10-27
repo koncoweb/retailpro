@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { query } from "@/lib/db";
+import { batchQuery } from "@/lib/db";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -52,56 +52,65 @@ interface BranchPerformance {
 }
 
 export default function BranchDashboard() {
-  // Fetch Aggregate Stats
-  const { data: stats, isLoading: statsLoading } = useQuery({
-    queryKey: ["branch-dashboard-stats"],
+  // Aggregate stats and per-branch performance are independent reads, so they
+  // travel in one batch: one round-trip to the tenant database instead of two
+  // overlapping ones competing for the same connection.
+  const { data, isLoading } = useQuery({
+    queryKey: ["branch-dashboard"],
     queryFn: async () => {
-      const res = await query(`
-        SELECT 
-          COUNT(*) as total_branches,
-          COUNT(CASE WHEN status = 'active' THEN 1 END) as active_branches,
-          (SELECT COUNT(*) FROM users WHERE assigned_branch_id IS NOT NULL) as total_employees,
-          (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE created_at >= date_trunc('month', CURRENT_DATE)) as total_sales
-        FROM branches
-      `);
-      
-      const row = res.rows[0];
-      return {
+      const [statsRes, perfRes] = await batchQuery([
+        {
+          sql: `
+            SELECT 
+              COUNT(*) as total_branches,
+              COUNT(CASE WHEN status = 'active' THEN 1 END) as active_branches,
+              (SELECT COUNT(*) FROM users WHERE assigned_branch_id IS NOT NULL) as total_employees,
+              (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE created_at >= date('now','start of month')) as total_sales
+            FROM branches
+          `,
+        },
+        {
+          sql: `
+            SELECT 
+              b.id,
+              b.name,
+              b.status,
+              COUNT(t.id) as transaction_count,
+              COALESCE(SUM(t.total_amount), 0) as total_sales
+            FROM branches b
+            LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= date('now','start of month')
+            GROUP BY b.id, b.name, b.status
+            ORDER BY total_sales DESC
+          `,
+        },
+      ]);
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const row = statsRes.rows[0] as any;
+      const stats = {
         totalBranches: parseInt(row.total_branches),
         activeBranches: parseInt(row.active_branches),
         totalEmployees: parseInt(row.total_employees),
         totalSales: parseFloat(row.total_sales)
       } as DashboardStats;
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const performance = (perfRes.rows as any[]).map((r) => ({
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        transactions: parseInt(r.transaction_count),
+        sales: parseFloat(r.total_sales)
+      })) as BranchPerformance[];
+
+      return { stats, performance };
     }
   });
 
-  // Fetch Branch Performance
-  const { data: performance, isLoading: perfLoading } = useQuery({
-    queryKey: ["branch-dashboard-performance"],
-    queryFn: async () => {
-      const res = await query(`
-        SELECT 
-          b.id,
-          b.name,
-          b.status,
-          COUNT(t.id) as transaction_count,
-          COALESCE(SUM(t.total_amount), 0) as total_sales
-        FROM branches b
-        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= date_trunc('month', CURRENT_DATE)
-        GROUP BY b.id, b.name, b.status
-        ORDER BY total_sales DESC
-      `);
-      
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return res.rows.map((row: any) => ({
-        id: row.id,
-        name: row.name,
-        status: row.status,
-        transactions: parseInt(row.transaction_count),
-        sales: parseFloat(row.total_sales)
-      })) as BranchPerformance[];
-    }
-  });
+  const stats = data?.stats;
+  const performance = data?.performance;
+  const statsLoading = isLoading;
+  const perfLoading = isLoading;
 
   const handleExport = () => {
     if (!performance || performance.length === 0) {

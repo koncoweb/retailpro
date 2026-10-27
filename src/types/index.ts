@@ -1,4 +1,12 @@
-export type UserRole = 'platform_owner' | 'tenant_owner' | 'tenant_admin' | 'store_manager' | 'cashier' | 'admin';
+export type UserRole =
+  | 'platform_owner'
+  | 'tenant_owner'
+  | 'tenant_admin'
+  | 'store_manager'
+  | 'cashier'
+  | 'warehouse'
+  | 'staff'
+  | 'admin';
 
 export interface Tenant {
   id: string;
@@ -14,7 +22,27 @@ export interface Branch {
   name: string;
   address: string;
   phone?: string;
+  /** Sales channel: a physical store, an online store, or both. */
+  type?: 'store' | 'online' | 'hybrid';
+  /** Exactly one branch per tenant is the head office. */
+  is_headquarters?: boolean;
+  parent_branch_id?: string | null;
   is_active?: boolean;
+}
+
+/**
+ * A stocking location. Warehouses hold `product_batches`; branches sell from
+ * them. `branch_id` is the owning branch (null = company-wide/shared).
+ */
+export interface Warehouse {
+  id: string;
+  name: string;
+  code: string | null;
+  type: string;
+  branch_id: string | null;
+  address?: string | null;
+  status: string;
+  is_default: number;
 }
 
 export interface User {
@@ -47,15 +75,15 @@ export interface Product {
   min_stock_alert: number;
   units: ProductUnit[]; // Multi-unit support
   
-  // Frontend helper for multi-branch stock view
+  // Frontend helper for multi-warehouse stock view
   // In real DB, this comes from aggregation of product_batches
-  stock_by_branch: Record<string, number>; 
+  stock_by_warehouse: Record<string, number>; 
 }
 
 export interface ProductBatch {
   id: string;
   tenant_id: string;
-  branch_id: string;
+  warehouse_id: string;
   product_id: string;
   batch_number: string;
   expiry_date?: string;
@@ -71,8 +99,9 @@ export interface CartItem {
   quantity: number;
   unit_name: string;
   conversion_factor: number;
-  // In a real scenario, we might select specific batch if manually picking,
-  // but usually FIFO is automatic on backend.
+  // The cashier never picks a batch: the tenant's issue policy (FIFO / LIFO /
+  // FEFO, stored in `tenants.settings.inventory.stock_issue_method`) decides
+  // which batch leaves first when the sale is committed.
 }
 
 export interface Transaction {

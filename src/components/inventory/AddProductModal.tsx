@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { generateNextSku } from "@/lib/inventory-utils";
+import { warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 
 export interface ProductUnit {
   id?: string;
@@ -48,11 +49,11 @@ interface AddProductModalProps {
     stock: number;
     minStock: number;
     supplier: string;
-    branches: Record<string, number>;
+    warehouses: Record<string, number>;
     units: ProductUnit[];
   }) => void;
   categories: string[]; // Keep for compatibility, but we'll fetch from DB too
-  branches: { id: string; name: string }[];
+  warehouses: WarehouseOption[];
   mode?: "add" | "edit";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   initialData?: any;
@@ -62,7 +63,7 @@ export function AddProductModal({
   open, 
   onOpenChange, 
   onAdd, 
-  branches, 
+  warehouses, 
   mode = "add", 
   initialData 
 }: AddProductModalProps) {
@@ -75,7 +76,7 @@ export function AddProductModal({
     minStock: "",
     supplier: "",
   });
-  const [branchStocks, setBranchStocks] = useState<Record<string, string>>({});
+  const [warehouseStocks, setWarehouseStocks] = useState<Record<string, string>>({});
   const [units, setUnits] = useState<ProductUnit[]>([
     { name: "Pcs", conversion_factor: 1, price: 0, barcode: "" }
   ]);
@@ -125,11 +126,11 @@ export function AddProductModal({
       });
       const stocks: Record<string, string> = {};
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const branchData = initialData.branches || {};
-      Object.entries(branchData).forEach(([key, value]) => {
+      const warehouseData = initialData.warehouses || {};
+      Object.entries(warehouseData).forEach(([key, value]) => {
         stocks[key] = String(value);
       });
-      setBranchStocks(stocks);
+      setWarehouseStocks(stocks);
       
       // Load units if available in initialData
       if (initialData.units && Array.isArray(initialData.units)) {
@@ -140,7 +141,7 @@ export function AddProductModal({
       }
     } else if (mode === "add" && open) {
       setFormData({ sku: "", name: "", category: "", price: "", cost: "", minStock: "", supplier: "" });
-      setBranchStocks({});
+      setWarehouseStocks({});
       setUnits([{ name: "Pcs", conversion_factor: 1, price: 0, barcode: "" }]);
     }
   }, [initialData, mode, open]);
@@ -257,11 +258,11 @@ export function AddProductModal({
       }
     }
 
-    const branchStockNumbers: Record<string, number> = {};
+    const warehouseStockNumbers: Record<string, number> = {};
     let totalStock = 0;
-    Object.entries(branchStocks).forEach(([key, value]) => {
+    Object.entries(warehouseStocks).forEach(([key, value]) => {
       const num = parseInt(value) || 0;
-      branchStockNumbers[key] = num;
+      warehouseStockNumbers[key] = num;
       totalStock += num;
     });
 
@@ -274,7 +275,7 @@ export function AddProductModal({
       stock: totalStock,
       minStock: parseInt(formData.minStock) || 0,
       supplier: formData.supplier,
-      branches: branchStockNumbers,
+      warehouses: warehouseStockNumbers,
       units: units,
     });
 
@@ -282,7 +283,7 @@ export function AddProductModal({
     onOpenChange(false);
     // Reset form
     setFormData({ sku: "", name: "", category: "", price: "", cost: "", minStock: "", supplier: "" });
-    setBranchStocks({});
+    setWarehouseStocks({});
     setUnits([{ name: "Pcs", conversion_factor: 1, price: 0, barcode: "" }]);
   };
 
@@ -673,16 +674,16 @@ export function AddProductModal({
           </div>
 
           <div className="border-t pt-4">
-            <Label className="text-base font-semibold">Stok Awal per Lokasi</Label>
+            <Label className="text-base font-semibold">Stok Awal per Gudang</Label>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
-              {branches.map((branch) => (
-                <div key={branch.id} className="grid gap-1">
-                  <Label className="text-sm text-muted-foreground">{branch.name}</Label>
+              {warehouses.map((warehouse) => (
+                <div key={warehouse.id} className="grid gap-1">
+                  <Label className="text-sm text-muted-foreground">{warehouseLabel(warehouse)}</Label>
                   <Input
                     type="number"
                     placeholder="0"
-                    value={branchStocks[branch.id]}
-                    onChange={(e) => setBranchStocks({ ...branchStocks, [branch.id]: e.target.value })}
+                    value={warehouseStocks[warehouse.id]}
+                    onChange={(e) => setWarehouseStocks({ ...warehouseStocks, [warehouse.id]: e.target.value })}
                   />
                 </div>
               ))}

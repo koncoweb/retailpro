@@ -26,22 +26,23 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { Package, Search, CheckCircle2, AlertTriangle } from "lucide-react";
+import { warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 
 interface Product {
   id: string;
   sku: string;
   name: string;
   stock: number;
-  branches: Record<string, number>;
+  warehouses: Record<string, number>;
 }
 
 interface StockOpnameModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   products: Product[];
-  branches: Array<{ id: string; name: string }>;
+  warehouses: WarehouseOption[];
   onSave: (opname: {
-    location: string;
+    warehouseId: string;
     items: Array<{
       productId: string;
       systemStock: number;
@@ -51,16 +52,16 @@ interface StockOpnameModalProps {
   }) => void;
 }
 
-export function StockOpnameModal({ open, onOpenChange, products, branches, onSave }: StockOpnameModalProps) {
-  const [selectedLocation, setSelectedLocation] = useState("");
+export function StockOpnameModal({ open, onOpenChange, products, warehouses, onSave }: StockOpnameModalProps) {
+  const [selectedWarehouse, setSelectedWarehouse] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [actualStocks, setActualStocks] = useState<Record<string, string>>({});
 
   const getLocationProducts = () => {
-    if (!selectedLocation) return [];
+    if (!selectedWarehouse) return [];
     return products.map(p => ({
       ...p,
-      locationStock: p.branches[selectedLocation] || 0,
+      locationStock: p.warehouses[selectedWarehouse] || 0,
     })).filter(p => 
       p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.sku.toLowerCase().includes(searchQuery.toLowerCase())
@@ -74,8 +75,8 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
   };
 
   const handleSubmit = () => {
-    if (!selectedLocation) {
-      toast.error("Pilih lokasi terlebih dahulu");
+    if (!selectedWarehouse) {
+      toast.error("Pilih gudang terlebih dahulu");
       return;
     }
 
@@ -96,13 +97,13 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
     const hasChanges = items.some(item => item.difference !== 0);
     
     onSave({
-      location: selectedLocation,
+      warehouseId: selectedWarehouse,
       items,
     });
 
     toast.success(hasChanges ? "Stock opname berhasil disimpan" : "Tidak ada perubahan stok");
     onOpenChange(false);
-    setSelectedLocation("");
+    setSelectedWarehouse("");
     setActualStocks({});
   };
 
@@ -124,24 +125,24 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {/* Location Selection */}
+          {/* Warehouse Selection */}
           <div className="flex gap-4">
             <div className="grid gap-2">
-              <Label>Lokasi Opname</Label>
-              <Select value={selectedLocation} onValueChange={setSelectedLocation}>
+              <Label>Gudang Opname</Label>
+              <Select value={selectedWarehouse} onValueChange={setSelectedWarehouse}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Pilih lokasi" />
+                  <SelectValue placeholder="Pilih gudang" />
                 </SelectTrigger>
                 <SelectContent>
-                  {branches.map((loc) => (
-                    <SelectItem key={loc.id} value={loc.id}>
-                      {loc.name}
+                  {warehouses.map((warehouse) => (
+                    <SelectItem key={warehouse.id} value={warehouse.id}>
+                      {warehouseLabel(warehouse)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-            {selectedLocation && (
+            {selectedWarehouse && (
               <div className="flex-1">
                 <Label>Cari Produk</Label>
                 <div className="relative mt-1">
@@ -158,7 +159,7 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
           </div>
 
           {/* Summary */}
-          {selectedLocation && (
+          {selectedWarehouse && (
             <div className="flex gap-4">
               <div className="flex-1 bg-muted/50 rounded-lg p-3">
                 <p className="text-sm text-muted-foreground">Total Produk</p>
@@ -174,7 +175,7 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
           )}
 
           {/* Products Table */}
-          {selectedLocation && locationProducts.length > 0 && (
+          {selectedWarehouse && locationProducts.length > 0 && (
             <div className="border rounded-lg overflow-hidden">
               <Table>
                 <TableHeader>
@@ -237,9 +238,9 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
             </div>
           )}
 
-          {selectedLocation && locationProducts.length === 0 && (
+          {selectedWarehouse && locationProducts.length === 0 && (
             <div className="text-center py-8 text-muted-foreground">
-              Tidak ada produk ditemukan di lokasi ini
+              Tidak ada produk ditemukan di gudang ini
             </div>
           )}
         </div>
@@ -248,7 +249,7 @@ export function StockOpnameModal({ open, onOpenChange, products, branches, onSav
           <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
             Batal
           </Button>
-          <Button className="flex-1" onClick={handleSubmit} disabled={!selectedLocation}>
+          <Button className="flex-1" onClick={handleSubmit} disabled={!selectedWarehouse}>
             Simpan Opname
           </Button>
         </div>

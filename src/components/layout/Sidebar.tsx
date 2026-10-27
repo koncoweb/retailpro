@@ -22,6 +22,7 @@ import {
   Clock,
   DollarSign,
   Shield,
+  Truck,
 } from "lucide-react";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { useAuth } from "@/hooks/use-auth";
@@ -50,9 +51,15 @@ const navItems: NavItem[] = [
       },
       { 
         title: "Daftar Cabang", 
-        path: "/backoffice/branches", 
+        path: "/backoffice/branches",
         icon: Store,
         allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'admin']
+      },
+      { 
+        title: "Gudang", 
+        path: "/backoffice/warehouses",
+        icon: Warehouse,
+        allowedRoles: ['platform_owner', 'tenant_owner', 'tenant_admin', 'store_manager', 'admin']
       },
       { 
         title: "Transfer Stok", 
@@ -79,6 +86,14 @@ const navItems: NavItem[] = [
       { title: "Stok Masuk", path: "/backoffice/inventory/stock-in", icon: Warehouse },
       { title: "Stok Opname", path: "/backoffice/inventory/opname", icon: Calculator },
       { title: "Purchase Order", path: "/backoffice/inventory/po", icon: FileText },
+    ],
+  },
+  {
+    title: "Vendor",
+    icon: Truck,
+    children: [
+      { title: "Data Vendor", path: "/backoffice/vendors", icon: Truck },
+      { title: "Hutang Vendor", path: "/backoffice/finance/ap-ar", icon: DollarSign },
     ],
   },
   {

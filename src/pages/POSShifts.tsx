@@ -22,7 +22,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { query } from "@/lib/db";
+import { query, runTransaction } from "@/lib/db";
 import { useAuth } from "@/hooks/use-auth";
 import { Shift, Transaction } from "@/types";
 import { formatCurrency } from "@/lib/utils";
@@ -56,16 +56,12 @@ export default function POSShifts() {
   const fetchShiftData = async () => {
     setIsLoading(true);
     try {
-      // 1. Get Active Shift
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const userId = (user as any).id;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const branchId = (user as any).assigned_branch_id;
+      // 1. Get Active Shift. Both ids come from the session — with
+      // database-per-tenant there is no `tenant_id` column to read.
+      const userId = user?.id;
+      const branchId = user?.assigned_branch_id;
 
-      if (!userId || !branchId) {
-        // Only fetch history if context is missing (should not happen for cashier)
-        return;
-      }
+      if (!userId || !branchId) return;
 
       const activeRes = await query(
         `SELECT * FROM shifts WHERE user_id = $1 AND branch_id = $2 AND status = 'open' LIMIT 1`,
@@ -97,14 +93,8 @@ export default function POSShifts() {
 
   const calculateSummary = async (shiftId: string, startCash: string | number) => {
     try {
-      // Get transactions for this shift
-      // Assuming we need to link transactions to shifts. 
-      // Since transactions don't have shift_id yet, we use time range for now or assume all transactions since shift start by this user are in this shift.
-      // Ideally, transactions table should have shift_id. For now, let's query by time.
-      
-      // Wait, let's check if transactions table has shift_id. It probably doesn't.
-      // We can query transactions created by this user after shift start_time.
-      
+      // Shift takings are everything posted against this shift — the POS stamps
+      // `shift_id` on each transaction, so no time-range guessing is needed.
       const res = await query(
         `SELECT payment_method, total_amount FROM transactions 
          WHERE shift_id = $1`,
@@ -139,18 +129,29 @@ export default function POSShifts() {
     }
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const userId = (user as any).id;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const branchId = (user as any).assigned_branch_id;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tenantId = (user as any).tenant_id;
+      const userId = user?.id;
+      const branchId = user?.assigned_branch_id;
 
-      await query(
-        `INSERT INTO shifts (tenant_id, branch_id, user_id, start_time, initial_cash, status)
-         VALUES ($1, $2, $3, NOW(), $4, 'open')`,
-        [tenantId, branchId, userId, amount]
-      );
+      if (!userId || !branchId) {
+        toast.error("Sesi tidak lengkap: cabang belum ditetapkan");
+        return;
+      }
+
+      // Close any shift left open by this user in this branch before opening a
+      // new one, so `shifts` never ends up with two open drawers.
+      await runTransaction(async (tx) => {
+        await tx.query(
+          `UPDATE shifts
+             SET status = 'closed', end_time = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+           WHERE user_id = $1 AND branch_id = $2 AND status = 'open'`,
+          [userId, branchId]
+        );
+        await tx.query(
+          `INSERT INTO shifts (branch_id, user_id, start_time, initial_cash, status)
+           VALUES ($1, $2, strftime('%Y-%m-%dT%H:%M:%fZ','now'), $3, 'open')`,
+          [branchId, userId, amount]
+        );
+      });
 
       toast.success("Shift berhasil dibuka");
       setInitialCash("");
@@ -176,7 +177,7 @@ export default function POSShifts() {
     try {
       await query(
         `UPDATE shifts 
-         SET end_time = NOW(), 
+         SET end_time = strftime('%Y-%m-%dT%H:%M:%fZ','now'), 
              final_cash = $1, 
              expected_cash = $2, 
              difference = $3, 

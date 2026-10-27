@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,8 +27,9 @@ import {
 } from "@/components/ui/select";
 import { Plus, Edit, Trash2, Percent, Receipt } from "lucide-react";
 import { toast } from "sonner";
+import { readTenantSetting, setTenantSetting } from "@/lib/tenant-settings";
 
-interface TaxDiscount {
+export interface TaxDiscount {
   id: string;
   name: string;
   type: "tax" | "discount";
@@ -38,6 +39,9 @@ interface TaxDiscount {
   applyTo: "all" | "specific";
 }
 
+/** Top-level key inside `tenants.settings`. */
+const STORAGE_KEY = "tax";
+
 const initialItems: TaxDiscount[] = [
   { id: "1", name: "PPN", type: "tax", value: 11, isPercentage: true, isActive: true, applyTo: "all" },
   { id: "2", name: "Service Charge", type: "tax", value: 5, isPercentage: true, isActive: false, applyTo: "all" },
@@ -45,8 +49,16 @@ const initialItems: TaxDiscount[] = [
   { id: "4", name: "Diskon Promo", type: "discount", value: 15, isPercentage: true, isActive: true, applyTo: "all" },
 ];
 
+/**
+ * Tax and discount definitions are persisted in `tenants.settings.tax`.
+ *
+ * They were `useState` only, so a tenant could not actually configure its
+ * taxes — reloading the page silently restored the demo rows.
+ */
 export function TaxDiscountSettings() {
   const [items, setItems] = useState<TaxDiscount[]>(initialItems);
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<TaxDiscount | null>(null);
   const [formData, setFormData] = useState({
@@ -57,6 +69,33 @@ export function TaxDiscountSettings() {
     applyTo: "all" as "all" | "specific",
   });
 
+  useEffect(() => {
+    let active = true;
+    readTenantSetting<TaxDiscount[]>(STORAGE_KEY, initialItems)
+      .then((stored) => {
+        if (active && Array.isArray(stored)) setItems(stored);
+      })
+      .catch((error) => console.error("Failed to load tax settings:", error));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  /** Optimistically update the table, then persist the whole list. */
+  const persist = (next: TaxDiscount[]) => {
+    setItems(next);
+    setTenantSetting(STORAGE_KEY, next)
+      .then(() => {
+        setSaved(true);
+        if (savedTimer.current) clearTimeout(savedTimer.current);
+        savedTimer.current = setTimeout(() => setSaved(false), 1500);
+      })
+      .catch((error) => {
+        console.error("Failed to save tax settings:", error);
+        toast.error("Gagal menyimpan pengaturan pajak");
+      });
+  };
+
   const handleSave = () => {
     if (!formData.name || !formData.value) {
       toast.error("Lengkapi semua field");
@@ -64,8 +103,8 @@ export function TaxDiscountSettings() {
     }
 
     if (editingItem) {
-      setItems((prev) =>
-        prev.map((item) =>
+      persist(
+        items.map((item) =>
           item.id === editingItem.id
             ? { ...item, ...formData, value: parseFloat(formData.value), isActive: item.isActive }
             : item
@@ -73,13 +112,13 @@ export function TaxDiscountSettings() {
       );
       toast.success("Berhasil diperbarui");
     } else {
-      setItems((prev) => [
-        ...prev,
-        { 
-          id: Date.now().toString(), 
-          ...formData, 
+      persist([
+        ...items,
+        {
+          id: Date.now().toString(),
+          ...formData,
           value: parseFloat(formData.value),
-          isActive: true 
+          isActive: true
         },
       ]);
       toast.success("Berhasil ditambahkan");
@@ -103,13 +142,13 @@ export function TaxDiscountSettings() {
   };
 
   const handleDelete = (id: string) => {
-    setItems((prev) => prev.filter((item) => item.id !== id));
+    persist(items.filter((item) => item.id !== id));
     toast.success("Berhasil dihapus");
   };
 
   const handleToggle = (id: string) => {
-    setItems((prev) =>
-      prev.map((item) =>
+    persist(
+      items.map((item) =>
         item.id === id ? { ...item, isActive: !item.isActive } : item
       )
     );
@@ -130,6 +169,9 @@ export function TaxDiscountSettings() {
             <p className="text-sm text-muted-foreground">Kelola pajak dan diskon manual</p>
           </div>
         </div>
+        {saved && (
+          <span className="text-xs text-success">Tersimpan</span>
+        )}
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2" onClick={() => {

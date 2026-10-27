@@ -21,6 +21,10 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Textarea } from "@/components/ui/textarea";
 
 import { authClient } from "@/lib/auth-client";
+import { useTenant } from "@/contexts/TenantContext";
+
+/** Same-origin by default; `VITE_API_BASE_URL` only for split-origin dev. */
+const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 
 const registerSchema = z.object({
   tenantName: z.string().min(3, "Nama tenant minimal 3 karakter"),
@@ -37,6 +41,7 @@ type RegisterFormValues = z.infer<typeof registerSchema>;
 
 export default function RegisterTenant() {
   const navigate = useNavigate();
+  const { bootstrap, clear } = useTenant();
   const [isLoading, setIsLoading] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
 
@@ -56,54 +61,66 @@ export default function RegisterTenant() {
 
   async function onSubmit(data: RegisterFormValues) {
     setIsLoading(true);
-    
+
     try {
-        // 1. Create User via Neon Auth
-        const { data: authData, error } = await authClient.signUp.email({
+        // 1. Create the identity on the control plane (Better Auth).
+        clear();
+        const { error } = await authClient.signUp.email({
             email: data.email,
             password: data.password,
             name: data.adminName,
-            // image: data.logo ? URL.createObjectURL(data.logo) : undefined, // Optional: if we want to set profile pic
         });
 
         if (error) {
-            // Fallback for demo/dev mode if auth not configured
-            if (import.meta.env.DEV && !import.meta.env.VITE_NEON_AUTH_URL) {
-                 console.warn("Neon Auth not configured, simulating success");
-                 setTimeout(() => {
-                    setIsLoading(false);
-                    setIsSuccess(true);
-                    toast.success("Pendaftaran berhasil! (Simulasi Mode)");
-                 }, 1500);
-                 return;
-            }
-            
             toast.error(error.message || "Gagal mendaftar");
             setIsLoading(false);
             return;
         }
 
-        // 2. TODO: Call Backend API to create 'tenants' record and link to this user
-        // Since we are client-side only for now, we can't easily insert into 'tenants' table 
-        // without a server function or RLS policy that allows authenticated user to create tenant.
-        // For now, we assume the user is created and we show success.
-        
+        // 2. Provision this company's own Turso database: create the database,
+        //    apply db/schema/tenant.sql + seed.sql, register it, and stamp the
+        //    owner's user row with tenantId / role.
+        const response = await fetch(`${apiBase}/api/tenant/provision`, {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                companyName: data.tenantName,
+                slug: data.tenantName,
+                branchName: "Cabang Utama",
+                branchAddress: data.address,
+            }),
+        });
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const payload: any = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+            const message =
+                payload?.error === "tenant_limit_reached"
+                    ? "Kapasitas database sudah penuh. Hubungi dukungan RetailPro."
+                    : payload?.error === "slug_taken"
+                      ? "Nama perusahaan sudah dipakai. Pilih nama lain."
+                      : (payload?.message ?? "Gagal membuat database perusahaan.");
+            toast.error(message);
+            setIsLoading(false);
+            return;
+        }
+
+        // 3. Load the fresh tenant session so the app can open the new database.
+        const tenantSession = await bootstrap();
+
         setIsSuccess(true);
-        toast.success("Pendaftaran berhasil! Silakan cek email Anda.");
+        toast.success("Pendaftaran berhasil!");
+
+        if (tenantSession) {
+            navigate("/mode-select");
+        }
 
     } catch (err) {
         console.error("Registration error:", err);
-        if (import.meta.env.DEV) {
-             // Fallback
-             setTimeout(() => {
-                setIsLoading(false);
-                setIsSuccess(true);
-                toast.success("Pendaftaran berhasil! (Fallback Mode)");
-             }, 1000);
-        } else {
-            toast.error("Terjadi kesalahan sistem");
-            setIsLoading(false);
-        }
+        toast.error(err instanceof Error ? err.message : "Terjadi kesalahan sistem");
+        setIsLoading(false);
     }
   }
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,8 +26,9 @@ import {
 } from "@/components/ui/select";
 import { Plus, Edit, Trash2, CreditCard } from "lucide-react";
 import { toast } from "sonner";
+import { readTenantSetting, setTenantSetting } from "@/lib/tenant-settings";
 
-interface Bank {
+export interface Bank {
   id: string;
   name: string;
   type: string;
@@ -36,14 +37,25 @@ interface Bank {
   feePercentage: number;
 }
 
+/** Top-level key inside `tenants.settings`. */
+const STORAGE_KEY = "bank";
+
 const initialBanks: Bank[] = [
   { id: "1", name: "BCA", type: "Debit & Kredit", accountNumber: "1234567890", accountName: "PT RetailPro", feePercentage: 1.5 },
   { id: "2", name: "Mandiri", type: "Debit & Kredit", accountNumber: "0987654321", accountName: "PT RetailPro", feePercentage: 1.8 },
   { id: "3", name: "BNI", type: "Debit", accountNumber: "5678901234", accountName: "PT RetailPro", feePercentage: 1.2 },
 ];
 
+/**
+ * Card-acquiring banks are persisted in `tenants.settings.bank`.
+ *
+ * Previously `useState` only, so the configured acquirers (and their fees)
+ * vanished on reload while the settlement report still claimed to use them.
+ */
 export function BankSettings() {
   const [banks, setBanks] = useState<Bank[]>(initialBanks);
+  const [saved, setSaved] = useState(false);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingBank, setEditingBank] = useState<Bank | null>(null);
   const [formData, setFormData] = useState({
@@ -54,6 +66,33 @@ export function BankSettings() {
     feePercentage: "",
   });
 
+  useEffect(() => {
+    let active = true;
+    readTenantSetting<Bank[]>(STORAGE_KEY, initialBanks)
+      .then((stored) => {
+        if (active && Array.isArray(stored)) setBanks(stored);
+      })
+      .catch((error) => console.error("Failed to load bank settings:", error));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  /** Optimistically update the table, then persist the whole list. */
+  const persist = (next: Bank[]) => {
+    setBanks(next);
+    setTenantSetting(STORAGE_KEY, next)
+      .then(() => {
+        setSaved(true);
+        if (savedTimer.current) clearTimeout(savedTimer.current);
+        savedTimer.current = setTimeout(() => setSaved(false), 1500);
+      })
+      .catch((error) => {
+        console.error("Failed to save bank settings:", error);
+        toast.error("Gagal menyimpan pengaturan bank");
+      });
+  };
+
   const handleSave = () => {
     if (!formData.name || !formData.accountNumber || !formData.accountName) {
       toast.error("Lengkapi semua field");
@@ -61,15 +100,15 @@ export function BankSettings() {
     }
 
     if (editingBank) {
-      setBanks((prev) =>
-        prev.map((b) =>
+      persist(
+        banks.map((b) =>
           b.id === editingBank.id ? { ...b, ...formData, feePercentage: parseFloat(formData.feePercentage) || 0 } : b
         )
       );
       toast.success("Bank berhasil diperbarui");
     } else {
-      setBanks((prev) => [
-        ...prev,
+      persist([
+        ...banks,
         { id: Date.now().toString(), ...formData, feePercentage: parseFloat(formData.feePercentage) || 0 },
       ]);
       toast.success("Bank berhasil ditambahkan");
@@ -93,7 +132,7 @@ export function BankSettings() {
   };
 
   const handleDelete = (id: string) => {
-    setBanks((prev) => prev.filter((b) => b.id !== id));
+    persist(banks.filter((b) => b.id !== id));
     toast.success("Bank berhasil dihapus");
   };
 
@@ -109,6 +148,9 @@ export function BankSettings() {
             <p className="text-sm text-muted-foreground">Kelola bank untuk transaksi kartu</p>
           </div>
         </div>
+        {saved && (
+          <span className="text-xs text-success">Tersimpan</span>
+        )}
         <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2" onClick={() => {

@@ -49,14 +49,13 @@ export function SalesChart() {
         // Group by Date and Branch
         const salesRes = await query(`
           SELECT 
-            to_char(created_at, 'Dy') as day_name,
-            to_char(created_at, 'YYYY-MM-DD') as date_key,
+            strftime('%Y-%m-%d', created_at) as date_key,
             branch_id,
-            SUM(amount_paid) as total
+            SUM(total_amount) as total
           FROM transactions
-          WHERE created_at >= CURRENT_DATE - INTERVAL '6 days'
-          GROUP BY 1, 2, 3
-          ORDER BY 2 ASC
+          WHERE created_at >= date('now', '-6 days')
+          GROUP BY 1, 2
+          ORDER BY 1 ASC
         `);
 
         // 3. Process Data

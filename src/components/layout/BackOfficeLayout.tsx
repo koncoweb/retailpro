@@ -26,6 +26,7 @@ import {
   Sun,
   Warehouse,
   Contact,
+  Truck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
@@ -48,6 +49,7 @@ const navItems: NavItem[] = [
     icon: Building2,
     children: [
       { title: "Daftar Cabang", path: "/backoffice/branches", icon: Store },
+      { title: "Gudang", path: "/backoffice/warehouses", icon: Warehouse },
       { title: "Transfer Stok", path: "/backoffice/branches/transfer", icon: ArrowLeftRight },
     ],
   },
@@ -62,10 +64,17 @@ const navItems: NavItem[] = [
     ],
   },
   {
+    title: "Vendor",
+    icon: Truck,
+    children: [
+      { title: "Data Vendor", path: "/backoffice/vendors", icon: Truck },
+      { title: "Hutang Vendor", path: "/backoffice/finance/ap-ar", icon: DollarSign },
+    ],
+  },
+  {
     title: "CRM",
     icon: Contact,
     children: [
-      { title: "Supplier", path: "/backoffice/crm/suppliers", icon: Building2 },
       { title: "Pelanggan", path: "/backoffice/crm/customers", icon: Users },
     ],
   },

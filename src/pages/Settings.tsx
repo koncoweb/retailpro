@@ -9,8 +9,9 @@ import { BankSettings } from "@/components/settings/BankSettings";
 import { ReceiptSettings } from "@/components/settings/ReceiptSettings";
 import { EmployeeRoleSettings } from "@/components/settings/EmployeeRoleSettings";
 import { TaxDiscountSettings } from "@/components/settings/TaxDiscountSettings";
+import { InventorySettings } from "@/components/settings/InventorySettings";
 import { useTheme } from "@/hooks/use-theme";
-import { Settings as SettingsIcon, Building2, Bell, Shield, Database, Globe, Palette, Save, Users } from "lucide-react";
+import { Settings as SettingsIcon, Building2, Bell, Shield, Database, Globe, Palette, Users, Package } from "lucide-react";
 
 export default function Settings() {
   const { theme, toggleTheme } = useTheme();
@@ -24,6 +25,7 @@ export default function Settings() {
             <TabsTrigger value="general" className="gap-2 text-xs md:text-sm"><SettingsIcon className="w-4 h-4" /><span className="hidden sm:inline">Umum</span></TabsTrigger>
             <TabsTrigger value="company" className="gap-2 text-xs md:text-sm"><Building2 className="w-4 h-4" /><span className="hidden sm:inline">Perusahaan</span></TabsTrigger>
             <TabsTrigger value="employees" className="gap-2 text-xs md:text-sm"><Users className="w-4 h-4" /><span className="hidden sm:inline">Karyawan & Role</span></TabsTrigger>
+            <TabsTrigger value="inventory" className="gap-2 text-xs md:text-sm"><Package className="w-4 h-4" /><span className="hidden sm:inline">Inventori</span></TabsTrigger>
             <TabsTrigger value="notifications" className="gap-2 text-xs md:text-sm"><Bell className="w-4 h-4" /><span className="hidden sm:inline">Notifikasi</span></TabsTrigger>
             <TabsTrigger value="security" className="gap-2 text-xs md:text-sm"><Shield className="w-4 h-4" /><span className="hidden sm:inline">Keamanan</span></TabsTrigger>
           </TabsList>
@@ -66,6 +68,8 @@ export default function Settings() {
 
           <TabsContent value="employees" className="space-y-4 md:space-y-6"><EmployeeRoleSettings /></TabsContent>
 
+          <TabsContent value="inventory" className="space-y-4 md:space-y-6"><InventorySettings /></TabsContent>
+
           <TabsContent value="notifications" className="space-y-4 md:space-y-6">
             <div className="bg-card rounded-xl border p-4 md:p-6 space-y-4 md:space-y-6 animate-fade-in">
               <div className="flex items-center gap-3 pb-4 border-b"><div className="p-2.5 rounded-lg bg-primary/10"><Bell className="w-5 h-5 text-primary" /></div><div><h3 className="font-semibold">Notifikasi</h3><p className="text-sm text-muted-foreground">Kelola preferensi notifikasi</p></div></div>
@@ -97,7 +101,9 @@ export default function Settings() {
           </TabsContent>
         </Tabs>
 
-        <div className="flex justify-end"><Button className="gap-2"><Save className="w-4 h-4" />Simpan Pengaturan</Button></div>
+        <p className="text-xs text-muted-foreground text-right">
+          Pengaturan yang tersambung ke database — pajak/diskon, struk, bank, dan metode pengeluaran stok — tersimpan otomatis saat diubah.
+        </p>
       </div>
     </BackOfficeLayout>
   );

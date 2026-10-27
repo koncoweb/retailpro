@@ -68,7 +68,7 @@ export function EmployeeDetailModal({ open, onOpenChange }: EmployeeDetailModalP
           b.name as branch_name
         FROM users u
         LEFT JOIN branches b ON u.assigned_branch_id = b.id
-        WHERE u.is_active = true
+        WHERE u.is_active = 1
         ORDER BY b.name, u.name
       `);
 
@@ -86,7 +86,7 @@ export function EmployeeDetailModal({ open, onOpenChange }: EmployeeDetailModalP
           b.name, 
           COUNT(u.id) as emp_count
         FROM branches b
-        LEFT JOIN users u ON b.id = u.assigned_branch_id AND u.is_active = true
+        LEFT JOIN users u ON b.id = u.assigned_branch_id AND u.is_active = 1
         GROUP BY b.id, b.name
         ORDER BY emp_count DESC
       `);
