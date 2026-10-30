@@ -58,6 +58,8 @@ interface Expense {
   due_date: string | null;
   supplier_name: string | null;
   supplier_id: string | null;
+  /** Set when the bill was booked by a goods receipt. */
+  purchase_order_id: string | null;
 }
 
 interface Supplier {
@@ -91,6 +93,8 @@ export default function ApAr() {
     total: number;
     /** AP only: vendor whose ledger records the payment. */
     supplier_id?: string | null;
+    /** AP only: order the bill was received against, carried onto the payment. */
+    purchase_order_id?: string | null;
     description?: string;
   } | null>(null);
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -169,7 +173,8 @@ export default function ApAr() {
 
       // Fetch AP (Hutang)
       const apRes = await query(`
-        SELECT e.id, e.description, e.category, e.amount, e.amount_paid, e.date, e.due_date, s.name as supplier_name, e.supplier_id
+        SELECT e.id, e.description, e.category, e.amount, e.amount_paid, e.date, e.due_date,
+               s.name as supplier_name, e.supplier_id, e.purchase_order_id
         FROM expenses e
         LEFT JOIN suppliers s ON e.supplier_id = s.id
         WHERE e.amount > e.amount_paid
@@ -255,6 +260,7 @@ export default function ApAr() {
       current_paid: item.amount_paid,
       total,
       supplier_id: ap?.supplier_id ?? null,
+      purchase_order_id: ap?.purchase_order_id ?? null,
       description: ap?.description,
     });
     setPaymentAmount((total - item.amount_paid).toString());
@@ -312,11 +318,13 @@ export default function ApAr() {
           if (selectedItem.supplier_id) {
             await tx.query(
               `INSERT INTO vendor_payments
-                 (vendor_id, expense_id, amount, payment_date, method, reference_number, created_by)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                 (vendor_id, expense_id, purchase_order_id, amount, payment_date, method,
+                  reference_number, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
               [
                 selectedItem.supplier_id,
                 selectedItem.id,
+                selectedItem.purchase_order_id ?? null,
                 amount,
                 isoDate(),
                 paymentMethod,

@@ -6,9 +6,9 @@
  *
  * Replaces the old `/admin/update-user` call in BranchDetailModal.tsx.
  */
-import { auth } from '../../../../server/auth';
-import { requireAdminSession } from '../../../../server/auth-helpers';
-import { getControlDb } from '../../../../server/control-db';
+import { auth } from '../../../../server/auth.js';
+import { requireAdminSession } from '../../../../server/auth-helpers.js';
+import { getControlDb } from '../../../../server/control-db.js';
 import {
   HttpError,
   methodNotAllowed,
@@ -17,8 +17,8 @@ import {
   withErrors,
   type ApiRequest,
   type ApiResponse,
-} from '../../../../server/http';
-import { generatePassword } from '../../users';
+} from '../../../../server/http.js';
+import { generatePassword } from '../../users.js';
 
 interface PasswordBody {
   password?: string;

@@ -24,6 +24,7 @@ import {
   Eye,
   Loader2,
   Download,
+  Send,
 } from "lucide-react";
 import { StockTransferModal } from "@/components/inventory/StockTransferModal";
 import { toast } from "sonner";
@@ -34,7 +35,15 @@ import { Product, ProductUnit } from "@/types";
 import { Input } from "@/components/ui/input";
 import { WAREHOUSES_SQL, type WarehouseOption } from "@/lib/warehouse";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
-import { sortBatchesForIssue } from "@/lib/stock-issue";
+import {
+  createTransfer,
+  dispatchTransfer,
+  receiveTransfer,
+  transferStatusLabel,
+} from "@/lib/stock-movement";
+
+/** Who may ship a queued transfer and confirm its receipt. */
+const MOVEMENT_ROLES = ['store_manager', 'warehouse', 'tenant_admin', 'tenant_owner', 'platform_owner', 'admin'];
 
 // Extended interface for Transfer to include item details if needed
 interface Transfer {
@@ -47,10 +56,13 @@ interface Transfer {
   /** Owning branch of each side; drives the incoming/outgoing tabs. */
   source_branch_id: string | null;
   destination_branch_id: string | null;
-  status: 'pending' | 'completed' | 'cancelled';
+  status: 'pending' | 'in_transit' | 'completed' | 'cancelled';
   created_at: string;
   items_count: number;
   notes?: string;
+  /** Set when a branch request asked for this movement. */
+  request_id: string | null;
+  request_number: string | null;
 }
 
 export default function BranchTransfers() {
@@ -141,6 +153,8 @@ export default function BranchTransfers() {
         st.status,
         st.created_at,
         st.notes,
+        st.request_id,
+        sr.request_number,
         w1.name as source_warehouse_name,
         w2.name as destination_warehouse_name,
         w1.branch_id as source_branch_id,
@@ -149,6 +163,7 @@ export default function BranchTransfers() {
       FROM stock_transfers st
       LEFT JOIN warehouses w1 ON st.source_warehouse_id = w1.id
       LEFT JOIN warehouses w2 ON st.destination_warehouse_id = w2.id
+      LEFT JOIN stock_requests sr ON sr.id = st.request_id
       ORDER BY st.created_at DESC
     `);
     setTransfers(res.rows as unknown as Transfer[]);
@@ -162,59 +177,17 @@ export default function BranchTransfers() {
   }) => {
     try {
       // Header and lines commit together: a half-written transfer would show up
-      // in the approval queue with no items and could never be completed.
-      const transferId = await runTransaction(async (tx) => {
-        const res = await tx.query<{ id: string }>(
-          `INSERT INTO stock_transfers
-             (reference_number, source_warehouse_id, destination_warehouse_id, status, created_at, notes, requested_by)
-           VALUES ($1, $2, $3, 'pending', strftime('%Y-%m-%dT%H:%M:%fZ','now'), $4, $5)
-           RETURNING id`,
-          [
-            `TRF-${Date.now()}`,
-            transferData.from,
-            transferData.to,
-            transferData.notes ?? null,
-            user?.id ?? null,
-          ]
-        );
-        const id = res.rows[0].id;
-
-        for (const item of transferData.items) {
-          const conversionFactor = Number(item.conversionFactor || 1);
-          const baseQty = Number(item.quantity) * conversionFactor;
-
-          // The modal validates against a snapshot; re-check against the ledger
-          // so a transfer can never be queued for stock that is not there.
-          const stockRes = await tx.query<{ available: number }>(
-            `SELECT COALESCE(SUM(quantity_current), 0) AS available
-               FROM product_batches
-              WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0`,
-            [item.productId, transferData.from]
-          );
-          const available = Number(stockRes.rows[0]?.available ?? 0);
-          if (baseQty > available + 1e-9) {
-            throw new Error(
-              `Stok gudang asal tidak mencukupi (tersedia ${available}, diminta ${baseQty})`
-            );
-          }
-
-          // `cost_price` stays 0 here and is stamped by approval with the real
-          // per-batch cost of whatever legs actually left the shelf.
-          await tx.query(
-            `INSERT INTO transfer_items (transfer_id, product_id, quantity_sent, unit_name, conversion_factor)
-             VALUES ($1, $2, $3, $4, $5)`,
-            [
-              id,
-              item.productId,
-              item.quantity,
-              item.unitName || 'Pcs',
-              conversionFactor,
-            ]
-          );
-        }
-
-        return id;
-      });
+      // in the queue with no items and could never be shipped.
+      const transferId = await runTransaction((tx) =>
+        createTransfer(tx, {
+          referenceNumber: `TRF-${Date.now()}`,
+          sourceWarehouseId: transferData.from,
+          destinationWarehouseId: transferData.to,
+          notes: transferData.notes ?? null,
+          requestedBy: user?.id ?? null,
+          items: transferData.items,
+        })
+      );
 
       await logAudit({
         action: "create_transfer",
@@ -240,155 +213,79 @@ export default function BranchTransfers() {
   };
 
   /**
-   * Approving a transfer moves stock batch by batch.
+   * Shipping a transfer moves stock batch by batch.
    *
-   * The previous version collapsed every source batch into a single weighted
-   * average, so the destination lost both the per-batch cost and the expiry
-   * date — a short-dated batch could leave one warehouse and quietly become
-   * long-dated stock in the next. Each leg now creates its own destination
-   * batch carrying the real cost and expiry, and the whole approval runs in a
-   * transaction so a mid-way failure cannot deduct source stock without
-   * crediting the destination.
+   * The move itself lives in `@/lib/stock-movement` so this screen and
+   * Inventory cannot disagree about it again; the module drains the source in
+   * the tenant's issue order (FIFO / LIFO / FEFO) and creates one destination
+   * batch per source leg, keeping cost and expiry.
    */
-  const handleApproveTransfer = async (transferId: string) => {
-    const userRole = user?.role;
-    if (!['store_manager', 'tenant_admin', 'tenant_owner', 'platform_owner'].includes(userRole ?? '')) {
-      toast.error("Anda tidak memiliki akses untuk menyetujui transfer");
+  const handleDispatchTransfer = async (transferId: string) => {
+    if (!MOVEMENT_ROLES.includes(user?.role ?? '')) {
+      toast.error("Anda tidak memiliki akses untuk mengirim transfer");
       return;
     }
 
     try {
-      // The source warehouse drains in the tenant's issue order (FIFO / LIFO /
-      // FEFO), same as the till — read before the transaction opens.
       const issueMethod = await getStockIssueMethod();
 
       await runTransaction(async (tx) => {
-        // `status = 'pending'` doubles as the lock: a second click finds no row.
-        const transferRes = await tx.query<{
-          id: string;
-          reference_number: string;
-          source_warehouse_id: string;
-          destination_warehouse_id: string;
-        }>(`SELECT id, reference_number, source_warehouse_id, destination_warehouse_id
-              FROM stock_transfers WHERE id = $1 AND status = 'pending'`, [transferId]);
-        const transfer = transferRes.rows[0];
-        if (!transfer) throw new Error("Transfer sudah diproses atau tidak ditemukan");
-
-        const itemsRes = await tx.query<{
-          id: string;
-          product_id: string;
-          quantity_sent: number;
-          conversion_factor: number;
-        }>(`SELECT * FROM transfer_items WHERE transfer_id = $1`, [transferId]);
-
-        for (const item of itemsRes.rows) {
-          const conversionFactor = Number(item.conversion_factor || 1);
-          let remaining = Number(item.quantity_sent) * conversionFactor;
-
-          const batchesRes = await tx.query<{
-            id: string;
-            batch_number: string | null;
-            quantity_current: number;
-            cost_price: number;
-            expiry_date: string | null;
-            received_at: string | null;
-            supplier_id: string | null;
-          }>(
-            `SELECT id, batch_number, quantity_current, cost_price, expiry_date, received_at, supplier_id
-               FROM product_batches
-              WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0`,
-            [item.product_id, transfer.source_warehouse_id]
-          );
-
-          const available = batchesRes.rows.reduce(
-            (sum, batch) => sum + Number(batch.quantity_current),
-            0
-          );
-          if (available + 1e-9 < remaining) {
-            throw new Error(
-              `Stok gudang asal tidak mencukupi (tersedia ${available}, diminta ${remaining})`
-            );
-          }
-
-          const consumed: { batchId: string; take: number; cost: number }[] = [];
-          let leg = 0;
-
-          for (const batch of sortBatchesForIssue(batchesRes.rows, issueMethod)) {
-            if (remaining <= 1e-9) break;
-            const take = Math.min(Number(batch.quantity_current), remaining);
-
-            // Guarded update: refuses to drive the batch negative.
-            const deducted = await tx.query(
-              `UPDATE product_batches SET quantity_current = quantity_current - $1
-                WHERE id = $2 AND quantity_current >= $1`,
-              [take, batch.id]
-            );
-            if (deducted.rowCount !== 1) {
-              throw new Error("Stok berubah selama transfer, silakan ulangi");
-            }
-
-            leg += 1;
-            await tx.query(
-              `INSERT INTO product_batches
-                 (warehouse_id, product_id, batch_number, expiry_date,
-                  quantity_initial, quantity_current, cost_price, supplier_id)
-               VALUES ($1, $2, $3, $4, $5, $5, $6, $7)`,
-              [
-                transfer.destination_warehouse_id,
-                item.product_id,
-                `TRF-${transfer.reference_number}-${leg}`,
-                batch.expiry_date,
-                take,
-                Number(batch.cost_price),
-                batch.supplier_id,
-              ]
-            );
-
-            consumed.push({ batchId: batch.id, take, cost: Number(batch.cost_price) });
-            remaining -= take;
-          }
-
-          const totalMoved = consumed.reduce((sum, leg) => sum + leg.take, 0);
-          const totalCost = consumed.reduce((sum, leg) => sum + leg.take * leg.cost, 0);
-
-          await tx.query(
-            `UPDATE transfer_items
-                SET quantity_received = $1, cost_price = $2, source_batch_id = $3
-              WHERE id = $4`,
-            [
-              totalMoved,
-              consumed.length > 0 ? Math.round(totalCost / Math.max(totalMoved, 1e-9)) : 0,
-              // Only unambiguous when the whole line came from one batch.
-              consumed.length === 1 ? consumed[0].batchId : null,
-              item.id,
-            ]
-          );
-        }
-
-        await tx.query(
-          `UPDATE stock_transfers
-              SET status = 'completed', approved_by = $1,
-                  received_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-            WHERE id = $2`,
-          [user?.id ?? null, transferId]
-        );
+        const result = await dispatchTransfer(tx, {
+          transferId,
+          userId: user?.id ?? null,
+          issueMethod,
+        });
 
         await logAuditTx(tx, {
-          action: "approve_transfer",
+          action: "dispatch_transfer",
           entity: "stock_transfers",
           entityId: transferId,
-          details: { reference_number: transfer.reference_number, item_count: itemsRes.rows.length, stock_issue_method: issueMethod },
+          details: {
+            reference_number: result.referenceNumber,
+            item_count: result.itemCount,
+            stock_issue_method: issueMethod,
+          },
           userId: user?.id,
         });
       });
 
-      toast.success("Transfer berhasil disetujui dan stok dipindahkan");
+      toast.success("Barang dikirim, stok sudah pindah ke gudang tujuan");
       fetchTransfers();
       fetchProducts(); // Refresh stock levels
     } catch (error) {
-      console.error("Approval failed:", error);
+      console.error("Dispatch failed:", error);
       toast.error(
-        "Gagal menyetujui transfer: " + (error instanceof Error ? error.message : "Unknown error")
+        "Gagal mengirim transfer: " + (error instanceof Error ? error.message : "Unknown error")
+      );
+    }
+  };
+
+  /** Receipt only confirms arrival: the stock already left the source warehouse. */
+  const handleReceiveTransfer = async (transferId: string) => {
+    if (!MOVEMENT_ROLES.includes(user?.role ?? '')) {
+      toast.error("Anda tidak memiliki akses untuk menerima transfer");
+      return;
+    }
+
+    try {
+      await runTransaction(async (tx) => {
+        const result = await receiveTransfer(tx, { transferId, userId: user?.id ?? null });
+
+        await logAuditTx(tx, {
+          action: "receive_transfer",
+          entity: "stock_transfers",
+          entityId: transferId,
+          details: { reference_number: result.referenceNumber },
+          userId: user?.id,
+        });
+      });
+
+      toast.success("Penerimaan barang dikonfirmasi");
+      fetchTransfers();
+    } catch (error) {
+      console.error("Receipt failed:", error);
+      toast.error(
+        "Gagal mengonfirmasi penerimaan: " + (error instanceof Error ? error.message : "Unknown error")
       );
     }
   };
@@ -398,6 +295,7 @@ export default function BranchTransfers() {
     // Search filter
     const searchMatch = 
       t.reference_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (t.request_number ?? '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       t.source_warehouse_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       t.destination_warehouse_name?.toLowerCase().includes(searchQuery.toLowerCase());
 
@@ -433,11 +331,12 @@ export default function BranchTransfers() {
 
     const exportData = filteredTransfers.map(t => ({
       "No. Referensi": t.reference_number,
+      "No. Pesanan": t.request_number || "-",
       "Dari Gudang": t.source_warehouse_name,
       "Ke Gudang": t.destination_warehouse_name,
       "Tanggal": new Date(t.created_at).toLocaleDateString('id-ID'),
       "Jumlah Item": t.items_count,
-      "Status": t.status === 'completed' ? 'Selesai' : t.status === 'pending' ? 'Pending' : 'Dibatalkan',
+      "Status": transferStatusLabel(t.status),
       "Catatan": t.notes || "-"
     }));
 
@@ -447,11 +346,12 @@ export default function BranchTransfers() {
 
     const wscols = [
       { wch: 20 }, // Ref
+      { wch: 24 }, // Request
       { wch: 20 }, // Source
       { wch: 20 }, // Dest
       { wch: 15 }, // Date
       { wch: 12 }, // Items
-      { wch: 15 }, // Status
+      { wch: 18 }, // Status
       { wch: 30 }, // Notes
     ];
     ws['!cols'] = wscols;
@@ -544,7 +444,14 @@ export default function BranchTransfers() {
                         ) : (
                             filteredTransfers.map((t) => (
                                 <TableRow key={t.id}>
-                                    <TableCell className="font-mono font-medium">{t.reference_number}</TableCell>
+                                    <TableCell>
+                                        <div className="font-mono font-medium">{t.reference_number}</div>
+                                        {t.request_number && (
+                                            <div className="text-xs text-muted-foreground">
+                                                Pesanan {t.request_number}
+                                            </div>
+                                        )}
+                                    </TableCell>
                                     <TableCell>{t.source_warehouse_name}</TableCell>
                                     <TableCell>{t.destination_warehouse_name}</TableCell>
                                     <TableCell>
@@ -557,9 +464,15 @@ export default function BranchTransfers() {
                                     <TableCell className="text-center">
                                         <Badge 
                                             variant={t.status === 'completed' ? 'default' : t.status === 'cancelled' ? 'destructive' : 'secondary'}
-                                            className={t.status === 'completed' ? 'bg-success/20 text-success hover:bg-success/30' : ''}
+                                            className={
+                                                t.status === 'completed'
+                                                    ? 'bg-success/20 text-success hover:bg-success/30'
+                                                    : t.status === 'in_transit'
+                                                        ? 'bg-warning/20 text-warning hover:bg-warning/30'
+                                                        : ''
+                                            }
                                         >
-                                            {t.status === 'completed' ? 'Selesai' : t.status === 'pending' ? 'Pending' : 'Dibatalkan'}
+                                            {transferStatusLabel(t.status)}
                                         </Badge>
                                     </TableCell>
                                     <TableCell className="text-right">
@@ -568,8 +481,19 @@ export default function BranchTransfers() {
                                                 <Button 
                                                     size="sm" 
                                                     variant="outline" 
+                                                    className="gap-1 border-warning text-warning hover:bg-warning/10"
+                                                    onClick={() => handleDispatchTransfer(t.id)}
+                                                >
+                                                    <Send className="w-3 h-3" />
+                                                    Kirim
+                                                </Button>
+                                            )}
+                                            {t.status === 'in_transit' && (
+                                                <Button 
+                                                    size="sm" 
+                                                    variant="outline" 
                                                     className="gap-1 border-success text-success hover:bg-success/10"
-                                                    onClick={() => handleApproveTransfer(t.id)}
+                                                    onClick={() => handleReceiveTransfer(t.id)}
                                                 >
                                                     <CheckCircle2 className="w-3 h-3" />
                                                     Terima

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-tenant.md` |
-| Terakhir diperbarui | **2026-10-27** |
+| Terakhir diperbarui | **2026-10-30** |
 | Cakupan | Semua fitur yang tersedia di dalam satu tenant (POS + back office) |
 
 ## Cara memakai log ini
@@ -71,6 +71,80 @@
 
 Detail teknis setiap baris di atas: [kendala-solusi.md](kendala-solusi.md) dan
 [backend.md](backend.md).
+
+### 2026-10-28 — kategori trader, akses vendor, dan demo satu gudang (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-10-28 | — (working tree) | Vendor | Kategori vendor bertambah **Trader** (membeli lalu menjual kembali tanpa memproduksi) di samping Supplier, Distributor, Pabrikan, Penyedia Jasa, dan Lainnya; kolomnya teks bebas sehingga tidak perlu migrasi | Baru |
+| 2026-10-28 | — (working tree) | Navigasi | Layar mode-select menampilkan kartu **Vendor & Supplier** yang langsung membuka `/backoffice/vendors` | Baru |
+| 2026-10-28 | — (working tree) | Navigasi | Grup menu sidebar otomatis terbuka mengikuti halaman yang sedang dibuka, sehingga Data Vendor/Hutang Vendor tidak lagi tersembunyi saat halaman vendor dimuat langsung | Perbaikan |
+| 2026-10-28 | — (working tree) | Layout | Sidebar back office menampilkan nama dan peran pengguna dari sesi, bukan lagi teks tetap "Admin / Super Admin" | Perbaikan |
+| 2026-10-28 | — (working tree) | Dashboard | Stok minimum dihitung per **gudang**, bukan per cabang (menggantikan baris perhitungan per cabang di atas): cabang-cabang yang menarik stok dari gudang yang sama tidak lagi memunculkan baris peringatan ganda, dan badge menampilkan nama gudangnya | Perbaikan |
+| 2026-10-28 | — (working tree) | Demo | Tenant contoh Thalia memakai **satu** gudang — Gudang Pusat Depok, Jl. Arif Rahman Hakim No. 96 dekat Toko Pusat — yang melayani ketiga cabang; stok tiap produk menjadi satu angka, dua batch FIFO tetap ada di gudang itu, dan tidak ada transfer karena tidak ada lokasi kedua | Ubah |
+| 2026-10-28 | — (working tree) | Demo/Auth | Owner Thalia bernama **Surya** dengan email `owner@tokobahankue.com`; email staf dan cabang ikut pindah ke domain `tokobahankue.com` | Ubah |
+
+### 2026-10-28 — pesanan cabang ke gudang, rak toko, dan akses staf gudang (belum di-commit)
+
+**Menggantikan** baris "Tenant contoh Thalia memakai **satu** gudang … tidak ada transfer karena
+tidak ada lokasi kedua" di bagian sebelumnya: sekarang ada satu gudang pusat **dan** satu rak per
+toko, sehingga transfer memang terjadi.
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-10-28 | — (working tree) | Pesanan Cabang | Dokumen **pesanan cabang ke gudang** (`stock_requests` + `stock_request_items`), nomor `REQ/YYYYMMDD-<KODE>-####` per cabang per hari. Alur status: `draft → submitted → approved/rejected → in_transit → received`, batal dari `draft`/`submitted`/`approved`. Kuantitas per baris dalam satuan dasar | Baru |
+| 2026-10-28 | — (working tree) | Pesanan Cabang | Halaman `/backoffice/branches/orders`: kartu statistik, tab **Semua / Menunggu / Disiapkan / Dikirim / Selesai**, filter cabang (manajer toko terkunci ke cabangnya), pencarian, pagination, export Excel | Baru |
+| 2026-10-28 | — (working tree) | Pesanan Cabang | Form pesanan: banyak baris, satuan jual + faktor konversi, kolom **stok gudang** dan **stok minimum**, aksi "Isi dari stok minimum", simpan sebagai draft atau langsung kirim | Baru |
+| 2026-10-28 | — (working tree) | Pesanan Cabang | Modal detail: linimasa status, kuantitas **diminta / disetujui / dikirim / diterima** per baris, aksi sesuai status & peran (**Setujui & sesuaikan**, **Tolak + alasan**, **Siapkan & Kirim**, **Terima**, **Batalkan**), serta tautan ke dokumen transfer yang dihasilkan | Baru |
+| 2026-10-28 | — (working tree) | Pesanan Cabang | Guard kuantitas: disetujui ≤ diminta, dikirim ≤ disetujui, diterima ≤ dikirim (selisih disimpan, tidak dibetulkan diam-diam); kirim ditolak bila `stok - terkomit < jumlah kirim` di gudang itu | Baru |
+| 2026-10-28 | — (working tree) | Pesanan Cabang | Setiap transisi menulis audit log (`create`/`submit`/`approve`/`reject`/`dispatch`/`receive`/`cancel_stock_request`) | Baru |
+| 2026-10-28 | — (working tree) | Gudang | **Rak toko per cabang**: gudang bertipe `store` milik cabang, ditandai badge **Rak Toko** di halaman Gudang, jadi gudang pusat bisa memenuhi pesanan tanpa kehilangan stok yang sudah dijanjikan ke kanal lain. Kanal online tidak punya rak dan tetap dilayani dari gudang pusat | Baru |
+| 2026-10-28 | — (working tree) | Inventori | Tombol **Buat Pesanan Cabang** di tampilan stok menipis, dan aksi **Pesan ke Gudang** per baris di panel stok menipis dashboard (sudah terisi produk + saran kuantitas) | Baru |
+| 2026-10-28 | — (working tree) | Inventori | Persetujuan transfer dipusatkan ke satu modul (`src/lib/stock-movement.ts`); status transfer menerima `in_transit` sehingga pengiriman dan penerimaan bisa dipisah dan selisihnya tercatat. Halaman Inventori tidak lagi punya salinan logika sendiri (lihat KS-25) | Perbaikan |
+| 2026-10-28 | — (working tree) | Cabang | Modal detail cabang mendapat tab **Pesanan** (10 pesanan terakhir + jumlah yang masih berjalan) | Baru |
+| 2026-10-28 | — (working tree) | Akses | Peran **warehouse** bisa masuk back office, terbatas pada menu stok: Dashboard tidak ditampilkan, dan Kartu Back Office di layar mode-select mengarahkannya ke **Pesanan Cabang** agar tidak terlempar balik ke mode-select | Baru |
+| 2026-10-28 | — (working tree) | Navigasi | Menu sidebar punya `allowedRoles` per item dan pesanan cabang membawa badge jumlah pesanan yang menunggu | Baru |
+| 2026-10-28 | — (working tree) | Pengaturan | Matriks role bertambah izin `request_stock`, `approve_stock_request`, `dispatch_stock` (bawaan: store_manager meminta; warehouse meminta/menyetujui/mengirim; owner/admin semuanya) | Baru |
+| 2026-10-28 | — (working tree) | Demo | Thalia: 1 gudang pusat + **2 rak toko** (Rak Toko Pusat, Rak Toko 2), stok katalog dipecah per lokasi, dan **4 pesanan** contoh — 1 draft, 1 submitted (urgent), 1 `in_transit` dengan transfer tertaut, 1 `received` dari kanal online | Ubah |
+
+### 2026-10-28 — toko online, katalog publik, dan data plane cloud (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-10-28 | — (working tree) | Toko Online | Aplikasi kedua `tokoonline/` (TanStack Start) menjadi etalase cabang **Thalia Online**: beranda, katalog dengan pencarian & kategori, halaman produk dengan pilihan satuan, keranjang, checkout, riwayat pesanan, dan chat CS | Baru |
+| 2026-10-28 | — (working tree) | Toko Online | Seluruh produk, harga per satuan, dan stok diambil dari back office lewat `GET /api/storefront/catalog`; tidak ada produk hardcoded dan tidak ada kredensial database di browser pengunjung | Baru |
+| 2026-10-28 | — (working tree) | Toko Online | Gudang pemenuh dipilih server (gudang bersama → pusat → default) dan rak cabang toko dikecualikan, sehingga angka stok di web sama dengan stok yang benar-benar bisa dikirim | Baru |
+| 2026-10-28 | — (working tree) | Toko Online | Merek toko menjadi **Thalia — Toko Bahan Kue** (judul, logo, warna, kode pesanan `THL-…`, rekening atas nama Thalia) | Ubah |
+| 2026-10-28 | — (working tree) | Toko Online | Keranjang dan pesanan pengunjung **masih** disimpan di perangkat (`localStorage`); belum masuk ke database tenant | Baru (prototype) |
+| 2026-10-28 | — (working tree) | Operasional | Penyiapan data plane cloud dalam satu perintah: `npm run demo:cloud` membuat control DB + DB tenant di Turso, menerapkan skema, mendaftarkan pemilik, dan mengisi data Thalia | Baru |
+| 2026-10-28 | — (working tree) | Operasional | Back office + API berjalan di https://retailpro-thalia.vercel.app dan toko di https://thalia-storefront.vercel.app, keduanya membaca Turso cloud (bukan database file) | Baru |
+| 2026-10-28 | — (working tree) | Operasional | Login produksi, bootstrap token tenant, dashboard, dan katalog toko sudah diverifikasi end-to-end di domain tersebut | Baru |
+
+### 2026-10-30 — pengadaan berjenjang: PO, persetujuan, dan penerimaan barang (belum di-commit)
+
+**Menggantikan** baris "Purchase order tersimpan sebagai dokumen (draft/ordered/received) dan
+penerimaannya membuat hutang" serta "Penerimaan PO menulis hutang ke `expenses`" di log
+2026-10-27: purchase order kini punya persetujuan, dan barang masuk lewat dokumen penerimaan
+sendiri (`docs/spec-purchase-order.md`).
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-10-30 | — (working tree) | Inventori | Status purchase order menjadi `draft → submitted → approved → partially_received → received`, ditambah `rejected` dan `cancelled` (keduanya final). Status `ordered` dipensiunkan dan dipindahkan ke `approved` oleh migrasi. Tidak ada stok yang bergerak sebelum `approved` | Ubah |
+| 2026-10-30 | — (working tree) | Inventori | Tab **Purchase Order** berisi daftar sebenarnya: kartu statistik (PO terbuka, menunggu persetujuan, terlambat, nilai bulan ini), filter status/vendor/periode/pencarian, pagination, dan tombol aksi per baris yang mengikuti status **dan** izin pengguna | Baru |
+| 2026-10-30 | — (working tree) | Inventori | Sheet detail PO: identitas vendor & gudang tujuan, total, baris pesanan dengan kolom **dipesan / sudah diterima / sisa**, daftar dokumen penerimaan, alasan penolakan/pembatalan, dan tombol aksi yang sama dengan daftar | Baru |
+| 2026-10-30 | — (working tree) | Inventori | Editor PO hanya menyimpan **draf** (tombol *Simpan Draf* / *Simpan & Ajukan*); nomor dokumen `PO-YYYYMMDD-NNNN` dibuat di dalam transaksi penyimpanan sehingga percobaan ulang tidak membakar nomor baru; kuantitas menerima desimal sampai 3 angka (0,5 kg) | Ubah |
+| 2026-10-30 | — (working tree) | Inventori | **Penerimaan barang** menjadi dokumen sendiri (`goods_receipts` + `goods_receipt_items`, nomor `GRN-YYYYMMDD-NNNN`): satu PO bisa diterima berkali-kali, tiap baris mencatat jumlah yang datang, harga yang benar-benar dibayar, nomor batch, dan tanggal kedaluwarsa. Stok hanya bertambah di sini | Baru |
+| 2026-10-30 | — (working tree) | Inventori | Penerimaan dijaga: tidak boleh melebihi sisa pesanan, gudang tujuan harus masih aktif, dan untuk metode stok **FEFO** tanggal kedaluwarsa wajib diisi serta harus setelah tanggal terima. Satu transaksi menulis dokumen, batch, status, dan tagihan — gagal di tengah berarti tidak ada yang tersimpan | Baru |
+| 2026-10-30 | — (working tree) | Keuangan | **Satu tagihan per penerimaan**, bukan per PO: nominal dan tanggal mengikuti barang yang benar-benar datang, jatuh tempo mengikuti termin yang disalin ke PO saat dibuat (perubahan termin vendor tidak menggeser tagihan lama). Pembelian tunai (termin 0) langsung tercatat lunas | Ubah |
+| 2026-10-30 | — (working tree) | Keuangan | Tagihan pembelian menyimpan `purchase_order_id` dan `goods_receipt_id`, menggantikan tautan lewat teks keterangan; pembayaran hutang menyalin `purchase_order_id` ke `vendor_payments` sehingga riwayat pembayaran bisa ditelusuri sampai PO-nya | Ubah |
+| 2026-10-30 | — (working tree) | Vendor | Tab Purchase Order memakai label status baru (Diterima Sebagian, Ditolak), kolom **Nilai diterima** diambil dari dokumen penerimaan alih-alih total PO, dan tiap baris bisa diklik untuk membuka dokumen PO-nya | Ubah |
+| 2026-10-30 | — (working tree) | Pengaturan | Izin baru `create_po`, `approve_po`, `receive_po`, `cancel_po` dan peran **purchasing**: pembuat PO tidak otomatis boleh menyetujuinya; menyetujui PO buatan sendiri hanya boleh untuk owner, dan staf gudang kini bisa mencatat barang datang | Baru |
+| 2026-10-30 | — (working tree) | Pengaturan | Matriks role yang sudah pernah disimpan tenant tidak lagi menghapus izin yang terbit belakangan: nilai tersimpan ditumpuk di atas bawaan, jadi izin baru tetap aktif sementara `false` eksplisit tetap menang. Sebelumnya tenant yang pernah menekan Simpan di layar Role kehilangan **semua** izin sesudahnya (tombol Buat PO tidak muncul untuk owner) | Perbaikan |
+| 2026-10-30 | — (working tree) | Gudang | Pemilih gudang pada PO, penerimaan, dan transfer hanya menampilkan gudang **aktif**; label dokumen lama tetap bisa menyebut gudang yang sudah dinonaktifkan | Perbaikan |
+| 2026-10-30 | — (working tree) | Demo | Thalia punya 7 purchase order contoh yang mencakup semua status (draft, submitted, approved, partially_received, 2× received, rejected) berikut dokumen penerimaan dan tagihannya, termasuk satu PO yang baru datang sebagian | Ubah |
+| 2026-10-30 | — (working tree) | Skema | Versi skema **5**: migrasi `005_procurement_lifecycle` menambah kolom siklus PO, tabel penerimaan, dan tautan PO/GRN pada batch serta biaya | Baru |
+| 2026-10-30 | — (working tree) | Inventori | Kolom **Diterima** pada daftar PO memakai total PO untuk pesanan yang sudah `received` tetapi tidak punya dokumen penerimaan (sisa kode satu-langkah lama), sehingga tidak lagi tampil Rp 0 untuk barang yang sudah ada di rak | Perbaikan |
+
 ### Riwayat commit (aplikasi sebelum migrasi)
 
 | Waktu | Ref | Modul | Perubahan | Status |
@@ -111,7 +185,7 @@ Detail teknis setiap baris di atas: [kendala-solusi.md](kendala-solusi.md) dan
 
 ---
 
-## 2. Katalog fitur saat ini (per 2026-10-27)
+## 2. Katalog fitur saat ini (per 2026-10-28)
 
 Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan yang disebut •
 **Belum** = belum tersedia di UI.
@@ -154,11 +228,12 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Multi-satuan & konversi | Ada | Unik per `(product_id, conversion_factor)` |
 | Batch + expiry + HPP | Ada | Batch menyimpan `cost_price`, `expiry_date`, `received_at` |
 | Metode pengeluaran stok | Ada | `fifo` (bawaan) / `lifo` / `fefo` di `tenants.settings.inventory.stock_issue_method`, diubah di Pengaturan → Inventori; hanya owner/admin |
-| Gudang & pemetaan ke cabang | Ada | `/backoffice/warehouses`; gudang pusat/regional/toko, satu gudang default per cabang, gudang bersama (`branch_id` NULL) boleh melayani banyak cabang |
-| Peringatan stok minimum | Ada | Dari `min_stock_level` |
+| Gudang & pemetaan ke cabang | Ada | `/backoffice/warehouses`; gudang pusat/regional/toko, satu gudang default per cabang, gudang bersama (`branch_id` NULL) boleh melayani banyak cabang. Gudang bertipe toko tampil dengan badge **Rak Toko** |
+| Peringatan stok minimum | Ada | Dari `min_stock_level`, dihitung per gudang (gudang pusat adalah pemasok pesanan cabang); tiap baris punya aksi **Pesan ke Gudang** |
+| Pesanan cabang ke gudang | Ada | `/backoffice/branches/orders`; `draft → submitted → approved/rejected → in_transit → received`, kuantitas disetujui/dikirim/diterima per baris, audit per transisi |
 | Stock opname | Ada | Penyesuaian positif/negatif dengan alasan |
-| Transfer antar gudang | Ada | `pending → completed`, per batch, simpan expiry & HPP; gudang asal/tujuan dipilih dari `warehouses` |
-| Transfer bertahap (in-transit, terima sebagian) | Belum | Hanya dua status |
+| Transfer antar gudang | Ada | `pending → in_transit → completed`, per batch, simpan expiry & HPP; gudang asal/tujuan dipilih dari `warehouses`; menampilkan nomor pesanan asal bila tertaut |
+| Transfer bertahap (terima sebagian) | Sebagian | Pengiriman dan penerimaan sudah terpisah dan selisih dicatat; belum ada penerimaan bertahap dalam beberapa kedatangan |
 | Purchase order | Ada | draft/ordered/received, item + total |
 | Import/Export produk (Excel) | Ada | `xlsx` |
 | Hapus produk | Sebagian | Tetap menghapus permanen; transaksi lama kehilangan referensi produk |
@@ -230,11 +305,28 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Profil perusahaan | Sebagian | Nama/slug tenant; alamat ada di cabang |
 | Audit log | Sebagian | Tercatat, tetapi belum ada layar penjelajah audit |
 
+### 2.10 Toko online (`tokoonline/`)
+
+Aplikasi terpisah untuk cabang online; dibuka pengunjung, bukan staf. Data berasal dari back office.
+
+| Fitur | Status | Catatan |
+|---|---|---|
+| Katalog dari database tenant | Ada | `GET /api/storefront/catalog?slug=thalia`; 7 kategori, 28 produk, teks "dikirim dari Gudang Pusat Depok" |
+| Harga & satuan jual per produk | Ada | Mengikuti `product_units`; satuan dasar bisa pecahan (mis. 0,5 kg) |
+| Stok yang bisa dikirim | Ada | `SUM(product_batches)` di gudang pemenuh; diperbarui setiap permintaan, tanpa cache |
+| Pencarian & filter kategori | Ada | Di `/katalog` |
+| Keranjang, checkout, riwayat pesanan | Ada | Disimpan di perangkat pengunjung (kunci `thalia-storefront`), bukan di DB tenant |
+| Pesanan masuk ke back office | Belum | Prototype; menulis ke DB tenant harus lewat `src/lib/stock-movement.ts` |
+| Akun pelanggan / login pembeli | Belum | Checkout tanpa akun; autentikasi toko dimatikan (`VITE_AUTH_ENABLED=false`) |
+| Pembayaran online | Belum | Metode bayar dipilih di checkout, belum ada integrasi gateway |
+| Chat CS | Sebagian | Menjawab dari katalog yang sama; bukan kanal pesan tersimpan |
+
 ---
 
 ## 3. Peran dan akses menu
 
-Sumber: `src/App.tsx` (`allowedRoles`) dan `src/config/roles.ts`.
+Sumber: `src/App.tsx` (`allowedRoles`), `src/config/roles.ts`, dan `allowedRoles` per item di
+`src/components/layout/BackOfficeLayout.tsx`.
 
 | Menu | platform_owner | tenant_owner | tenant_admin | store_manager | cashier | warehouse | staff |
 |---|---|---|---|---|---|---|---|
@@ -243,13 +335,24 @@ Sumber: `src/App.tsx` (`allowedRoles`) dan `src/config/roles.ts`.
 | `/pos/shifts` | ✓ | ✓ | ✓ | ✓ | ✓ | – | – |
 | `/backoffice` (dashboard) | ✓ | ✓ | ✓ | ✓ | – | – | – |
 | CRM supplier & pelanggan | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| Cabang & transfer | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| Gudang (`/backoffice/warehouses`) | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| Inventori (produk, stok masuk, opname, PO) | ✓ | ✓ | ✓ | ✓ | – | – | – |
+| Daftar cabang & dashboard cabang | ✓ | ✓ | ✓ | ✓ | – | – | – |
+| Pesanan cabang (`/backoffice/branches/orders`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
+| Gudang (`/backoffice/warehouses`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
+| Transfer stok (`/backoffice/branches/transfer`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
+| Produk (`/backoffice/inventory/products`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
+| Stok opname (`/backoffice/inventory/opname`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
+| Stok masuk & purchase order | ✓ | ✓ | ✓ | ✓ | – | – | – |
 | Keuangan (jurnal, AP/AR, cashflow, pengeluaran) | ✓ | ✓ | ✓ | ✓ | – | – | – |
 | SDM (karyawan, presensi, jadwal, payroll) | ✓ | ✓ | ✓ | – | – | – | – |
 | Laporan | ✓ | ✓ | ✓ | ✓ | – | – | – |
 | Pengaturan | ✓ | ✓ | ✓ | – | – | – | – |
 
-Catatan: `admin` masih diterima di beberapa guard sebagai nama peran lama; peran resmi yang
-dipakai hari ini adalah tujuh di atas.
+Catatan:
+- `admin` masih diterima di beberapa guard sebagai nama peran lama; peran resmi yang dipakai hari
+  ini adalah tujuh di atas.
+- **warehouse** mendapat potongan back office khusus dokumen stok. Karena `/backoffice` tetap
+  manager-only, entri back office untuk peran ini diarahkan ke **Pesanan Cabang**
+  (`src/pages/ModeSelect.tsx`); menu lain tidak ditampilkan agar tidak ada tautan yang berujung
+  pengalihan.
+- Transfer stok dan opname dijaga `STOCK_DOCS` (manager + warehouse), sedangkan stok masuk dan PO
+  tetap `BACK_OFFICE` — staf gudang menerima barang lewat pesanan cabang, bukan lewat PO.

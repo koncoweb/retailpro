@@ -8,10 +8,10 @@
  * The token is never cached by the browser: `TenantContext` keeps it in memory
  * and calls /api/tenant/token to refresh it before it expires.
  */
-import { requireTenantSession } from '../../server/auth-helpers';
-import { browserDbUrl } from '../../server/turso-platform';
-import { mintTenantToken } from '../../server/provision';
-import { methodNotAllowed, sendJson, withErrors, type ApiRequest, type ApiResponse } from '../../server/http';
+import { requireTenantSession } from '../../server/auth-helpers.js';
+import { browserDbUrl } from '../../server/turso-platform.js';
+import { mintTenantToken } from '../../server/provision.js';
+import { methodNotAllowed, sendJson, withErrors, type ApiRequest, type ApiResponse } from '../../server/http.js';
 
 async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== 'GET') return methodNotAllowed(res, ['GET']);

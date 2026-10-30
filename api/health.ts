@@ -4,8 +4,8 @@
  * Deployment smoke check (also proves the `vercel.json` rewrite no longer
  * swallows `/api/*`).
  */
-import { optionalEnv } from '../server/env';
-import { sendJson, withErrors, type ApiRequest, type ApiResponse } from '../server/http';
+import { optionalEnv } from '../server/env.js';
+import { sendJson, withErrors, type ApiRequest, type ApiResponse } from '../server/http.js';
 
 async function handler(_req: ApiRequest, res: ApiResponse) {
   sendJson(res, 200, {

@@ -6,13 +6,21 @@
  * tested without a database.
  */
 
-export type VendorCategory = "supplier" | "distributor" | "manufacturer" | "service" | "other";
+/** `trader` = buys and resells stock without producing it (e.g. a shop). */
+export type VendorCategory =
+  | "supplier"
+  | "distributor"
+  | "trader"
+  | "manufacturer"
+  | "service"
+  | "other";
 export type VendorStatus = "active" | "inactive" | "blacklisted";
 export type VendorPaymentMethod = "cash" | "transfer" | "check" | "other";
 
 export const VENDOR_CATEGORIES: Array<{ value: VendorCategory; label: string }> = [
   { value: "supplier", label: "Supplier" },
   { value: "distributor", label: "Distributor" },
+  { value: "trader", label: "Trader" },
   { value: "manufacturer", label: "Pabrikan" },
   { value: "service", label: "Penyedia Jasa" },
   { value: "other", label: "Lainnya" },

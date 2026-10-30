@@ -91,7 +91,22 @@ interface RecentTransaction {
   status: string;
 }
 
+/** A replenishment request this branch sent to the gudang. */
+interface BranchRequest {
+  id: string;
+  request_number: string;
+  status: StockRequestStatus;
+  priority: string;
+  created_at: string;
+  items_count: number;
+}
+
 import { ROLES } from "@/config/roles";
+import {
+  STOCK_REQUEST_PRIORITY_LABEL,
+  STOCK_REQUEST_STATUS_LABEL,
+  type StockRequestStatus,
+} from "@/lib/branch-orders";
 
 interface BranchDetailModalProps {
   branch: Branch | null;
@@ -108,6 +123,9 @@ export function BranchDetailModal({
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [transactions, setTransactions] = useState<RecentTransaction[]>([]);
+  const [requests, setRequests] = useState<BranchRequest[]>([]);
+  /** Requests still moving through the workflow, not just the visible ten. */
+  const [openRequestCount, setOpenRequestCount] = useState(0);
   const [isLoadingDetails, setIsLoadingDetails] = useState(false);
   /** Temporary password returned once by /api/admin/users. */
   const [generatedCredentials, setGeneratedCredentials] = useState<{
@@ -168,6 +186,24 @@ export function BranchDetailModal({
         [branchId]
       );
 
+      // Replenishment requests: the last ten plus how many are still open.
+      const reqRes = await query(
+        `SELECT r.id, r.request_number, r.status, r.priority, r.created_at,
+                (SELECT COUNT(*) FROM stock_request_items i WHERE i.request_id = r.id) AS items_count
+         FROM stock_requests r
+         WHERE r.branch_id = $1
+         ORDER BY r.created_at DESC LIMIT 10`,
+        [branchId]
+      );
+
+      const openRes = await query<{ open_count: number | string }>(
+        `SELECT COUNT(*) AS open_count
+         FROM stock_requests
+         WHERE branch_id = $1
+           AND status IN ('draft', 'submitted', 'approved', 'in_transit')`,
+        [branchId]
+      );
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setEmployees(empRes.rows.map((r: any) => ({
         id: r.id,
@@ -193,6 +229,18 @@ export function BranchDetailModal({
         created_at: r.created_at,
         status: r.status
       })));
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      setRequests(reqRes.rows.map((r: any) => ({
+        id: r.id,
+        request_number: r.request_number,
+        status: r.status,
+        priority: r.priority,
+        created_at: r.created_at,
+        items_count: Number(r.items_count),
+      })));
+
+      setOpenRequestCount(Number(openRes.rows[0]?.open_count ?? 0));
 
     } catch (error) {
       console.error("Failed to fetch branch details:", error);
@@ -359,11 +407,12 @@ export function BranchDetailModal({
           </DialogHeader>
 
           <Tabs defaultValue="overview" value={activeTab} onValueChange={setActiveTab} className="w-full mt-2">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className="grid w-full grid-cols-5">
               <TabsTrigger value="overview">Ringkasan</TabsTrigger>
               <TabsTrigger value="employees">Karyawan ({employees.length})</TabsTrigger>
               <TabsTrigger value="inventory">Stok ({inventory.length})</TabsTrigger>
               <TabsTrigger value="transactions">Transaksi</TabsTrigger>
+              <TabsTrigger value="requests">Pesanan ({openRequestCount})</TabsTrigger>
             </TabsList>
 
             <div className="mt-4 min-h-[300px]">
@@ -609,6 +658,59 @@ export function BranchDetailModal({
                               <TableCell className="text-center">
                                 <Badge variant={t.status === "completed" ? "default" : "secondary"}>
                                   {t.status}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </TabsContent>
+
+              {/* Pesanan (replenishment) Tab */}
+              <TabsContent value="requests" className="animate-in fade-in-50">
+                {isLoadingDetails ? (
+                  <div className="flex justify-center py-10"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>
+                ) : (
+                  <div className="border rounded-lg overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>No. Pesanan</TableHead>
+                          <TableHead>Tanggal</TableHead>
+                          <TableHead className="text-center">Baris</TableHead>
+                          <TableHead className="text-center">Prioritas</TableHead>
+                          <TableHead className="text-center">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {requests.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                              Belum ada pesanan ke gudang
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          requests.map((r) => (
+                            <TableRow key={r.id}>
+                              <TableCell className="font-mono text-xs">{r.request_number}</TableCell>
+                              <TableCell className="text-sm">
+                                <div className="flex items-center gap-2">
+                                  <Calendar className="w-3 h-3 text-muted-foreground" />
+                                  {new Date(r.created_at).toLocaleDateString('id-ID')}
+                                </div>
+                              </TableCell>
+                              <TableCell className="text-center">{r.items_count}</TableCell>
+                              <TableCell className="text-center">
+                                <Badge variant={r.priority === "urgent" ? "destructive" : "secondary"}>
+                                  {STOCK_REQUEST_PRIORITY_LABEL[r.priority] ?? r.priority}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-center">
+                                <Badge variant="secondary">
+                                  {STOCK_REQUEST_STATUS_LABEL[r.status] ?? r.status}
                                 </Badge>
                               </TableCell>
                             </TableRow>

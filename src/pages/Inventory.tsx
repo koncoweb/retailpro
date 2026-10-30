@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/use-auth";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
@@ -43,12 +43,14 @@ import {
   ClipboardCheck,
   ShoppingCart,
   Loader2,
+  ClipboardList,
 } from "lucide-react";
 import { ProductImportExport } from "@/components/inventory/ProductImportExport";
 import { AddProductModal } from "@/components/inventory/AddProductModal";
 import { StockTransferModal } from "@/components/inventory/StockTransferModal";
 import { StockOpnameModal } from "@/components/inventory/StockOpnameModal";
-import { PurchaseOrderModal, type VendorOption } from "@/components/inventory/PurchaseOrderModal";
+import { PurchaseOrderPanel } from "@/components/inventory/PurchaseOrderPanel";
+import type { VendorOption } from "@/components/inventory/PurchaseOrderModal";
 import { toast } from "sonner";
 import { query, parseJson, runTransaction, batchQuery } from "@/lib/db";
 import { logAudit, logAuditTx } from "@/lib/audit";
@@ -61,7 +63,13 @@ import {
 } from "@/lib/warehouse";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
 import { sortBatchesForIssue } from "@/lib/stock-issue";
-import { dueDateFromTerms } from "@/lib/vendor";
+import {
+  createTransfer,
+  dispatchTransfer,
+  receiveTransfer,
+  transferStatusLabel,
+} from "@/lib/stock-movement";
+import { roleHasPermission } from "@/lib/branch-orders";
 
 import { ProductUnit } from "@/components/inventory/AddProductModal";
 
@@ -82,6 +90,8 @@ interface Product {
   supplierId: string | null;
   /** Vendors that also supply this product through vendor_products. */
   vendorIds: string[];
+  /** `vendor_products.last_cost` per vendor, so a PO starts from the right price. */
+  vendorCosts: Record<string, number>;
   units: ProductUnit[];
 }
 
@@ -132,6 +142,11 @@ const PRODUCTS_SQL = `
       WHERE product_id = p.id
     ), '[]') as vendor_ids,
     COALESCE((
+      SELECT json_group_object(vendor_id, last_cost)
+      FROM vendor_products
+      WHERE product_id = p.id
+    ), '{}') as vendor_costs,
+    COALESCE((
        SELECT json_group_array(json_object(
          'id', id, 
          'name', name, 
@@ -179,6 +194,30 @@ const SUPPLIERS_SQL = `
   ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, name ASC
 `;
 
+/**
+ * Route segment <-> tab.
+ *
+ * The four "Inventory" menu entries in the sidebar are four routes that all
+ * render this one component, and React keeps the same component instance alive
+ * across them. The tab therefore has to be read from the URL on every render:
+ * seeding `Tabs` with `defaultValue` showed the first tab forever, so clicking
+ * "Purchase Order" changed the address bar while the screen stayed on Produk.
+ */
+const TAB_PATHS = {
+  products: "/backoffice/inventory/products",
+  "stock-in": "/backoffice/inventory/stock-in",
+  opname: "/backoffice/inventory/opname",
+  po: "/backoffice/inventory/po",
+} as const;
+
+type InventoryTab = keyof typeof TAB_PATHS;
+
+/** Unknown paths fall back to the tab that has content for them. */
+function tabFromPath(pathname: string): InventoryTab {
+  const segment = pathname.split("/").filter(Boolean).pop() ?? "";
+  return segment in TAB_PATHS ? (segment as InventoryTab) : "products";
+}
+
 function mapProductRows(rows: unknown[]): Product[] {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (rows as any[]).map((row) => ({
@@ -196,6 +235,7 @@ function mapProductRows(rows: unknown[]): Product[] {
     supplier: row.supplier || "-",
     supplierId: row.supplier_id ?? null,
     vendorIds: parseJson<string[]>(row.vendor_ids, []),
+    vendorCosts: parseJson<Record<string, number>>(row.vendor_costs, {}),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     units: parseJson<any[]>(row.units, []),
   }));
@@ -204,6 +244,9 @@ function mapProductRows(rows: unknown[]): Product[] {
 export default function Inventory() {
   const { user } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
+  // A shop asks the gudang for stock; a purchasing clerk does not.
+  const canRequestStock = roleHasPermission(user?.role, "request_stock");
   const [isLoading, setIsLoading] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [transfers, setTransfers] = useState<TransferRow[]>([]);
@@ -213,7 +256,6 @@ export default function Inventory() {
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [isTransferOpen, setIsTransferOpen] = useState(false);
   const [isOpnameOpen, setIsOpnameOpen] = useState(false);
-  const [isPOOpen, setIsPOOpen] = useState(false);
 
   // Filter State
   const [searchQuery, setSearchQuery] = useState("");
@@ -312,12 +354,11 @@ export default function Inventory() {
   }, []);
 
 
-  // Determine active tab based on route
-  const getActiveTab = () => {
-    if (location.pathname.includes("stock-in")) return "stock-in";
-    if (location.pathname.includes("opname")) return "opname";
-    if (location.pathname.includes("po")) return "po";
-    return "products";
+  // The URL owns the tab; the tab list and the sidebar can never disagree.
+  const activeTab = tabFromPath(location.pathname);
+
+  const handleTabChange = (value: string) => {
+    navigate(TAB_PATHS[value as InventoryTab] ?? TAB_PATHS.products);
   };
 
   const handleImport = async (importedProducts: Array<{
@@ -623,6 +664,14 @@ export default function Inventory() {
     }
   };
 
+  /**
+   * Queuing and shipping a transfer are delegated to `@/lib/stock-movement`.
+   *
+   * This screen used to carry its own copy of the stock math, which had already
+   * drifted from the transfer page (no expiry on the destination batch, no
+   * issue-policy guard). Keeping only the calls means the two screens can no
+   * longer disagree about what a transfer does.
+   */
   const handleTransfer = async (transfer: {
     from: string;
     to: string;
@@ -637,45 +686,18 @@ export default function Inventory() {
     try {
       const reference = `TRF-${Date.now()}`;
 
-      // Header, lines and the stock pre-flight are one unit of work. The audit
-      // entry used to record a freshly generated `TRF-${Date.now()}` instead of
-      // the reference actually stored on the row, so it never matched.
-      const transferId = await runTransaction(async (tx) => {
-        const res = await tx.query<{ id: string }>(
-          `INSERT INTO stock_transfers
-           (reference_number, source_warehouse_id, destination_warehouse_id, status, notes, requested_by, created_at)
-           VALUES ($1, $2, $3, 'pending', $4, $5, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-           RETURNING id`,
-          [reference, transfer.from, transfer.to, transfer.notes ?? null, user?.id ?? null]
-        );
-        const id = res.rows[0].id;
-
-        for (const item of transfer.items) {
-          const conversionFactor = Number(item.conversionFactor || 1);
-          const baseQty = Number(item.quantity) * conversionFactor;
-
-          const stockRes = await tx.query<{ available: number }>(
-            `SELECT COALESCE(SUM(quantity_current), 0) AS available
-               FROM product_batches
-              WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0`,
-            [item.productId, transfer.from]
-          );
-          const available = Number(stockRes.rows[0]?.available ?? 0);
-          if (baseQty > available + 1e-9) {
-            throw new Error(
-              `Stok gudang asal tidak mencukupi (tersedia ${available}, diminta ${baseQty})`
-            );
-          }
-
-          await tx.query(
-            `INSERT INTO transfer_items (transfer_id, product_id, quantity_sent, notes, unit_name, conversion_factor)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [id, item.productId, item.quantity, transfer.notes, item.unitName || 'Pcs', conversionFactor]
-          );
-        }
-
-        return id;
-      });
+      // Header, lines and the stock pre-flight are one unit of work, and the
+      // audit entry records the reference actually stored on the row.
+      const transferId = await runTransaction((tx) =>
+        createTransfer(tx, {
+          referenceNumber: reference,
+          sourceWarehouseId: transfer.from,
+          destinationWarehouseId: transfer.to,
+          notes: transfer.notes ?? null,
+          requestedBy: user?.id ?? null,
+          items: transfer.items,
+        })
+      );
 
       await logAudit({
         action: "create_transfer",
@@ -700,107 +722,74 @@ export default function Inventory() {
     }
   };
 
+  /** Ships a queued transfer: the stock leaves the source warehouse here. */
   const handleApproveTransfer = async (transferId: string) => {
     // RBAC Check
-    if (!user || !['store_manager', 'tenant_admin', 'tenant_owner', 'platform_owner'].includes(user.role)) {
-      toast.error("Anda tidak memiliki akses untuk menyetujui transfer");
+    if (!user || !['store_manager', 'warehouse', 'tenant_admin', 'tenant_owner', 'platform_owner', 'admin'].includes(user.role)) {
+      toast.error("Anda tidak memiliki akses untuk mengirim transfer");
       return;
     }
 
     try {
-      const res = await query(`SELECT * FROM stock_transfers WHERE id = $1`, [transferId]);
-      const transfer = res.rows[0];
-
-      const itemsRes = await query(`SELECT * FROM transfer_items WHERE transfer_id = $1`, [transferId]);
-      const items = itemsRes.rows;
-
       // Same policy as the till: the source warehouse is drained in FIFO, LIFO
       // or FEFO order depending on the tenant setting.
       const issueMethod = await getStockIssueMethod();
 
       // One write transaction: either every batch moves and the transfer is
-      // marked completed, or nothing moves at all.
+      // marked in transit, or nothing moves at all.
       await runTransaction(async (tx) => {
-        for (const item of items) {
-          // Convert transfer quantity to base units
-          const conversionFactor = parseFloat(item.conversion_factor || '1');
-          const totalBaseQty = parseFloat(item.quantity_sent) * conversionFactor;
-          let remaining = totalBaseQty;
-
-          const sourceBatches = await tx.query(
-            `SELECT id, quantity_current, cost_price, expiry_date, received_at, supplier_id
-             FROM product_batches
-             WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0`,
-            [item.product_id, transfer.source_warehouse_id]
-          );
-
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          for (const batch of sortBatchesForIssue(sourceBatches.rows as any[], issueMethod)) {
-            if (remaining <= 0) break;
-            const qty = parseFloat(batch.quantity_current);
-            const take = Math.min(qty, remaining);
-
-            const deducted = await tx.query(
-              `UPDATE product_batches
-                  SET quantity_current = quantity_current - $1
-                WHERE id = $2 AND quantity_current >= $1`,
-              [take, batch.id]
-            );
-            if (deducted.rowCount === 0) {
-              throw new Error(`Stok batch ${batch.id} sudah berubah, muat ulang data transfer.`);
-            }
-
-            // The destination receives one batch per source batch, keeping the
-            // original cost and expiry. Collapsing them into one weighted-average
-            // batch erased expiry dates and made later batch deduction and
-            // costing wrong.
-            await tx.query(
-              `INSERT INTO product_batches
-                 (warehouse_id, product_id, batch_number, quantity_initial, quantity_current,
-                  cost_price, received_at, expiry_date, supplier_id)
-               VALUES ($1, $2, $3, $4, $4, $5, strftime('%Y-%m-%dT%H:%M:%fZ','now'), $6, $7)`,
-              [
-                transfer.destination_warehouse_id,
-                item.product_id,
-                `TRF-${transfer.reference_number}`,
-                take,
-                batch.cost_price,
-                batch.expiry_date ?? null,
-                batch.supplier_id ?? null,
-              ]
-            );
-
-            remaining -= take;
-          }
-
-          if (remaining > 0.001) {
-            throw new Error(
-              `Stok sumber tidak cukup untuk dipindahkan (kurang ${remaining} unit dasar).`
-            );
-          }
-        }
-
-        await tx.query(
-          `UPDATE stock_transfers SET status = 'completed', approved_by = $2,
-                  received_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = $1`,
-          [transferId, user?.id ?? null]
-        );
+        const result = await dispatchTransfer(tx, {
+          transferId,
+          userId: user?.id ?? null,
+          issueMethod,
+        });
 
         await logAuditTx(tx, {
-          action: "approve_transfer",
+          action: "dispatch_transfer",
           entity: "stock_transfers",
           entityId: transferId,
-          details: { transferId, approvedBy: user?.id, itemsCount: items.length, stock_issue_method: issueMethod },
+          details: {
+            reference_number: result.referenceNumber,
+            itemCount: result.itemCount,
+            stock_issue_method: issueMethod,
+          },
           userId: user?.id,
         });
       });
 
-      toast.success("Transfer approved successfully");
+      toast.success("Barang dikirim dari gudang asal");
       fetchTransfers();
       fetchProducts();
     } catch (error) {
-      console.error("Approval failed:", error);
-      toast.error("Approval failed");
+      console.error("Dispatch failed:", error);
+      toast.error(
+        "Gagal mengirim transfer: " + (error instanceof Error ? error.message : "Unknown error")
+      );
+    }
+  };
+
+  /** Confirms arrival; the stock already moved when the transfer was shipped. */
+  const handleReceiveTransfer = async (transferId: string) => {
+    try {
+      await runTransaction(async (tx) => {
+        const result = await receiveTransfer(tx, { transferId, userId: user?.id ?? null });
+
+        await logAuditTx(tx, {
+          action: "receive_transfer",
+          entity: "stock_transfers",
+          entityId: transferId,
+          details: { reference_number: result.referenceNumber },
+          userId: user?.id,
+        });
+      });
+
+      toast.success("Penerimaan barang dikonfirmasi");
+      fetchTransfers();
+    } catch (error) {
+      console.error("Receipt failed:", error);
+      toast.error(
+        "Gagal mengonfirmasi penerimaan: " + (error instanceof Error ? error.message : "Unknown error")
+      );
     }
   };
 
@@ -899,145 +888,6 @@ export default function Inventory() {
       toast.error(
         "Gagal menyimpan opname: " + (error instanceof Error ? error.message : "Unknown error")
       );
-    }
-  };
-
-  const handlePO = async (po: {
-    poNumber: string;
-    supplierId: string;
-    supplier: string;
-    paymentTermsDays: number;
-    destinationWarehouseId: string;
-    items: Array<{
-      productId: string;
-      quantity: number;
-      unitName: string;
-      conversionFactor: number;
-      unitCost: number;
-    }>;
-    notes: string;
-    expectedDate: string;
-    totalAmount: number;
-  }) => {
-    try {
-      // A PO is received into a warehouse. The payable/expense is still booked
-      // against a branch, so resolve the branch that owns that warehouse.
-      const destinationWarehouseId = po.destinationWarehouseId;
-      const destinationBranchId =
-        warehouses.find((warehouse) => warehouse.id === destinationWarehouseId)?.branch_id ??
-        user?.assigned_branch_id ??
-        null;
-      // The vendor comes from the master data the PO modal selected, so no
-      // free-text name is created behind the operator's back.
-      const supplierId = po.supplierId || null;
-      const vendor = suppliers.find((item) => item.id === supplierId) ?? null;
-      // Goods arrive on credit terms: the bill is due after the vendor's term,
-      // not on the expected arrival date.
-      const dueDate = dueDateFromTerms(po.paymentTermsDays);
-
-      // Receiving stock is a purchase, not a bare batch insert: the order is
-      // recorded, its lines are recorded, and the amount owed to the supplier
-      // becomes a payable. Previously this only mutated product_batches, so
-      // inventory grew while the finance module never saw the liability.
-      await runTransaction(async (tx) => {
-        const poRes = await tx.query<{ id: string }>(
-          `INSERT INTO purchase_orders
-             (po_number, supplier_id, supplier_name, branch_id, warehouse_id, status, total_amount,
-              notes, expected_date, received_at, created_by)
-           VALUES ($1, $2, $3, $4, $5, 'received', $6, $7, $8,
-                   strftime('%Y-%m-%dT%H:%M:%fZ','now'), $9)
-           RETURNING id`,
-          [
-            po.poNumber,
-            supplierId,
-            po.supplier || null,
-            destinationBranchId,
-            destinationWarehouseId,
-            po.totalAmount,
-            po.notes || null,
-            po.expectedDate || null,
-            user?.id ?? null,
-          ]
-        );
-        const purchaseOrderId = poRes.rows[0].id;
-
-        for (const item of po.items) {
-          const totalBaseQty = item.quantity * item.conversionFactor;
-          const baseCost = item.unitCost / item.conversionFactor;
-
-          await tx.query(
-            `INSERT INTO purchase_order_items
-               (purchase_order_id, product_id, quantity, unit_name, conversion_factor, unit_cost, subtotal)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [
-              purchaseOrderId,
-              item.productId,
-              item.quantity,
-              item.unitName,
-              item.conversionFactor,
-              item.unitCost,
-              item.quantity * item.unitCost,
-            ]
-          );
-
-          await tx.query(
-            `INSERT INTO product_batches
-             (warehouse_id, product_id, batch_number, quantity_initial, quantity_current, cost_price, received_at, supplier_id)
-             VALUES ($1, $2, $3, $4, $4, $5, strftime('%Y-%m-%dT%H:%M:%fZ','now'), $6)`,
-            [destinationWarehouseId, item.productId, po.poNumber, totalBaseQty, baseCost, supplierId]
-          );
-
-          // Refresh the vendor catalogue with what was actually paid.
-          if (supplierId) {
-            await tx.query(
-              `INSERT INTO vendor_products (vendor_id, product_id, last_cost, lead_time_days, min_order_qty)
-               VALUES ($1, $2, $3, $4, 1)
-               ON CONFLICT (vendor_id, product_id) DO UPDATE SET
-                 last_cost = excluded.last_cost,
-                 lead_time_days = excluded.lead_time_days`,
-              [supplierId, item.productId, baseCost, Number(vendor?.lead_time_days ?? 0)]
-            );
-          }
-        }
-
-        // The liability is booked into `expenses`, the table Hutang (AP),
-        // Cashflow and Journal all read. Writing only to `payables` left the
-        // finance module blind to stock that arrived on credit.
-        await tx.query(
-          `INSERT INTO expenses
-             (branch_id, category, amount, date, due_date, description, status,
-              amount_paid, supplier_id, notes)
-           VALUES ($1, 'Pembelian Stok', $2, date('now'), $3, $4, 'unpaid', 0, $5, $6)`,
-          [
-            destinationBranchId,
-            po.totalAmount,
-            dueDate,
-            `Pembelian stok ${po.poNumber}${po.supplier ? ` - ${po.supplier}` : ""}`,
-            supplierId,
-            po.notes || null,
-          ]
-        );
-      });
-
-      await logAudit({
-        action: "create_po",
-        entity: "purchase_orders",
-        entityId: po.poNumber,
-        details: {
-          poNumber: po.poNumber,
-          supplier: po.supplier,
-          itemsCount: po.items.length,
-          totalAmount: po.totalAmount
-        },
-        userId: user?.id
-      });
-
-      toast.success(`Purchase Order ${po.poNumber} diterima: stok bertambah dan hutang tercatat`);
-      setIsPOOpen(false);
-      fetchProducts();
-    } catch (error) {
-      console.error("PO failed:", error);
-      toast.error("Gagal memproses Purchase Order: " + (error instanceof Error ? error.message : "Unknown error"));
     }
   };
 
@@ -1172,21 +1022,23 @@ export default function Inventory() {
         </div>
 
         {/* Tabs */}
-        <Tabs defaultValue={getActiveTab()} className="space-y-4">
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
           <TabsList className="grid w-full grid-cols-4 lg:w-auto lg:inline-flex">
             <TabsTrigger value="products" className="gap-2">
               <Package className="w-4 h-4" />
               <span className="hidden sm:inline">Produk</span>
             </TabsTrigger>
-            <TabsTrigger value="stock-in" className="gap-2" onClick={() => setIsTransferOpen(true)}>
+            {/* A tab only navigates now. These used to open their modal on
+                click as well, so switching panels threw a dialog over the page. */}
+            <TabsTrigger value="stock-in" className="gap-2">
               <ArrowLeftRight className="w-4 h-4" />
               <span className="hidden sm:inline">Transfer</span>
             </TabsTrigger>
-            <TabsTrigger value="opname" className="gap-2" onClick={() => setIsOpnameOpen(true)}>
+            <TabsTrigger value="opname" className="gap-2">
               <ClipboardCheck className="w-4 h-4" />
               <span className="hidden sm:inline">Opname</span>
             </TabsTrigger>
-            <TabsTrigger value="po" className="gap-2" onClick={() => setIsPOOpen(true)}>
+            <TabsTrigger value="po" className="gap-2">
               <ShoppingCart className="w-4 h-4" />
               <span className="hidden sm:inline">PO</span>
             </TabsTrigger>
@@ -1240,6 +1092,16 @@ export default function Inventory() {
                   <SelectItem value="normal">Stok Normal</SelectItem>
                 </SelectContent>
               </Select>
+              {stockFilter === "low" && canRequestStock && (
+                <Button
+                  variant="outline"
+                  className="gap-2 shrink-0"
+                  onClick={() => navigate("/backoffice/branches/orders")}
+                >
+                  <ClipboardList className="w-4 h-4" />
+                  Buat Pesanan Cabang
+                </Button>
+              )}
             </div>
 
             {/* Products Table */}
@@ -1264,6 +1126,17 @@ export default function Inventory() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
+                  {isLoading && products.length === 0 && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={8 + (selectedWarehouse === "all" ? warehouses.length : 1)}
+                        className="py-12 text-center text-muted-foreground"
+                      >
+                        <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />
+                        Memuat data produk…
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {filteredProducts.map((product) => {
                     const isLowStock = product.stock <= product.minStock;
                     const margin = ((product.price - product.cost) / product.price) * 100;
@@ -1373,7 +1246,7 @@ export default function Inventory() {
             </div>
           </TabsContent>
 
-          <TabsContent value="transfers">
+          <TabsContent value="stock-in">
             <div className="bg-card rounded-xl border p-6">
               <div className="flex justify-between items-center mb-6">
                 <div>
@@ -1405,20 +1278,25 @@ export default function Inventory() {
                         <TableCell>{t.source_warehouse_name}</TableCell>
                         <TableCell>{t.destination_warehouse_name}</TableCell>
                         <TableCell>
-                          <Badge variant={t.status === 'completed' ? 'default' : 'secondary'}>
-                            {t.status}
+                          <Badge variant={t.status === 'completed' ? 'default' : t.status === 'cancelled' ? 'destructive' : 'secondary'}>
+                            {transferStatusLabel(t.status)}
                           </Badge>
                         </TableCell>
                         <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
                         <TableCell className="text-right">
                           {t.status === 'pending' && (
-                             (user?.role === 'store_manager' || user?.role === 'tenant_admin' || user?.role === 'tenant_owner' || user?.role === 'platform_owner') ? (
+                             (user?.role === 'store_manager' || user?.role === 'warehouse' || user?.role === 'tenant_admin' || user?.role === 'tenant_owner' || user?.role === 'platform_owner' || user?.role === 'admin') ? (
                               <Button size="sm" onClick={() => handleApproveTransfer(t.id)}>
-                                Approve
+                                Kirim
                               </Button>
                              ) : (
-                               <span className="text-xs text-muted-foreground italic">Menunggu Approval</span>
+                               <span className="text-xs text-muted-foreground italic">Menunggu dikirim</span>
                              )
+                          )}
+                          {t.status === 'in_transit' && (
+                            <Button size="sm" variant="outline" onClick={() => handleReceiveTransfer(t.id)}>
+                              Terima
+                            </Button>
                           )}
                         </TableCell>
                       </TableRow>
@@ -1449,15 +1327,12 @@ export default function Inventory() {
           </TabsContent>
 
           <TabsContent value="po">
-            <div className="text-center py-12">
-              <ShoppingCart className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-              <h3 className="text-lg font-semibold mb-2">Purchase Order</h3>
-              <p className="text-muted-foreground mb-4">Buat permintaan pembelian untuk stok yang menipis</p>
-              <Button onClick={() => setIsPOOpen(true)}>
-                <Plus className="w-4 h-4 mr-2" />
-                Buat PO Baru
-              </Button>
-            </div>
+            <PurchaseOrderPanel
+              products={products}
+              warehouses={warehouses}
+              vendors={suppliers}
+              onChanged={fetchProducts}
+            />
           </TabsContent>
         </Tabs>
       </div>
@@ -1496,15 +1371,6 @@ export default function Inventory() {
         products={products}
         warehouses={warehouses}
         onSave={handleOpname}
-      />
-
-      <PurchaseOrderModal
-        open={isPOOpen}
-        onOpenChange={setIsPOOpen}
-        products={products}
-        warehouses={warehouses}
-        suppliers={suppliers}
-        onSubmit={handlePO}
       />
     </BackOfficeLayout>
   );

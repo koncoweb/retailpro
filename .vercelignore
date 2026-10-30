@@ -1,0 +1,13 @@
+# Local runtime artifacts that must never ship to Vercel.
+.data/
+dist/
+.vercel-tmp/
+*.log
+
+# The storefront is its own Vercel project (thalia-storefront / TanStack Start), so
+# its sources and node_modules must not be uploaded with the back-office deployment.
+tokoonline/
+
+# Repo-local scratch files
+tsconfig.app.tsbuildinfo
+tsconfig.node.tsbuildinfo

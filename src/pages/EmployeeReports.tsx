@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isWeekend, getDay } from "date-fns";
 import { id } from "date-fns/locale";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -112,7 +113,25 @@ function formatCurrency(value: number) {
 /** Rows per page for the attendance and leave tables. */
 const PAGE_SIZE = 25;
 
+/**
+ * The sidebar opens this screen twice — Absensi and Payroll — and both links
+ * land on the same component. The tabs that own a route keep the URL and the
+ * panel in step; Cuti and Libur only exist inside the page.
+ */
+const TAB_PATHS: Record<string, string> = {
+  attendance: "/backoffice/hr/attendance",
+  payroll: "/backoffice/hr/payroll",
+};
+
+/** Returns the tab the current URL asks for, or null for an in-page-only tab. */
+function tabFromPath(pathname: string): string | null {
+  const segment = pathname.split("/").filter(Boolean).pop() ?? "";
+  return segment in TAB_PATHS || segment === "leave" || segment === "holidays" ? segment : null;
+}
+
 export default function EmployeeReports() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [attendanceData, setAttendanceData] = useState<Attendance[]>([]);
   const [leaveData, setLeaveData] = useState<Leave[]>([]);
@@ -121,7 +140,20 @@ export default function EmployeeReports() {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedBranch, setSelectedBranch] = useState("all");
   const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
-  const [activeTab, setActiveTab] = useState("attendance");
+  const [activeTab, setActiveTab] = useState(tabFromPath(location.pathname) ?? "attendance");
+
+  // Seeded state is not enough here: this component survives the sidebar moving
+  // from Absensi to Payroll, because both routes render it.
+  useEffect(() => {
+    const next = tabFromPath(location.pathname);
+    if (next) setActiveTab(next);
+  }, [location.pathname]);
+
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
+    const path = TAB_PATHS[value];
+    if (path && path !== location.pathname) navigate(path, { replace: true });
+  };
 
   // Config State
   const [config, setConfig] = useState({
@@ -609,7 +641,7 @@ export default function EmployeeReports() {
           />
         </div>
 
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+        <Tabs value={activeTab} onValueChange={handleTabChange} className="space-y-4">
           <TabsList className="bg-muted/50 p-1">
             <TabsTrigger value="attendance" className="gap-2"><Clock className="w-4 h-4" />Absensi</TabsTrigger>
             <TabsTrigger value="leave" className="gap-2"><Plane className="w-4 h-4" />Cuti</TabsTrigger>

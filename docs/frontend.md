@@ -3,12 +3,13 @@
 | | |
 |---|---|
 | Dokumen | `docs/frontend.md` |
-| Terakhir diperbarui | **2026-10-27** |
+| Terakhir diperbarui | **2026-10-28** |
 | Stack | React 18 + Vite 5 + TypeScript, shadcn/ui, Tailwind, React Router 6 |
 | Bahasa UI | Indonesia (label, pesan, format Rupiah) |
 
-> Dokumen ini tentang **lapisan tampilan**. Alur data lintas lapisan ada di
-> [arsitektur.md](arsitektur.md), detail query di [backend.md](backend.md).
+> Dokumen ini tentang **lapisan tampilan** back office. Alur data lintas lapisan ada di
+> [arsitektur.md](arsitektur.md), detail query di [backend.md](backend.md), dan aplikasi toko
+> terpisah (`tokoonline/`) diringkas di §11 serta [deployment.md](deployment.md).
 
 ---
 
@@ -23,7 +24,8 @@
 | Build | `vite build` → `dist/` (satu bundle ±2 MB, ada peringatan ukuran chunk) |
 | Typecheck | `npx tsc --noEmit -p tsconfig.app.json` (terpisah dari build) |
 | Lint | `npm run lint` (ESLint 9, config datar) |
-| Test | `npm run test` (Vitest; 7 file, 79 test) |
+| Test | `npm run test` (Vitest; **10 file, 120 test**) |
+| Toko online | `cd tokoonline && npm run dev` → port **8082**, `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) |
 
 ---
 
@@ -43,6 +45,9 @@ src/
     tenant-settings.ts     Baca/merge settings tenant (+ getStockIssueMethod)
     warehouse.ts           Gudang cabang: resolveBranchWarehouse, resolveWarehouseBranch
     stock-issue.ts         Kebijakan FIFO/LIFO/FEFO: comparator + sortBatchesForIssue
+    stock-movement.ts      Satu-satunya penulis perpindahan stok (transfer, kirim, terima, batal)
+    branch-orders.ts       Mesin status pesanan cabang: canPerform, validate*, nextOrderNumber
+    vendor.ts              Kode vendor, termin, kategori, saldo hutang
     audit.ts               logAudit / logAuditTx
     date-range.ts          Rentang periode laporan + koreksi zona waktu
     formatters.ts          formatRupiah, formatTanggal
@@ -54,10 +59,14 @@ src/
     inventory/*            AddProduct, StockTransfer, StockOpname, PurchaseOrder, Import/Export
     pos/{PaymentModal,ShiftModal}.tsx
     branches/BranchDetailModal.tsx
+    vendors/*              Daftar & detail vendor
     settings/{Receipt,TaxDiscount,Bank,EmployeeRole,Inventory}Settings.tsx
-    ui/*                   shadcn/ui (54 komponen) + pagination-bar.tsx
+    ui/*                   shadcn/ui (51 komponen, termasuk pagination-bar.tsx)
   pages/                   Satu file per layar (lihat §3)
 ```
+
+Di luar SPA ini ada aplikasi kedua, `tokoonline/` (TanStack Start, React 19, Tailwind v4), yang
+punya `package.json` dan `node_modules` sendiri — lihat §11.
 
 ---
 
@@ -66,39 +75,48 @@ src/
 Semua route terautentikasi dibungkus dua lapis: `RoleBasedRoute` (boleh atau tidak) dan
 `RequireTenant` (database tenant siap atau belum).
 
-| Path | Komponen | Peran yang diizinkan |
+| Path | Komponen | Grup peran yang diizinkan |
 |---|---|---|
 | `/login` | `auth/Login` | publik |
 | `/register-tenant` | `auth/RegisterTenant` | publik (butuh sesi) |
 | `/mode-select` | `ModeSelect` | semua |
-| `/pos` | `POS` | platform_owner, tenant_owner, tenant_admin, store_manager, cashier, admin |
-| `/pos/transactions` | `POSTransactions` | semua peran |
-| `/pos/shifts` | `POSShifts` | front office (tanpa warehouse/staff) |
-| `/backoffice` | `Dashboard` | back office + store_manager |
-| `/backoffice/vendors` | `vendors/Vendors` | back office |
-| `/backoffice/vendors/:id` | `vendors/VendorDetail` | back office |
-| `/backoffice/crm/suppliers` | `vendors/Vendors` (alias lama) | back office |
-| `/backoffice/crm/customers` | `crm/Customers` | back office |
-| `/backoffice/branches` | `Branches` | managers (tanpa cashier) |
-| `/backoffice/warehouses` | `Warehouses` | managers (tanpa cashier) |
-| `/backoffice/branches/dashboard` | `branches/Dashboard` | managers |
-| `/backoffice/branches/transfer` | `BranchTransfers` | managers |
-| `/backoffice/inventory/{products,stock-in,opname,po}` | `Inventory` | back office |
-| `/backoffice/finance/journal` | `finance/Journal` | back office |
-| `/backoffice/finance/ap-ar` | `finance/ApAr` | back office |
-| `/backoffice/finance/cashflow` | `finance/Cashflow` | back office |
-| `/backoffice/finance/expenses` | `finance/Expenses` | back office |
-| `/backoffice/hr/employees` | `Employees` | HR only |
-| `/backoffice/hr/attendance` | `EmployeeReports` | HR only |
-| `/backoffice/hr/schedule` | `Employees` | HR only |
-| `/backoffice/hr/payroll` | `EmployeeReports` | HR only |
-| `/backoffice/reports` | `Reports` | back office |
-| `/backoffice/reports/{sales,inventory,finance}` | `SalesReport`, `InventoryReport`, `FinanceReports` | back office |
-| `/backoffice/settings` | `Settings` | HR only |
+| `/pos` | `POS` | `FRONT_OFFICE` |
+| `/pos/transactions` | `POSTransactions` | `ALL_ROLES` |
+| `/pos/shifts` | `POSShifts` | `FRONT_OFFICE` |
+| `/backoffice` | `Dashboard` | `BACK_OFFICE` |
+| `/backoffice/vendors` | `vendors/Vendors` | `BACK_OFFICE` |
+| `/backoffice/vendors/:id` | `vendors/VendorDetail` | `BACK_OFFICE` |
+| `/backoffice/crm/suppliers` | `vendors/Vendors` (alias lama) | `BACK_OFFICE` |
+| `/backoffice/crm/customers` | `crm/Customers` | `BACK_OFFICE` |
+| `/backoffice/branches` | `Branches` | `MANAGERS` |
+| `/backoffice/warehouses` | `Warehouses` | `STOCK_DOCS` |
+| `/backoffice/branches/dashboard` | `branches/Dashboard` | `MANAGERS` |
+| `/backoffice/branches/transfer` | `BranchTransfers` | `STOCK_DOCS` |
+| `/backoffice/branches/orders` | `BranchOrders` | `STOCK_DOCS` |
+| `/backoffice/inventory/{products,opname}` | `Inventory` | `STOCK_DOCS` |
+| `/backoffice/inventory/{stock-in,po}` | `Inventory` | `BACK_OFFICE` |
+| `/backoffice/finance/{journal,ap-ar,cashflow,expenses}` | `finance/*` | `BACK_OFFICE` |
+| `/backoffice/hr/{employees,schedule}` | `Employees` | `HR_ONLY` |
+| `/backoffice/hr/{attendance,payroll}` | `EmployeeReports` | `HR_ONLY` |
+| `/backoffice/reports` | `Reports` | `BACK_OFFICE` |
+| `/backoffice/reports/{sales,inventory,finance}` | `SalesReport`, `InventoryReport`, `FinanceReports` | `BACK_OFFICE` |
+| `/backoffice/settings` | `Settings` | `HR_ONLY` |
 | `*` | `NotFound` | – |
+
+Grup peran (didefinisikan di `src/App.tsx`):
+
+| Grup | Isi |
+|---|---|
+| `ALL_ROLES` | 7 peran resmi + alias `admin` |
+| `FRONT_OFFICE` | platform_owner, tenant_owner, tenant_admin, store_manager, cashier (+ `admin`) |
+| `BACK_OFFICE` = `MANAGERS` | platform_owner, tenant_owner, tenant_admin, store_manager (+ `admin`) |
+| `STOCK_DOCS` | `MANAGERS` + `warehouse` — dokumen stok saja |
+| `HR_ONLY` | platform_owner, tenant_owner, tenant_admin (+ `admin`) |
 
 Catatan: empat route inventori memakai satu komponen yang sama (`Inventory`) dan memilih tab dari
 path; `attendance`/`payroll` juga berbagi satu halaman, begitu pula `employees`/`schedule`.
+`STOCK_DOCS` memisahkan staf gudang (boleh menghitung stok, menyetujui & mengirim pesanan) dari
+stok masuk dan PO yang tetap `BACK_OFFICE`.
 
 ---
 
@@ -174,6 +192,8 @@ Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 ba
 | Detail cabang | `branches/BranchDetailModal.tsx` | Daftar karyawan cabang + edit |
 | Gudang & pemetaan | `pages/Warehouses.tsx` | CRUD gudang pusat/regional/toko, penanda gudang default, pemetaan ke cabang |
 | Metode pengeluaran stok | `settings/InventorySettings.tsx` | Tab **Inventori**; kartu radio FIFO/LIFO/FEFO, simpan saat diklik |
+| Pesanan cabang | `pages/BranchOrders.tsx` + `lib/branch-orders.ts` | Form banyak baris dengan stok gudang & stok minimum, linimasa status, aksi Setujui/Siapkan & Kirim/Terima/Tolak/Batalkan |
+| Perpindahan stok | `lib/stock-movement.ts` | Satu modul untuk transfer & pengiriman; halaman inventori, transfer, dan pesanan cabang memanggilnya di dalam `runTransaction` |
 | Pemotongan stok | `lib/stock-issue.ts` | Kelima jalur stok keluar: `getStockIssueMethod()` → `sortBatchesForIssue()` |
 | Pengaturan | `settings/*` | Tulis ke `tenants.settings` lewat `mergeTenantSettings()` dengan indikator simpan; tidak ada tombol simpan global |
 | Audit | `lib/audit.ts` | `logAudit` (best effort) dan `logAuditTx` (ikut rollback) |
@@ -199,6 +219,11 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-10-28 | — (working tree) | Halaman `/backoffice/branches/orders` (pesanan cabang): kartu statistik, tab status, filter cabang terkunci untuk manajer toko, form pesanan, modal detail dengan linimasa & aksi per peran |
+| 2026-10-28 | — (working tree) | `lib/stock-movement.ts` + `lib/branch-orders.ts` menggantikan logika yang sebelumnya disalin di dalam halaman (`Inventory.tsx`, `BranchTransfers.tsx`) |
+| 2026-10-28 | — (working tree) | Route dokumen stok memakai grup `STOCK_DOCS` (`MANAGERS` + `warehouse`); sidebar punya `allowedRoles` per item dan badge jumlah pesanan menunggu |
+| 2026-10-28 | — (working tree) | Kabar cabang di `ModeSelect`: kartu Back Office untuk peran `warehouse` diarahkan ke Pesanan Cabang, bukan dashboard |
+| 2026-10-28 | — (working tree) | Aplikasi kedua `tokoonline/` (TanStack Start) memakai katalog dari API back office — lihat §11 |
 | 2026-10-27 | — (working tree) | `TenantContext` + `tenant-session` (token di memori), `RequireTenant` di setiap route, `RoleBasedRoute` gagal-tertutup |
 | 2026-10-27 | — (working tree) | Semua halaman pindah ke `@/lib/db` (`query`/`runTransaction`/`batchQuery`), SQL Postgres → SQLite |
 | 2026-10-27 | — (working tree) | `lib/date-range.ts` + `sqliteTzModifier()` untuk filter periode dan bucketing bulan |
@@ -216,3 +241,25 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 | 2026-01-29 23:56 | `840dbd9` | Barcode, SKU otomatis, halaman CRM |
 | 2026-01-26 04:42 | `d2b8c65` | UI multi-satuan produk + audit |
 | 2026-01-20 02:21 | `c87e434` | Pemisahan layout POS dan back office |
+
+---
+
+## 11. Toko online (`tokoonline/`) — lapisan tampilan kedua
+
+Bukan bagian dari SPA ini: aplikasi terpisah (TanStack Start → React 19, Tailwind v4, zustand +
+`localStorage`), punya `package.json`, `node_modules`, dan port sendiri (**8082**).
+
+| Aspek | Nilai |
+|---|---|
+| Route file | `/`, `/katalog`, `/product/$slug`, `/cart`, `/checkout`, `/orders`, `/order/$id`, `/chat`, `/info` |
+| Sumber data | `src/lib/catalog.ts` (`useCatalog`, `useProduct`) → `GET /api/storefront/catalog?slug=` |
+| Base URL API | `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) — **dipanggang saat build** |
+| Penyimpanan | Keranjang & pesanan di `localStorage` (kunci `thalia-storefront`); tidak menulis ke DB tenant |
+| Branding | Thalia — Toko Bahan Kue; kode pesanan `THL-…` |
+| Build | Nitro preset Vercel → `.vercel/output`; `db:migrate` melewati migrasi tanpa `DATABASE_URL` |
+| Hosting | Proyek Vercel terpisah `thalia-storefront` — lihat [deployment.md](deployment.md) §6 |
+
+Dua jebakan yang sudah dialami: (a) sub-aplikasi ikut memakai `postcss.config.js` milik root
+sehingga Tailwind v4-nya dijalankan sebagai v3 — `vite.config.ts` toko memaku
+`css.postcss.plugins = []`; (b) port 8080 sudah dipakai back office, jadi dev server toko memakai
+8082.

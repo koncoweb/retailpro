@@ -51,7 +51,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(3);
+    expect(rows[0].version).toBe(5);
   });
 
   it('exposes every table the application queries', async () => {
@@ -72,6 +72,8 @@ describe('tenant.sql', () => {
       'purchase_order_items',
       'purchase_orders',
       'shifts',
+      'stock_request_items',
+      'stock_requests',
       'stock_transfers',
       'suppliers',
       'tenants',
@@ -535,65 +537,64 @@ describe('seed state', () => {
     expect(Number(results[1].rows[0].q)).toBeGreaterThan(0);
   });
 
-  it('receiving a purchase order records stock and a payable together', async () => {
-    // Inventory.tsx `handlePO`: order + lines + batches + liability are one unit
-    // of work, so inventory can never grow without the finance module seeing it.
-    const tx = await client.transaction('write');
-    const poRes = await tx.execute({
-      sql: `INSERT INTO purchase_orders
-              (po_number, supplier_id, supplier_name, branch_id, warehouse_id, status, total_amount,
-               notes, expected_date, received_at, created_by)
-            VALUES (?, ?, ?, ?, ?, 'received', ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)
-            RETURNING id`,
-      args: ['PO/1', 'sup-1', 'PT Sumber', branchId, warehouseId, 240_000, null, '2026-01-31', 'user-1'],
-    });
-    const purchaseOrderId = poRes.rows[0].id as string;
-    expect(purchaseOrderId).toMatch(UUID_RE);
-
-    await tx.execute({
-      sql: `INSERT INTO purchase_order_items
-              (purchase_order_id, product_id, quantity, unit_name, conversion_factor, unit_cost, subtotal)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      args: [purchaseOrderId, productId, 2, 'Dus', 12, 120_000, 240_000],
-    });
-    await tx.execute({
-      sql: `INSERT INTO product_batches
-              (warehouse_id, product_id, batch_number, quantity_initial, quantity_current,
-               cost_price, received_at, supplier_id)
-            VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'), ?)`,
-      args: [warehouseId, productId, 'PO/1', 24, 24, 10_000, 'sup-1'],
-    });
-    await tx.execute({
-      sql: `INSERT INTO payables
-              (supplier_id, supplier_name, branch_id, purchase_order_id, amount, amount_paid,
-               due_date, status, description)
-            VALUES (?, ?, ?, ?, ?, 0, ?, 'unpaid', ?)`,
-      args: ['sup-1', 'PT Sumber', branchId, purchaseOrderId, 240_000, '2026-01-31', 'Pembelian stok PO/1'],
-    });
-    await tx.commit();
-
-    const payable = await run<{ amount: number; status: string; po_id: string }>(
-      `SELECT p.amount, p.status, po.po_number AS po_id
-         FROM payables p
-         JOIN purchase_orders po ON po.id = p.purchase_order_id
-        WHERE p.purchase_order_id = $1`,
-      [purchaseOrderId]
+  it('carries the procurement lifecycle columns the receipt writer needs', async () => {
+    // The receipt is the one place where stock, the delivery document, the
+    // received quantities and the bill move together (`src/lib/goods-receipt.ts`),
+    // so every column it writes has to exist on the shipped schema — not just on
+    // the migration that upgrades an older tenant.
+    const rows = await run<{ table_name: string; name: string }>(
+      `SELECT m.name AS table_name, p.name AS name
+         FROM sqlite_master m
+         JOIN pragma_table_info(m.name) p
+        WHERE m.type = 'table'
+          AND m.name IN ('purchase_orders', 'purchase_order_items', 'product_batches',
+                         'expenses', 'goods_receipts', 'goods_receipt_items')`
     );
-    expect(Number(payable[0].amount)).toBe(240000);
-    expect(payable[0].status).toBe('unpaid');
-    expect(payable[0].po_id).toBe('PO/1');
+    const columns = rows.map((row) => `${row.table_name}.${row.name}`);
 
-    const received = await run<{ total: number }>(
-      `SELECT COALESCE(SUM(quantity_current), 0) AS total
-         FROM product_batches WHERE batch_number = 'PO/1' AND warehouse_id = $1`,
-      [warehouseId]
+    const expected = [
+      'purchase_orders.status',
+      'purchase_orders.payment_terms_days',
+      'purchase_orders.submitted_by',
+      'purchase_orders.approved_by',
+      'purchase_orders.rejected_by',
+      'purchase_orders.rejection_reason',
+      'purchase_orders.cancelled_by',
+      'purchase_orders.cancel_reason',
+      'purchase_orders.updated_at',
+      'purchase_order_items.quantity_received',
+      'product_batches.purchase_order_id',
+      'product_batches.goods_receipt_id',
+      'expenses.purchase_order_id',
+      'expenses.goods_receipt_id',
+      'goods_receipts.grn_number',
+      'goods_receipts.purchase_order_id',
+      'goods_receipts.total_amount',
+      'goods_receipt_items.goods_receipt_id',
+      'goods_receipt_items.purchase_order_item_id',
+      'goods_receipt_items.batch_id',
+      'goods_receipt_items.expiry_date',
+    ];
+    for (const column of expected) expect(columns).toContain(column);
+  });
+
+  it('enforces one purchase order number and one GRN number per tenant', async () => {
+    await run(
+      `INSERT INTO purchase_orders (po_number, status, total_amount) VALUES ('PO-DUP-1', 'draft', 0)`
     );
-    expect(Number(received[0].total)).toBe(24);
+    await expect(
+      run(`INSERT INTO purchase_orders (po_number, status, total_amount) VALUES ('PO-DUP-1', 'draft', 0)`)
+    ).rejects.toThrow(/UNIQUE constraint failed/);
 
+    const po = await run<{ id: string }>(`SELECT id FROM purchase_orders WHERE po_number = 'PO-DUP-1'`);
+    await run(
+      `INSERT INTO goods_receipts (grn_number, purchase_order_id, warehouse_id) VALUES ('GRN-1', $1, $2)`,
+      [po[0].id, warehouseId]
+    );
     await expect(
       run(
-        `INSERT INTO purchase_orders (po_number, status, total_amount)
-         VALUES ('PO/1', 'draft', 0)`
+        `INSERT INTO goods_receipts (grn_number, purchase_order_id, warehouse_id) VALUES ('GRN-1', $1, $2)`,
+        [po[0].id, warehouseId]
       )
     ).rejects.toThrow(/UNIQUE constraint failed/);
   });
@@ -649,7 +650,16 @@ describe('seed state', () => {
     });
     // Production fetches candidates unordered and sorts them in memory with the
     // tenant policy; this fixture exercises the default (FIFO).
-    const ordered = sortBatchesForIssue(source.rows as any[], 'fifo');
+    const ordered = sortBatchesForIssue(
+      source.rows as unknown as {
+        id: string;
+        quantity_current: number;
+        cost_price: number;
+        expiry_date: string | null;
+        received_at: string;
+      }[],
+      'fifo'
+    );
     let remaining = 15;
     let leg = 0;
     for (const batch of ordered) {

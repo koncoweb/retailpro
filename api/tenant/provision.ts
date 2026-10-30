@@ -7,10 +7,10 @@
  * 409 when the account already owns a tenant, 429 when the free-tier database
  * budget (`TURSO_MAX_TENANT_DATABASES`) is exhausted.
  */
-import { getSession } from '../../server/auth-helpers';
-import { HttpError, readJsonBody, methodNotAllowed, sendJson, withErrors, type ApiRequest, type ApiResponse } from '../../server/http';
-import { ProvisionError, provisionTenant } from '../../server/provision';
-import { TursoApiError } from '../../server/turso-platform';
+import { getSession } from '../../server/auth-helpers.js';
+import { HttpError, readJsonBody, methodNotAllowed, sendJson, withErrors, type ApiRequest, type ApiResponse } from '../../server/http.js';
+import { ProvisionError, provisionTenant } from '../../server/provision.js';
+import { TursoApiError } from '../../server/turso-platform.js';
 
 interface ProvisionBody {
   companyName?: string;

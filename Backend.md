@@ -21,6 +21,7 @@ Sejak 2026-10-27 aplikasi memakai **Turso / libSQL dengan satu database per tena
 | Arsitektur teknis, alasan keputusan, alur provisioning | [docs/arsitektur.md](docs/arsitektur.md) |
 | Skema database per tabel, API, modul server, riwayat perubahan skema | [docs/backend.md](docs/backend.md) |
 | Lapisan tampilan, route, pola query | [docs/frontend.md](docs/frontend.md) |
+| Deploy produksi (dua proyek Vercel + Turso cloud), env per proyek, verifikasi | [docs/deployment.md](docs/deployment.md) |
 | Masalah yang ditemukan saat migrasi (termasuk kredensial & RLS) | [docs/kendala-solusi.md](docs/kendala-solusi.md) — lihat KS-01 |
 | Audit temuan lama (arsip, ditulis untuk rancangan Neon) | [TECHNICAL_ISSUES.md](TECHNICAL_ISSUES.md) |
 

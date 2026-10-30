@@ -5,7 +5,7 @@
  * database, list databases, and read usage. Everything is organization-scoped
  * by `TURSO_ORG_SLUG`.
  */
-import { requiredEnv, tursoApiToken, tursoOrg } from './env';
+import { requiredEnv, tursoApiToken, tursoOrg } from './env.js';
 
 const API_BASE = 'https://api.turso.tech/v1';
 
@@ -89,11 +89,15 @@ function normaliseDatabase(raw: any): TursoDatabase {
   };
 }
 
-export async function createDatabase(name: string, group: string): Promise<TursoDatabase> {
+/**
+ * @param group Target database group. Omitted means the organization's implicit
+ * `default` group, which is the only one a fresh free org is guaranteed to have.
+ */
+export async function createDatabase(name: string, group?: string): Promise<TursoDatabase> {
   const org = tursoOrg();
   const raw = await tursoFetch<unknown>(`/organizations/${org}/databases`, {
     method: 'POST',
-    body: JSON.stringify({ name, group }),
+    body: JSON.stringify(group ? { name, group } : { name }),
   });
   return normaliseDatabase(raw);
 }
@@ -133,6 +137,42 @@ export async function listDatabases(): Promise<TursoDatabase[]> {
   const raw = await tursoFetch<any>(`/organizations/${org}/databases`);
   const list = raw?.databases ?? [];
   return Array.isArray(list) ? list.map(normaliseDatabase) : [];
+}
+
+export interface TursoGroup {
+  name: string;
+  primary?: string;
+  locations?: string[];
+  archived?: boolean;
+  version?: string;
+}
+
+/**
+ * A database must be created in a group, and a fresh organization only has the
+ * automatically created location groups (e.g. `ap-southeast-2`) — there is no
+ * implicit `default`. Callers use this to fall back to a usable group instead of
+ * failing with "either seed or group must be set".
+ */
+export async function listGroups(): Promise<TursoGroup[]> {
+  const org = tursoOrg();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const raw = await tursoFetch<any>(`/organizations/${org}/groups`);
+  const list = raw?.groups ?? [];
+  return Array.isArray(list)
+    ? list.map((group: {
+        name?: string;
+        primary?: string;
+        locations?: string[];
+        archived?: boolean;
+        version?: string;
+      }) => ({
+        name: group?.name ?? '',
+        primary: group?.primary,
+        locations: group?.locations,
+        archived: group?.archived ?? false,
+        version: group?.version,
+      }))
+    : [];
 }
 
 /** Per-database usage, used by the fleet guard and the platform dashboard. */

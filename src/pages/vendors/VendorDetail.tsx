@@ -61,6 +61,13 @@ import {
   vendorStatusBadgeClass,
   vendorStatusLabel,
 } from "@/lib/vendor";
+import {
+  effectiveReceivedAmount,
+  PO_STATUS_LABEL_OF,
+  PO_STATUS_TONE,
+  normalizePurchaseOrderStatus,
+} from "@/lib/procurement";
+import { cn } from "@/lib/utils";
 import { VendorFormModal, type VendorRecord } from "@/components/vendors/VendorFormModal";
 
 interface VendorSummary {
@@ -92,6 +99,8 @@ interface PurchaseOrderRow {
   po_number: string;
   status: string;
   total_amount: number;
+  /** Sum of `goods_receipts.total_amount`: what has physically arrived. */
+  received_amount: number;
   expected_date: string | null;
   received_at: string | null;
   created_at: string;
@@ -107,6 +116,8 @@ interface ExpenseRow {
   date: string;
   due_date: string | null;
   status: string;
+  /** Set when the bill came from a goods receipt. */
+  purchase_order_id: string | null;
 }
 
 interface VendorPaymentRow {
@@ -128,11 +139,22 @@ interface ProductOption {
 
 const VENDOR_SQL = `SELECT * FROM suppliers WHERE id = $1`;
 
+/**
+ * Purchases are valued at what the receipts booked, not at what was ordered —
+ * a partially received PO must not read as fully bought. Orders received by the
+ * pre-receipt code have no `goods_receipts` row, so they fall back to the PO
+ * total.
+ */
 const VENDOR_SUMMARY_SQL = `
   SELECT
     (SELECT COUNT(*) FROM purchase_orders WHERE supplier_id = $1) AS po_count,
-    (SELECT COALESCE(SUM(total_amount), 0) FROM purchase_orders
-      WHERE supplier_id = $1 AND status = 'received') AS po_total,
+    (SELECT COALESCE(SUM(
+              CASE WHEN EXISTS (SELECT 1 FROM goods_receipts gr WHERE gr.purchase_order_id = po.id)
+                   THEN COALESCE((SELECT SUM(gr.total_amount) FROM goods_receipts gr
+                                   WHERE gr.purchase_order_id = po.id), 0)
+                   ELSE po.total_amount END), 0)
+       FROM purchase_orders po
+      WHERE po.supplier_id = $1 AND po.status IN ('received', 'partially_received')) AS po_total,
     (SELECT COALESCE(SUM(amount - amount_paid), 0) FROM expenses
       WHERE supplier_id = $1 AND amount > amount_paid) AS outstanding,
     (SELECT COALESCE(SUM(amount_paid), 0) FROM expenses WHERE supplier_id = $1) AS paid_total,
@@ -165,7 +187,9 @@ const VENDOR_ORDERS_SQL = `
   SELECT
     po.id, po.po_number, po.status, po.total_amount, po.expected_date,
     po.received_at, po.created_at,
-    (SELECT COUNT(*) FROM purchase_order_items poi WHERE poi.purchase_order_id = po.id) AS items_count
+    (SELECT COUNT(*) FROM purchase_order_items poi WHERE poi.purchase_order_id = po.id) AS items_count,
+    COALESCE((SELECT SUM(gr.total_amount) FROM goods_receipts gr
+               WHERE gr.purchase_order_id = po.id), 0) AS received_amount
   FROM purchase_orders po
   WHERE po.supplier_id = $1
   ORDER BY po.created_at DESC
@@ -173,7 +197,8 @@ const VENDOR_ORDERS_SQL = `
 `;
 
 const VENDOR_BILLS_SQL = `
-  SELECT id, description, category, amount, amount_paid, date, due_date, status
+  SELECT id, description, category, amount, amount_paid, date, due_date, status,
+         purchase_order_id
   FROM expenses
   WHERE supplier_id = $1
   ORDER BY date DESC
@@ -286,6 +311,7 @@ export default function VendorDetail() {
         (ordersRes.rows as unknown as PurchaseOrderRow[]).map((row) => ({
           ...row,
           total_amount: Number(row.total_amount ?? 0),
+          received_amount: Number(row.received_amount ?? 0),
           items_count: Number(row.items_count ?? 0),
         }))
       );
@@ -480,11 +506,13 @@ export default function VendorDetail() {
 
         await tx.query(
           `INSERT INTO vendor_payments
-             (vendor_id, expense_id, amount, payment_date, method, reference_number, notes, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+             (vendor_id, expense_id, purchase_order_id, amount, payment_date, method,
+              reference_number, notes, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             id,
             paymentTarget.id,
+            paymentTarget.purchase_order_id ?? null,
             amount,
             paymentForm.date || isoDate(),
             paymentForm.method,
@@ -835,6 +863,12 @@ export default function VendorDetail() {
 
           <TabsContent value="orders">
             <div className="rounded-xl border bg-card">
+              <div className="border-b px-4 py-3">
+                <h2 className="font-semibold">Purchase Order</h2>
+                <p className="text-sm text-muted-foreground">
+                  Klik satu baris untuk membuka dokumen dan menerima barangnya.
+                </p>
+              </div>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -842,7 +876,7 @@ export default function VendorDetail() {
                     <TableHead>Tanggal</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="text-center">Item</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="text-right">Nilai diterima</TableHead>
                     <TableHead>Ekspektasi</TableHead>
                     <TableHead>Diterima</TableHead>
                   </TableRow>
@@ -855,33 +889,53 @@ export default function VendorDetail() {
                       </TableCell>
                     </TableRow>
                   ) : (
-                    orders.map((order) => (
-                      <TableRow key={order.id}>
-                        <TableCell className="font-medium">{order.po_number}</TableCell>
-                        <TableCell className="text-sm">
-                          {order.created_at ? new Date(order.created_at).toLocaleDateString("id-ID") : "-"}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant={order.status === "received" ? "default" : "secondary"}>
-                            {order.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-center text-sm">{order.items_count}</TableCell>
-                        <TableCell className="text-right text-sm">
-                          {formatCurrency(order.total_amount)}
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {order.expected_date
-                            ? new Date(order.expected_date).toLocaleDateString("id-ID")
-                            : "-"}
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {order.received_at
-                            ? new Date(order.received_at).toLocaleDateString("id-ID")
-                            : "-"}
-                        </TableCell>
-                      </TableRow>
-                    ))
+                    orders.map((order) => {
+                      const status = normalizePurchaseOrderStatus(order.status);
+                      // A fully received order was billed in full; anything else
+                      // is worth only what the receipts booked.
+                      const receivedValue = effectiveReceivedAmount(order);
+                      return (
+                        <TableRow
+                          key={order.id}
+                          className="cursor-pointer"
+                          title="Buka detail purchase order"
+                          onClick={() =>
+                            navigate(`/backoffice/inventory/po?po=${encodeURIComponent(order.id)}`)
+                          }
+                        >
+                          <TableCell className="font-medium">{order.po_number}</TableCell>
+                          <TableCell className="text-sm">
+                            {order.created_at
+                              ? new Date(order.created_at).toLocaleDateString("id-ID")
+                              : "-"}
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={cn("border", PO_STATUS_TONE[status])}>
+                              {PO_STATUS_LABEL_OF(status)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-center text-sm">{order.items_count}</TableCell>
+                          <TableCell className="text-right text-sm">
+                            <span className="font-medium">{formatCurrency(receivedValue)}</span>
+                            {receivedValue !== order.total_amount && (
+                              <span className="block text-xs text-muted-foreground">
+                                PO {formatCurrency(order.total_amount)}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {order.expected_date
+                              ? new Date(order.expected_date).toLocaleDateString("id-ID")
+                              : "-"}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {order.received_at
+                              ? new Date(order.received_at).toLocaleDateString("id-ID")
+                              : "-"}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>

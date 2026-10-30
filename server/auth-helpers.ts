@@ -3,11 +3,11 @@
  */
 import { fromNodeHeaders } from 'better-auth/node';
 import type { IncomingHttpHeaders } from 'node:http';
-import { auth, ADMIN_ROLES, type SessionUser } from './auth';
-import type { AppRole } from './access';
-import type { TenantDatabaseRow } from './control-db';
-import { resolveTenantForUser } from './provision';
-import { HttpError } from './http';
+import { auth, ADMIN_ROLES, type SessionUser } from './auth.js';
+import type { AppRole } from './access.js';
+import type { TenantDatabaseRow } from './control-db.js';
+import { resolveTenantForUser } from './provision.js';
+import { HttpError } from './http.js';
 
 export interface AuthenticatedRequest {
   user: SessionUser;

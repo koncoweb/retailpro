@@ -8,7 +8,7 @@
  */
 import { Kysely } from 'kysely';
 import { LibsqlDialect } from '@libsql/kysely-libsql';
-import { optionalEnv, requiredEnv } from './env';
+import { optionalEnv, requiredEnv } from './env.js';
 
 /** Shape of the registry row. Business data never lives here. */
 export interface TenantDatabaseRow {

@@ -1,6 +1,14 @@
 {
   "rewrites": [
     {
+      "source": "/api/auth/(.*)",
+      "destination": "/api/auth/[...all]"
+    },
+    {
+      "source": "/api/admin/users/([^/]+)/password",
+      "destination": "/api/admin/users/[id]/password"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }
@@ -23,5 +31,10 @@
   "framework": "vite",
   "buildCommand": "npm run build",
   "devCommand": "npm run dev",
-  "installCommand": "npm install"
+  "installCommand": "npm install",
+  "functions": {
+    "api/**/*.ts": {
+      "includeFiles": "db/schema/**"
+    }
+  }
 }

@@ -7,15 +7,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createClient } from '@libsql/client';
 import { randomUUID } from 'node:crypto';
-import { getControlDb, type TenantDatabaseRow } from './control-db';
-import { BROWSER_TOKEN_TTL, maxTenantDatabases, tursoGroup } from './env';
+import { getControlDb, type TenantDatabaseRow } from './control-db.js';
+import { BROWSER_TOKEN_TTL, maxTenantDatabases, tursoGroup } from './env.js';
 import {
   browserDbUrl,
   createDatabase,
   createToken,
   deleteDatabase,
   type TursoDatabase,
-} from './turso-platform';
+} from './turso-platform.js';
 
 export class ProvisionError extends Error {
   status: number;

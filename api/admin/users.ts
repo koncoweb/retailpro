@@ -11,10 +11,10 @@
  * already holds.
  */
 import { randomBytes } from 'node:crypto';
-import { auth } from '../../server/auth';
-import type { AppRole } from '../../server/access';
-import { requireAdminSession } from '../../server/auth-helpers';
-import { getControlDb } from '../../server/control-db';
+import { auth } from '../../server/auth.js';
+import type { AppRole } from '../../server/access.js';
+import { requireAdminSession } from '../../server/auth-helpers.js';
+import { getControlDb } from '../../server/control-db.js';
 import {
   HttpError,
   methodNotAllowed,
@@ -23,7 +23,7 @@ import {
   withErrors,
   type ApiRequest,
   type ApiResponse,
-} from '../../server/http';
+} from '../../server/http.js';
 
 interface CreateUserBody {
   email?: string;

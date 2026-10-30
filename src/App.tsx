@@ -21,6 +21,7 @@ import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
 import BranchDashboard from "./pages/branches/Dashboard";
+import BranchOrders from "./pages/BranchOrders";
 import BranchTransfers from "./pages/BranchTransfers";
 import { RoleBasedRoute } from "./components/auth/RoleBasedRoute";
 import { TenantProvider, RequireTenant } from "./contexts/TenantContext";
@@ -52,6 +53,7 @@ const ALL_ROLES: UserRole[] = [
   "store_manager",
   "cashier",
   "warehouse",
+  "purchasing",
   "staff",
   "admin",
 ];
@@ -67,6 +69,24 @@ const MANAGERS: UserRole[] = [
 const FRONT_OFFICE: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "store_manager", "cashier", "admin"];
 
 const BACK_OFFICE: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "store_manager", "admin"];
+
+/**
+ * Stock documents only: the manager roles plus warehouse staff.
+ *
+ * The `warehouse` role runs the gudang side of a replenishment order (approve,
+ * ship) and counts stock, so it needs a narrow slice of the back office and
+ * nothing else — no finance, no HR, no settings. Used only by the stock routes
+ * below; `BACK_OFFICE` stays untouched so no other screen widens with it.
+ */
+const STOCK_DOCS: UserRole[] = [...MANAGERS, "warehouse"];
+
+/**
+ * Procurement screens: the managers, the gudang that receives the delivery,
+ * and the purchasing desk that raises the order. Approval itself is gated by
+ * the `approve_po` permission, not by this list — a store manager may open the
+ * screen and still must not sign off their own order.
+ */
+const PROCUREMENT: UserRole[] = [...MANAGERS, "warehouse", "purchasing"];
 
 const HR_ONLY: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "admin"];
 
@@ -107,20 +127,24 @@ const App = () => (
 
               {/* Branch Management Routes */}
               <Route path="/backoffice/branches" element={guarded(<Branches />, MANAGERS)} />
-              <Route path="/backoffice/warehouses" element={guarded(<Warehouses />, MANAGERS)} />
+              <Route path="/backoffice/warehouses" element={guarded(<Warehouses />, STOCK_DOCS)} />
               <Route
                 path="/backoffice/branches/dashboard"
                 element={guarded(<BranchDashboard />, MANAGERS)}
               />
               <Route
                 path="/backoffice/branches/transfer"
-                element={guarded(<BranchTransfers />, MANAGERS)}
+                element={guarded(<BranchTransfers />, STOCK_DOCS)}
+              />
+              <Route
+                path="/backoffice/branches/orders"
+                element={guarded(<BranchOrders />, STOCK_DOCS)}
               />
 
-              <Route path="/backoffice/inventory/products" element={guarded(<Inventory />, BACK_OFFICE)} />
+              <Route path="/backoffice/inventory/products" element={guarded(<Inventory />, STOCK_DOCS)} />
               <Route path="/backoffice/inventory/stock-in" element={guarded(<Inventory />, BACK_OFFICE)} />
-              <Route path="/backoffice/inventory/opname" element={guarded(<Inventory />, BACK_OFFICE)} />
-              <Route path="/backoffice/inventory/po" element={guarded(<Inventory />, BACK_OFFICE)} />
+              <Route path="/backoffice/inventory/opname" element={guarded(<Inventory />, STOCK_DOCS)} />
+              <Route path="/backoffice/inventory/po" element={guarded(<Inventory />, PROCUREMENT)} />
               <Route path="/backoffice/finance/journal" element={guarded(<Journal />, BACK_OFFICE)} />
               <Route path="/backoffice/finance/ap-ar" element={guarded(<ApAr />, BACK_OFFICE)} />
               <Route path="/backoffice/finance/cashflow" element={guarded(<Cashflow />, BACK_OFFICE)} />

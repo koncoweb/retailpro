@@ -5,6 +5,8 @@ export type UserRole =
   | 'store_manager'
   | 'cashier'
   | 'warehouse'
+  /** Sits at the purchasing desk: raises orders, cannot approve them. */
+  | 'purchasing'
   | 'staff'
   | 'admin';
 

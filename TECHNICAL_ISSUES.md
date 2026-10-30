@@ -2,6 +2,14 @@
 
 **Feature gaps, technical and architectural risks**
 
+> **ARSIP (2026-10-27).** Register ini ditulis terhadap desain **Neon Postgres +
+> shared schema/RLS** yang sudah ditinggalkan. Sebagian temuannya sudah tidak
+> berlaku (mis. kredensial database di bundle, `tenant_id`/RLS), dan sebagian
+> masih relevan namun sudah dipindahkan ke [docs/kendala-solusi.md](docs/kendala-solusi.md)
+> atau [docs/fitur-platform.md](docs/fitur-platform.md). Jangan pakai dokumen ini
+> sebagai sumber kebenaran: kode sekarang memakai Turso libSQL dengan satu
+> database per tenant. Dipertahankan hanya sebagai jejak audit.
+
 | | |
 |---|---|
 | App | RetailPro — multi-tenant, multi-branch retail ERP/POS (Indonesian market, IDR) |

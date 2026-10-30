@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-platform.md` |
-| Terakhir diperbarui | **2026-10-27** |
+| Terakhir diperbarui | **2026-10-28** |
 | Cakupan | Kemampuan operator platform: menyediakan, mengelola, dan mengawasi tenant — **bukan** data bisnis tenant |
-| Status ringkas | **Fondasi tersedia (API + CLI + database), konsol UI belum ada** |
+| Status ringkas | **Fondasi tersedia (API + CLI + database cloud + dua proyek Vercel ter-deploy), konsol UI belum ada** |
 
 ## Cara memakai log ini
 
@@ -15,6 +15,17 @@ baris = satu kemampuan operator yang berubah, dengan tanggal dan jam.
 ---
 
 ## 1. Log perubahan kemampuan platform
+
+### 2026-10-28 — data plane cloud & rilis produksi (belum di-commit)
+
+| Waktu | Ref | Area | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-10-28 | — (working tree) | Data plane | Satu perintah `npm run demo:cloud` membuat control DB + DB tenant di Turso cloud, menerapkan `control.sql`, mendaftarkan pemilik, mengisi data Thalia, lalu mendaftarkan `tenant_databases` — cukup `--write-env` untuk menulis kredensial ke `.env` tanpa mencetaknya | Baru |
+| 2026-10-28 | — (working tree) | Grup database | `createDatabase(name, group?)` menerima grup opsional dan `listGroups()` ditambahkan. Organisasi baru hanya punya grup lokasi otomatis (`ap-southeast-2`); nama grup yang tidak ada membuat Turso menolak pembuatan database | Baru |
+| 2026-10-28 | — (working tree) | Token | Kontrol token DB memakai masa berlaku `never` lalu `30d` sebagai cadangan, sehingga fungsi serverless tidak kehilangan akses setelah deploy | Baru |
+| 2026-10-28 | — (working tree) | Rilis | Dua proyek Vercel: `retailpro-thalia` (back office + `/api/*`) dan `thalia-storefront` (toko), keduanya membaca Turso cloud. Runbook: `docs/deployment.md` | Baru |
+| 2026-10-28 | — (working tree) | Observability | `GET /api/health` melaporkan `tursoOrg`, `group`, dan `controlDbConfigured`; dipakai sebagai smoke check produksi | Ubah |
+| 2026-10-28 | — (working tree) | Verifikasi | Login produksi, bootstrap token tenant, dashboard, dan katalog toko diverifikasi di domain publik (bukan hanya di lokal) | Baru |
 
 ### 2026-10-27 — control plane & provisioning (belum di-commit)
 
@@ -59,6 +70,10 @@ baris = satu kemampuan operator yang berubah, dengan tanggal dan jam.
 | Menerapkan perubahan skema ke semua tenant | `npm run schema:apply-all` (dry-run bawaan; `--apply`, opsional `--only <slug\|db_name>`; migrasi tertunda → `tenant.sql`, database baru cukup `tenant.sql`) | `scripts/apply-schema-all.mjs` |
 | Memverifikasi SQL aplikasi cocok dengan skema | `npm run audit:sql` | `scripts/audit-sql.mjs` |
 | Mengisi tenant dengan data contoh | `npm run demo:tenant -- --tenant <slug> --reset` | `scripts/seed-demo-tenant.ts` |
+| Menyiapkan data plane cloud (control + tenant DB + seed) | `npm run demo:cloud`, tambahkan `-- --write-env` agar `.env` ikut ditulis | `scripts/setup-cloud-demo.ts` |
+| Melihat grup Turso yang tersedia sebelum provisioning | `GET /v1/organizations/{org}/groups` lewat `listGroups()` | `server/turso-platform.ts` |
+| Merilis ke produksi | `vercel --prod` dari root (back office) dan dari `tokoonline/` (toko); env diatur per proyek di dashboard | `vercel.json`, `.vercelignore`, [deployment.md](deployment.md) |
+| Merotasi token / mengganti env produksi | `vercel env rm` + `vercel env add`, lalu deploy ulang | Vercel CLI |
 | Mengelola akun karyawan tenant | `POST /api/admin/users`, `POST /api/admin/users/[id]/password` (sesi admin wajib) | `api/admin/*` |
 | Memantau kesehatan layanan | `GET /api/health` | `api/health.ts` |
 | Masuk ke aplikasi sebagai `platform_owner` | Login biasa; semua route menerima peran ini | `src/App.tsx` (`ALL_ROLES`) |
@@ -78,7 +93,9 @@ baris = satu kemampuan operator yang berubah, dengan tanggal dan jam.
 | 7 | Belum ada **hapus/restore database** dari aplikasi | Salah buat tenant menumpuk di kuota (99 DB gratis) | P1 |
 | 8 | Belum ada **pemakaian sumber daya** per tenant (ukuran DB, jumlah transaksi) | Sulit menentukan harga dan mendeteksi tenant besar | P1 |
 | 9 | Belum ada **undangan email** untuk pemilik/karyawan | Password harus disampaikan manual | P2 |
-| 10 | Belum ada **CI** yang menjalankan test/typecheck/audit SQL sebelum deploy | Regresi skema bisa lolos | P0 |
+| 10 | Belum ada **CI** yang menjalankan test/typecheck/audit SQL sebelum deploy | Regresi skema bisa lolos ke produksi | P0 |
+| 11 | Belum ada **staging** dan belum ada preview environment yang dipakai rutin | Setiap percobaan langsung menyentuh produksi dan database cloud yang sama | P1 |
+| 12 | Belum ada **monitoring/alerting** (uptime, error rate, pemakaian kuota Turso) | Masalah baru diketahui saat pengguna melapor; `GET /api/health` harus dipanggil manual | P1 |
 
 Catatan penting soal kuota: paket gratis Turso memberi 100 database per organisasi. Dengan
 `schema_version` dan `apply-schema-all`, satu organisasi bisa melayani puluhan tenant tanpa
@@ -94,4 +111,7 @@ perubahan kode — tetapi **penghapusan tenant** (gap #7) wajib ada sebelum kuot
    menyembunyikan menu yang tidak termasuk paket.
 3. **Audit operator**: tabel `platform_audit` di control DB (aktor, tenant, aksi, waktu, IP).
 4. **Lifecycle database**: hapus/restore tenant, plus peringatan bila kuota > 80%.
-5. **CI**: `npm run typecheck && npm test && npm run audit:sql && npm run build` pada setiap PR.
+5. **CI**: `npm run typecheck && npm test && npm run audit:sql && npm run build` di root, plus
+   `cd tokoonline && npm run typecheck && npm run build`, pada setiap PR.
+6. **Staging + observability**: preview deployment yang memakai database Turso terpisah, ditambah
+   uptime check pada `/api/health` dan peringatan pemakaian kuota.

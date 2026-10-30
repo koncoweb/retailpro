@@ -21,21 +21,25 @@ interface Route {
 }
 
 const routes: Route[] = [
-  { pattern: /^\/api\/health\/?$/, load: () => import('../api/health') },
+  { pattern: /^\/api\/health\/?$/, load: () => import('../api/health.js') },
+  {
+    pattern: /^\/api\/storefront\/catalog\/?$/,
+    load: () => import('../api/storefront/catalog.js'),
+  },
   {
     pattern: /^\/api\/auth(?:\/.*)?$/,
-    load: () => import('../api/auth/[...all]'),
+    load: () => import('../api/auth/[...all].js'),
   },
-  { pattern: /^\/api\/tenant\/bootstrap\/?$/, load: () => import('../api/tenant/bootstrap') },
-  { pattern: /^\/api\/tenant\/token\/?$/, load: () => import('../api/tenant/token') },
+  { pattern: /^\/api\/tenant\/bootstrap\/?$/, load: () => import('../api/tenant/bootstrap.js') },
+  { pattern: /^\/api\/tenant\/token\/?$/, load: () => import('../api/tenant/token.js') },
   {
     pattern: /^\/api\/tenant\/provision\/?$/,
-    load: () => import('../api/tenant/provision'),
+    load: () => import('../api/tenant/provision.js'),
   },
-  { pattern: /^\/api\/admin\/users\/?$/, load: () => import('../api/admin/users') },
+  { pattern: /^\/api\/admin\/users\/?$/, load: () => import('../api/admin/users.js') },
   {
     pattern: /^\/api\/admin\/users\/([^/]+)\/password\/?$/,
-    load: () => import('../api/admin/users/[id]/password'),
+    load: () => import('../api/admin/users/[id]/password.js'),
   },
 ];
 
@@ -70,5 +74,7 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`[dev-api] listening on http://localhost:${PORT}`);
-  console.log('[dev-api] routes: /api/health, /api/auth/*, /api/tenant/*, /api/admin/users*');
+  console.log(
+    '[dev-api] routes: /api/health, /api/auth/*, /api/tenant/*, /api/admin/users*, /api/storefront/catalog'
+  );
 });

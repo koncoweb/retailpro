@@ -29,7 +29,7 @@ import {
 } from "@/components/ui/select";
 import { Plus, Warehouse as WarehouseIcon, Package, Building2, Edit, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { query, runTransaction } from "@/lib/db";
+import { batchQuery, query, runTransaction } from "@/lib/db";
 
 type WarehouseType = "central" | "regional" | "store";
 
@@ -106,10 +106,12 @@ export default function Warehouses() {
   const fetchData = async () => {
     try {
       setIsLoading(true);
-      const [warehouseRes, branchRes, mappingRes] = await Promise.all([
-        query(WAREHOUSE_LIST_SQL),
-        query(`SELECT id, name FROM branches ORDER BY is_headquarters DESC, name ASC`),
-        query(`SELECT warehouse_id, branch_id FROM branch_warehouses`),
+      // One round-trip instead of three: the sidebar opens this screen from
+      // anywhere, so every trip is time the panel sits empty.
+      const [warehouseRes, branchRes, mappingRes] = await batchQuery([
+        { sql: WAREHOUSE_LIST_SQL },
+        { sql: `SELECT id, name FROM branches ORDER BY is_headquarters DESC, name ASC` },
+        { sql: `SELECT warehouse_id, branch_id FROM branch_warehouses` },
       ]);
       setWarehouses(warehouseRes.rows as unknown as WarehouseRow[]);
       setBranches(branchRes.rows as unknown as BranchOption[]);
@@ -377,6 +379,14 @@ export default function Warehouses() {
                               {Number(warehouse.is_default) === 1 && (
                                 <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-primary/40 text-primary">
                                   Utama
+                                </Badge>
+                              )}
+                              {/* A store-type location is the shop's own shelf:
+                                  goods reach it from the gudang, and the till
+                                  sells from it. */}
+                              {warehouse.type === "store" && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-info/40 text-info">
+                                  Rak Toko
                                 </Badge>
                               )}
                             </div>

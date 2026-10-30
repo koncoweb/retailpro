@@ -21,7 +21,8 @@
     "schema:apply-all": "node scripts/apply-schema-all.mjs",
     "audit:sql": "node scripts/audit-sql.mjs",
     "demo:tenant": "tsx scripts/seed-demo-tenant.ts",
-    "demo:local": "tsx scripts/setup-local-demo.ts"
+    "demo:local": "tsx scripts/setup-local-demo.ts",
+    "demo:cloud": "tsx scripts/setup-cloud-demo.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

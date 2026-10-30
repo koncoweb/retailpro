@@ -6,11 +6,11 @@
  * dashboard always has activity in the current month and week.
  *
  * Statement order mirrors how a shop's data actually arrives: profile → shelves
- * → staff → stock batches → till sessions → sales → transfers → purchasing →
- * costs → attendance → audit trail.
+ * → staff → stock batches → till sessions → sales → purchasing → replenishment
+ * orders → costs → attendance → audit trail.
  */
 import { randomUUID } from 'node:crypto';
-import { THALIA, THALIA_NOTES, type DemoProduct } from './catalog';
+import { THALIA, THALIA_NOTES, type DemoProduct } from './catalog.js';
 
 export interface DemoStatement {
   sql: string;
@@ -21,13 +21,12 @@ export interface ThaliaBranchRow {
   id: string;
   name: string;
   code: string;
+  type: 'store' | 'online' | 'hybrid';
   address: string;
   phone: string;
   target: number;
   /** Cashier who owns the till sessions at this branch. */
   cashierId: string;
-  /** Stockroom the till at this branch sells from. */
-  warehouseId: string;
 }
 
 export interface ThaliaStaffRow {
@@ -92,8 +91,13 @@ export interface ThaliaIdentity {
   ownerId: string;
   owner: { name: string; email: string };
   branches: ThaliaBranchRow[];
-  /** Company-wide warehouse mapped to every branch as a secondary source. */
+  /** Company-wide gudang; every branch order is picked from here. */
   centralWarehouseId: string;
+  /**
+   * The shop's own selling shelf, one entry per branch index (`null` for the
+   * online channel, which has no shelf and is served from the gudang).
+   */
+  shelfWarehouseIds: (string | null)[];
   staff: ThaliaStaffRow[];
   suppliers: ThaliaSupplierRow[];
   customers: ThaliaCustomerRow[];
@@ -139,6 +143,12 @@ export function createThaliaIdentity(
     salary: member.salary,
   }));
 
+  const centralWarehouseId = randomUUID();
+  // A walk-in shop sells off its own shelf; the online channel keeps none.
+  const shelfWarehouseIds: (string | null)[] = THALIA.branches.map((branch) =>
+    branch.shelf ? randomUUID() : null
+  );
+
   const branches: ThaliaBranchRow[] = THALIA.branches.map((branch, index) => {
     // The till at each branch belongs to its own cashier.
     const cashier = staff.find(
@@ -148,11 +158,11 @@ export function createThaliaIdentity(
       id: randomUUID(),
       name: branch.name,
       code: branch.code,
+      type: branch.type,
       address: branch.address,
       phone: branch.phone,
       target: branch.target,
       cashierId: cashier?.id ?? staff[0].id,
-      warehouseId: randomUUID(),
     };
   });
 
@@ -166,7 +176,8 @@ export function createThaliaIdentity(
     ownerId: overrides.ownerId ?? randomUUID(),
     owner: { ...THALIA.owner },
     branches,
-    centralWarehouseId: randomUUID(),
+    centralWarehouseId,
+    shelfWarehouseIds,
     staff,
     suppliers: THALIA.suppliers.map((supplier) => ({ id: randomUUID(), ...supplier })),
     customers: THALIA.customers.map((customer) => ({ id: randomUUID(), ...customer })),
@@ -225,7 +236,6 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   const addDays = (date: Date, days: number) => new Date(date.getTime() + days * DAY_MS);
   const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
   const stamp = (date: Date) => date.toISOString();
-  const year = now.getUTCFullYear();
 
   const productBySku = new Map(identity.products.map((product) => [product.def.sku, product]));
 
@@ -244,6 +254,21 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     identity.tenantId,
   ]);
 
+  // The starter warehouse from `renderSeed` is a single-branch store room.
+  // Thalia keeps one central gudang instead, so the demo replaces that row and
+  // every mapping rather than ending up with a phantom second location.
+  add(`DELETE FROM branch_warehouses`);
+  add(`DELETE FROM warehouses`);
+
+  // The one gudang, behind Toko Pusat on Jl. Arif Rahman Hakim. Written before
+  // the branches because every order and every web shipment starts here.
+  add(
+    `INSERT OR REPLACE INTO warehouses
+       (id, name, code, type, branch_id, address, status, is_default)
+     VALUES (?, ?, 'GD-PST', 'central', NULL, ?, 'active', 1)`,
+    [identity.centralWarehouseId, THALIA.centralWarehouse.name, THALIA.centralWarehouse.address]
+  );
+
   identity.branches.forEach((branch, branchIndex) => {
     add(
       `INSERT OR REPLACE INTO branches
@@ -255,35 +280,40 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
         branch.code,
         branch.address,
         branch.phone,
-        `toko.${branch.code.toLowerCase()}@tokobahankue.id`,
+        `toko.${branch.code.toLowerCase()}@tokobahankue.com`,
         branch.target,
-        // The first store doubles as the head office; the second is online-only
-        // in spirit but keeps a physical backroom, i.e. a hybrid channel.
-        branchIndex === 0 ? 'hybrid' : 'store',
+        // The central store doubles as the head office.
+        branch.type,
         branchIndex === 0 ? 1 : 0,
       ]
     );
 
+    const shelfId = identity.shelfWarehouseIds[branchIndex];
+    const shelf = THALIA.branches[branchIndex].shelf;
+
+    if (!shelfId || !shelf) {
+      // Online: no shelf, so the gudang is the only place its orders come from.
+      add(
+        `INSERT OR REPLACE INTO branch_warehouses (branch_id, warehouse_id, is_default, priority)
+         VALUES (?, ?, 1, 1)`,
+        [branch.id, identity.centralWarehouseId]
+      );
+      return;
+    }
+
+    // A walk-in shop sells from its own rak; the gudang stays mapped behind it
+    // as the fallback stockroom (priority 2), which is also where orders are
+    // picked from.
     add(
       `INSERT OR REPLACE INTO warehouses
          (id, name, code, type, branch_id, address, status, is_default)
-       VALUES (?, ?, ?, 'store', ?, ?, 'active', ?)`,
-      [
-        branch.warehouseId,
-        `${branch.name} - Gudang`,
-        `${branch.code}-GD`,
-        branch.id,
-        branch.address,
-        branchIndex === 0 ? 1 : 0,
-      ]
+       VALUES (?, ?, ?, 'store', ?, ?, 'active', 0)`,
+      [shelfId, shelf.name, shelf.code, branch.id, branch.address]
     );
-
-    // The branch sells from its own backroom first, then falls back to the
-    // company warehouse — the many-branches-one-warehouse shape.
     add(
       `INSERT OR REPLACE INTO branch_warehouses (branch_id, warehouse_id, is_default, priority)
        VALUES (?, ?, 1, 1)`,
-      [branch.id, branch.warehouseId]
+      [branch.id, shelfId]
     );
     add(
       `INSERT OR REPLACE INTO branch_warehouses (branch_id, warehouse_id, is_default, priority)
@@ -291,14 +321,6 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       [branch.id, identity.centralWarehouseId]
     );
   });
-
-  // Shared distribution centre: stock here is available to every branch.
-  add(
-    `INSERT OR REPLACE INTO warehouses
-       (id, name, code, type, branch_id, address, status, is_default)
-     VALUES (?, 'Gudang Pusat Cimahi', 'GD-PST', 'central', NULL, ?, 'active', 0)`,
-    [identity.centralWarehouseId, THALIA.address]
-  );
 
   // ---------------------------------------------------------------------
   // People
@@ -406,53 +428,64 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   });
 
   // ---------------------------------------------------------------------
-  // Stock on hand, two receipts per product per branch so FIFO has a choice.
+  // Stock on hand: two receipts per product per location so FIFO has a choice.
   // `quantity_current` is what is left today; the older receipt was bigger.
+  // Keyed by location, because the till at each shop sells its own shelf while
+  // web orders are picked at the gudang.
   // ---------------------------------------------------------------------
-  const batchesByProductBranch = new Map<string, string[]>();
+  const batchesByProduct = new Map<string, string[]>();
   let batchSeq = 0;
+  const locationKey = (warehouseId: string, productId: string) =>
+    `${warehouseId}|${productId}`;
 
-  identity.products.forEach((product) => {
+  const addBatches = (warehouseId: string, product: ThaliaProductRow, total: number) => {
+    if (total <= 0) return;
     const shelfLife = product.def.shelfLifeDays;
     const olderAge = Math.max(4, Math.min(55, Math.floor((shelfLife ?? 120) * 0.35)));
     const newerAge = Math.max(2, Math.floor(olderAge * 0.25));
 
-    identity.branches.forEach((branch, branchIndex) => {
-      const current = product.def.stock[branchIndex] ?? 0;
-      const olderQty = Math.round(current * 0.6);
-      const legs = [
-        { quantity: olderQty, ageDays: olderAge, cost: Math.round(product.def.cost * 0.96), multiplier: 1.3 },
-        { quantity: current - olderQty, ageDays: newerAge, cost: product.def.cost, multiplier: 1.1 },
-      ];
-      const batchIds: string[] = [];
+    const olderQty = Math.round(total * 0.6);
+    const legs = [
+      { quantity: olderQty, ageDays: olderAge, cost: Math.round(product.def.cost * 0.96), multiplier: 1.3 },
+      { quantity: total - olderQty, ageDays: newerAge, cost: product.def.cost, multiplier: 1.1 },
+    ];
+    const batchIds: string[] = [];
 
-      legs.forEach((leg) => {
-        if (leg.quantity <= 0) return;
-        const batchId = randomUUID();
-        const receivedAt = new Date(startOfDay(leg.ageDays).getTime() + 3 * HOUR_MS);
-        batchIds.push(batchId);
-        batchSeq += 1;
-        add(
-          `INSERT INTO product_batches
-             (id, warehouse_id, product_id, batch_number, expiry_date,
-              quantity_initial, quantity_current, cost_price, received_at, supplier_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            batchId,
-            branch.warehouseId,
-            product.id,
-            `GRN-${dateOnly(receivedAt).replace(/-/g, '')}-${String(batchSeq).padStart(3, '0')}`,
-            shelfLife === null ? null : dateOnly(addDays(receivedAt, shelfLife)),
-            Math.ceil(leg.quantity * leg.multiplier),
-            leg.quantity,
-            leg.cost,
-            stamp(receivedAt),
-            identity.suppliers[product.def.supplier]?.id ?? null,
-          ]
-        );
-      });
+    legs.forEach((leg) => {
+      if (leg.quantity <= 0) return;
+      const batchId = randomUUID();
+      const receivedAt = new Date(startOfDay(leg.ageDays).getTime() + 3 * HOUR_MS);
+      batchIds.push(batchId);
+      batchSeq += 1;
+      add(
+        `INSERT INTO product_batches
+           (id, warehouse_id, product_id, batch_number, expiry_date,
+            quantity_initial, quantity_current, cost_price, received_at, supplier_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          batchId,
+          warehouseId,
+          product.id,
+          `GRN-${dateOnly(receivedAt).replace(/-/g, '')}-${String(batchSeq).padStart(3, '0')}`,
+          shelfLife === null ? null : dateOnly(addDays(receivedAt, shelfLife)),
+          Math.ceil(leg.quantity * leg.multiplier),
+          leg.quantity,
+          leg.cost,
+          stamp(receivedAt),
+          identity.suppliers[product.def.supplier]?.id ?? null,
+        ]
+      );
+    });
 
-      batchesByProductBranch.set(`${product.id}|${branchIndex}`, batchIds);
+    batchesByProduct.set(locationKey(warehouseId, product.id), batchIds);
+  };
+
+  identity.products.forEach((product) => {
+    addBatches(identity.centralWarehouseId, product, product.def.stock.central);
+    identity.shelfWarehouseIds.forEach((shelfId, branchIndex) => {
+      if (!shelfId) return;
+      // `shelves` is authored in branch order, so the index lines up.
+      addBatches(shelfId, product, product.def.stock.shelves[branchIndex] ?? 0);
     });
   });
 
@@ -477,8 +510,12 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     notes?: string | null;
   }) => {
     const transactionId = randomUUID();
+    // A walk-in shop sells from its own shelf; the online channel has none, so
+    // its orders are picked at the gudang.
+    const sellingLocationId =
+      identity.shelfWarehouseIds[options.branchIndex] ?? identity.centralWarehouseId;
     const items = options.lines.map((line) => {
-      const batchIds = batchesByProductBranch.get(`${line.product.id}|${options.branchIndex}`);
+      const batchIds = batchesByProduct.get(locationKey(sellingLocationId, line.product.id));
       return {
         id: randomUUID(),
         productId: line.product.id,
@@ -550,7 +587,7 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     return total;
   };
 
-  /** A believable bakery basket: 1–4 lines, mostly base units, now and then a sack. */
+  /** A believable bakery basket: 1â€“4 lines, mostly base units, now and then a sack. */
   const buildBasket = () => {
     const lines: { product: ThaliaProductRow; unit: ThaliaUnitRow; quantity: number }[] = [];
     const wanted = int(1, 4);
@@ -726,241 +763,662 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   });
 
   // ---------------------------------------------------------------------
-  // Inter-branch transfers: two settled, one still waiting for approval
+  // Purchasing: one order in every reachable state, plus the deliveries that
+  // moved money. Shelf stock was authored above, so a receipt here writes the
+  // document, the received quantities and the bill — it does not add a second
+  // copy of the stock, which would double every on-hand figure.
+  //
+  // `quantity_received` is what the PO list, the detail sheet and the receipt
+  // dialog read, so it is derived from the deliveries written beside it.
   // ---------------------------------------------------------------------
-  const transferPlan = [
-    {
-      reference: `TRF/${year}/0001`,
-      daysAgo: 12,
-      status: 'completed',
-      notes: 'Restock tepung dan gula untuk Antapani',
-      items: [
-        { sku: 'TPG-001', quantity: 25, unit: 'kg' },
-        { sku: 'GLA-001', quantity: 20, unit: 'kg' },
-      ],
-    },
-    {
-      reference: `TRF/${year}/0002`,
-      daysAgo: 5,
-      status: 'completed',
-      notes: 'Kirim box kue pesanan Bu Rina',
-      items: [{ sku: 'KMS-004', quantity: 100, unit: 'pcs' }],
-    },
-    {
-      reference: `TRF/${year}/0003`,
-      daysAgo: 1,
-      status: 'pending',
-      notes: 'Couverture dan vanili untuk pesanan roti Harum',
-      items: [
-        { sku: 'CHC-003', quantity: 4, unit: 'pcs' },
-        { sku: 'PGR-003', quantity: 6, unit: 'pcs' },
-      ],
-    },
-  ] as const;
+  interface PurchaseDelivery {
+    /** Days after the order was raised. */
+    daysAfter: number;
+    lines: { sku: string; quantity: number }[];
+    /** The vendor's own delivery-note number. */
+    document?: string;
+  }
+  interface PurchaseDraft {
+    supplier: number;
+    branchIndex: number;
+    status:
+      | 'draft'
+      | 'submitted'
+      | 'approved'
+      | 'partially_received'
+      | 'received'
+      | 'rejected'
+      | 'cancelled';
+    daysAgo: number;
+    expectedInDays?: number;
+    notes: string;
+    /** Shown on the detail sheet for a rejected or cancelled order. */
+    reason?: string;
+    lines: { sku: string; quantity: number }[];
+    deliveries?: PurchaseDelivery[];
+    /** Settle half of the first bill, so the vendor statement has a payment. */
+    partiallyPaid?: boolean;
+  }
 
-  transferPlan.forEach((transfer) => {
-    const transferId = randomUUID();
-    const createdAt = new Date(startOfDay(transfer.daysAgo).getTime() + 2 * HOUR_MS);
-    const settled = transfer.status === 'completed';
-    add(
-      `INSERT INTO stock_transfers
-         (id, reference_number, source_warehouse_id, destination_warehouse_id, status, notes,
-          requested_by, approved_by, received_by, sent_at, received_at, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        transferId,
-        transfer.reference,
-        identity.branches[0].warehouseId,
-        identity.branches[1].warehouseId,
-        transfer.status,
-        transfer.notes,
-        identity.staff[0].id,
-        settled ? identity.ownerId : null,
-        settled ? identity.staff[1].id : null,
-        settled ? stamp(new Date(createdAt.getTime() + 2 * HOUR_MS)) : null,
-        settled ? stamp(new Date(createdAt.getTime() + 5 * HOUR_MS)) : null,
-        stamp(createdAt),
-      ]
-    );
-
-    transfer.items.forEach((item) => {
-      const product = productBySku.get(item.sku);
-      if (!product) return;
-      add(
-        `INSERT INTO transfer_items
-           (id, transfer_id, product_id, source_batch_id, quantity_sent,
-            quantity_received, unit_name, conversion_factor, cost_price, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
-        [
-          randomUUID(),
-          transferId,
-          product.id,
-          settled ? batchesByProductBranch.get(`${product.id}|0`)?.[0] ?? null : null,
-          item.quantity,
-          settled ? item.quantity : null,
-          item.unit,
-          product.def.cost,
-          item.sku === 'CHC-003' ? 'Kirim utuh, jangan dilelehkan' : null,
-        ]
-      );
-    });
-  });
-
-  // ---------------------------------------------------------------------
-  // Purchasing: two receipts that created today's stock, one in transit, one
-  // still a draft. Receipts book a payable into `expenses`, which is what the
-  // Hutang (AP), Cashflow and Journal screens all read.
-  // ---------------------------------------------------------------------
-  const purchasePlan = [
+  const purchasePlan: PurchaseDraft[] = [
     {
-      number: `PO/${year}/0012`,
       supplier: 1,
       branchIndex: 0,
       status: 'received',
       daysAgo: 12,
       notes: 'Restock tepung bulanan',
-      items: [
+      lines: [
         { sku: 'TPG-001', quantity: 250 },
         { sku: 'TPG-002', quantity: 300 },
       ],
+      deliveries: [
+        {
+          daysAfter: 2,
+          lines: [
+            { sku: 'TPG-001', quantity: 250 },
+            { sku: 'TPG-002', quantity: 300 },
+          ],
+        },
+      ],
     },
     {
-      number: `PO/${year}/0013`,
       supplier: 0,
       branchIndex: 0,
       status: 'received',
       daysAgo: 20,
       notes: 'Cokelat dan pengembang',
-      items: [
+      lines: [
         { sku: 'CHC-001', quantity: 40 },
         { sku: 'CHC-003', quantity: 24 },
         { sku: 'PGR-001', quantity: 120 },
       ],
+      deliveries: [
+        {
+          daysAfter: 3,
+          lines: [
+            { sku: 'CHC-001', quantity: 40 },
+            { sku: 'CHC-003', quantity: 24 },
+            { sku: 'PGR-001', quantity: 120 },
+          ],
+        },
+      ],
+      partiallyPaid: true,
     },
     {
-      number: `PO/${year}/0014`,
+      // The interesting one: half the order arrived, so the list has to say
+      // "Diterima Sebagian" and the receipt dialog still offers the rest.
       supplier: 3,
       branchIndex: 0,
-      status: 'ordered',
-      daysAgo: 2,
-      expectedInDays: 4,
-      notes: 'Susu dan whipping cream',
-      items: [
+      status: 'partially_received',
+      daysAgo: 6,
+      notes: 'Susu dan whipping cream, dikirim dua tahap',
+      lines: [
         { sku: 'TLR-004', quantity: 36 },
         { sku: 'TLR-002', quantity: 24 },
       ],
+      deliveries: [
+        {
+          daysAfter: 2,
+          document: 'SJ-DPR-8841',
+          lines: [
+            { sku: 'TLR-004', quantity: 20 },
+            { sku: 'TLR-002', quantity: 24 },
+          ],
+        },
+      ],
     },
     {
-      number: `PO/${year}/0015`,
+      supplier: 3,
+      branchIndex: 0,
+      status: 'approved',
+      daysAgo: 2,
+      expectedInDays: 4,
+      notes: 'Susu kental manis untuk produksi bulan depan',
+      lines: [{ sku: 'TLR-003', quantity: 30 }],
+    },
+    {
+      supplier: 4,
+      branchIndex: 1,
+      status: 'submitted',
+      daysAgo: 1,
+      expectedInDays: 3,
+      notes: 'Kemasan box dan kertas roti',
+      lines: [
+        { sku: 'KMS-004', quantity: 400 },
+        { sku: 'KMS-002', quantity: 12 },
+      ],
+    },
+    {
       supplier: 4,
       branchIndex: 1,
       status: 'draft',
       daysAgo: 0,
       notes: 'Box kue untuk pesanan akhir bulan',
-      items: [{ sku: 'KMS-004', quantity: 500 }],
+      lines: [{ sku: 'KMS-004', quantity: 500 }],
     },
-  ] as const;
+    {
+      supplier: 1,
+      branchIndex: 0,
+      status: 'rejected',
+      daysAgo: 9,
+      notes: 'Gula pasir curah 50 kg',
+      reason: 'Harga di atas penawaran vendor lain',
+      lines: [{ sku: 'GLA-001', quantity: 40 }],
+    },
+  ];
+
+  const documentCounters = new Map<string, number>();
+  const nextDocumentNumber = (prefix: 'PO' | 'GRN', date: Date) => {
+    const head = `${prefix}-${dateOnly(date).replace(/-/g, '')}`;
+    const sequence = (documentCounters.get(head) ?? 0) + 1;
+    documentCounters.set(head, sequence);
+    return `${head}-${String(sequence).padStart(4, '0')}`;
+  };
+
+  /** Kept for the audit trail written further down. */
+  const purchaseAudit: {
+    id: string;
+    poNumber: string;
+    status: string;
+    itemCount: number;
+    daysAgo: number;
+  }[] = [];
 
   purchasePlan.forEach((order) => {
     const purchaseOrderId = randomUUID();
     const createdAt = new Date(startOfDay(order.daysAgo).getTime() + 4 * HOUR_MS);
     const supplier = identity.suppliers[order.supplier];
-    const total = order.items.reduce((sum, item) => {
-      const product = productBySku.get(item.sku);
-      return sum + (product ? product.def.cost * item.quantity : 0);
-    }, 0);
-    const receivedAt = order.status === 'received' ? new Date(createdAt.getTime() + 6 * HOUR_MS) : null;
+    const branch = identity.branches[order.branchIndex];
+    const poNumber = nextDocumentNumber('PO', createdAt);
+
+    const items = order.lines.flatMap((line) => {
+      const product = productBySku.get(line.sku);
+      return product ? [{ product, quantity: line.quantity }] : [];
+    });
+
+    purchaseAudit.push({
+      id: purchaseOrderId,
+      poNumber,
+      status: order.status,
+      itemCount: items.length,
+      daysAgo: order.daysAgo,
+    });
+
+    const receivedBySku = new Map<string, number>();
+    order.deliveries?.forEach((delivery) =>
+      delivery.lines.forEach((line) =>
+        receivedBySku.set(line.sku, (receivedBySku.get(line.sku) ?? 0) + line.quantity)
+      )
+    );
+
+    const total = items.reduce((sum, item) => sum + item.product.def.cost * item.quantity, 0);
+    const submittedAt = order.status === 'draft' ? null : new Date(createdAt.getTime() + 2 * HOUR_MS);
+    const approvedAt =
+      order.status === 'approved' ||
+      order.status === 'partially_received' ||
+      order.status === 'received'
+        ? new Date(createdAt.getTime() + 5 * HOUR_MS)
+        : null;
+    const rejectedAt = order.status === 'rejected' ? new Date(createdAt.getTime() + 5 * HOUR_MS) : null;
+    const cancelledAt = order.status === 'cancelled' ? new Date(createdAt.getTime() + 5 * HOUR_MS) : null;
+    const firstDelivery = order.deliveries?.[0];
+    const firstReceivedAt = firstDelivery
+      ? new Date(createdAt.getTime() + firstDelivery.daysAfter * DAY_MS + 6 * HOUR_MS)
+      : null;
 
     add(
       `INSERT INTO purchase_orders
          (id, po_number, supplier_id, supplier_name, branch_id, warehouse_id, status, total_amount,
-          notes, expected_date, received_at, created_by, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          notes, expected_date, payment_terms_days, submitted_by, submitted_at, approved_by,
+          approved_at, rejected_by, rejected_at, rejection_reason, cancelled_by, cancelled_at,
+          cancel_reason, received_at, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         purchaseOrderId,
-        order.number,
+        poNumber,
         supplier.id,
         supplier.name,
-        identity.branches[order.branchIndex].id,
-        identity.branches[order.branchIndex].warehouseId,
+        branch.id,
+        identity.centralWarehouseId,
         order.status,
         total,
         order.notes,
-        'expectedInDays' in order
+        order.expectedInDays !== undefined
           ? dateOnly(addDays(createdAt, order.expectedInDays))
-          : dateOnly(receivedAt ?? createdAt),
-        receivedAt ? stamp(receivedAt) : null,
+          : dateOnly(firstReceivedAt ?? createdAt),
+        supplier.termsDays,
+        submittedAt ? identity.staff[0].id : null,
+        submittedAt ? stamp(submittedAt) : null,
+        approvedAt ? identity.ownerId : null,
+        approvedAt ? stamp(approvedAt) : null,
+        rejectedAt ? identity.ownerId : null,
+        rejectedAt ? stamp(rejectedAt) : null,
+        rejectedAt ? order.reason ?? null : null,
+        cancelledAt ? identity.ownerId : null,
+        cancelledAt ? stamp(cancelledAt) : null,
+        cancelledAt ? order.reason ?? null : null,
+        firstReceivedAt ? stamp(firstReceivedAt) : null,
         identity.staff[0].id,
+        stamp(createdAt),
         stamp(createdAt),
       ]
     );
 
-    order.items.forEach((item) => {
-      const product = productBySku.get(item.sku);
-      if (!product) return;
+    const itemIds = new Map<string, string>();
+    items.forEach((item) => {
+      const itemId = randomUUID();
+      itemIds.set(item.product.def.sku, itemId);
       add(
         `INSERT INTO purchase_order_items
-           (id, purchase_order_id, product_id, quantity, unit_name, conversion_factor,
-            unit_cost, subtotal)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+           (id, purchase_order_id, product_id, quantity, quantity_received, unit_name,
+            conversion_factor, unit_cost, subtotal)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         [
-          randomUUID(),
+          itemId,
           purchaseOrderId,
-          product.id,
+          item.product.id,
           item.quantity,
-          product.units[0].name,
-          product.def.cost,
-          product.def.cost * item.quantity,
+          receivedBySku.get(item.product.def.sku) ?? 0,
+          item.product.units[0].name,
+          item.product.def.cost,
+          item.product.def.cost * item.quantity,
         ]
       );
     });
 
-    if (order.status !== 'received' || !receivedAt) return;
+    // One document, one bill per delivery — the same split the receipt writer
+    // makes, so the vendor screen and the finance screen cannot disagree.
+    order.deliveries?.forEach((delivery, index) => {
+      const receiptId = randomUUID();
+      const receivedAt = new Date(createdAt.getTime() + delivery.daysAfter * DAY_MS + 6 * HOUR_MS);
+      const grnNumber = nextDocumentNumber('GRN', receivedAt);
+      const lines = delivery.lines.flatMap((line) => {
+        const product = productBySku.get(line.sku);
+        const itemId = itemIds.get(line.sku);
+        return product && itemId ? [{ product, itemId, quantity: line.quantity }] : [];
+      });
+      const amount = lines.reduce((sum, line) => sum + line.product.def.cost * line.quantity, 0);
 
-    // Receipt = stock arrives and a liability appears. Booked into `expenses`
-    // because AP, Cashflow and Journal all read that table.
-    const partiallyPaid = order.number.endsWith('0013');
-    const paid = partiallyPaid ? Math.round(total * 0.5) : 0;
-    const expenseId = randomUUID();
+      add(
+        `INSERT INTO goods_receipts
+           (id, grn_number, purchase_order_id, warehouse_id, branch_id, supplier_id,
+            supplier_name, supplier_document, total_amount, notes, received_by, received_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          receiptId,
+          grnNumber,
+          purchaseOrderId,
+          identity.centralWarehouseId,
+          branch.id,
+          supplier.id,
+          supplier.name,
+          delivery.document ?? null,
+          amount,
+          index === 0 ? order.notes : null,
+          identity.staff[0].id,
+          stamp(receivedAt),
+        ]
+      );
+
+      lines.forEach((line) => {
+        add(
+          `INSERT INTO goods_receipt_items
+             (id, goods_receipt_id, purchase_order_item_id, product_id, quantity, unit_name,
+              conversion_factor, unit_cost, subtotal, batch_number, expiry_date)
+           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+          [
+            randomUUID(),
+            receiptId,
+            line.itemId,
+            line.product.id,
+            line.quantity,
+            line.product.units[0].name,
+            line.product.def.cost,
+            line.product.def.cost * line.quantity,
+            grnNumber,
+            line.product.def.shelfLifeDays === null
+              ? null
+              : dateOnly(addDays(receivedAt, line.product.def.shelfLifeDays)),
+          ]
+        );
+      });
+
+      // A delivery is when the liability starts, so the bill is dated by the
+      // receipt and falls due on the terms snapshotted onto the order.
+      const expenseId = randomUUID();
+      const settleHalf = order.partiallyPaid === true && index === 0;
+      const paid = settleHalf ? Math.round(amount * 0.5) : 0;
+      add(
+        `INSERT INTO expenses
+           (id, branch_id, category, amount, date, due_date, description, status,
+            amount_paid, supplier_id, purchase_order_id, goods_receipt_id, notes, created_at)
+         VALUES (?, ?, 'Pembelian Stok', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          expenseId,
+          branch.id,
+          amount,
+          dateOnly(receivedAt),
+          dateOnly(addDays(receivedAt, supplier.termsDays)),
+          `Pembelian stok ${grnNumber} (PO ${poNumber}) - ${supplier.name}`,
+          paid >= amount ? 'paid' : 'unpaid',
+          paid,
+          supplier.id,
+          purchaseOrderId,
+          receiptId,
+          order.notes,
+          stamp(receivedAt),
+        ]
+      );
+
+      // The settled bill also leaves a trace in the vendor payment ledger, so
+      // the vendor screen shows a real payment history instead of an empty tab.
+      if (settleHalf && paid > 0) {
+        add(
+          `INSERT INTO vendor_payments
+             (id, vendor_id, expense_id, purchase_order_id, amount, payment_date,
+              method, reference_number, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'transfer', ?, ?, ?)`,
+          [
+            randomUUID(),
+            supplier.id,
+            expenseId,
+            purchaseOrderId,
+            paid,
+            dateOnly(addDays(receivedAt, 2)),
+            `TRF-${grnNumber}`,
+            identity.staff[0].id,
+            stamp(addDays(receivedAt, 2)),
+          ]
+        );
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Branch replenishment orders: the demand document a shop raises
+  // (`stock_requests`) and the movement document the gudang issues against it
+  // (`stock_transfers`, linked by `request_id`). Seeded through the same SQL
+  // shapes the BranchOrders screen writes, so every screen reads them alike.
+  //
+  // The gudang batch figures in the catalog are already "what is left today",
+  // so the shipments below do not deduct anything a second time.
+  // ---------------------------------------------------------------------
+  const requestAudit: {
+    action: string;
+    entityId: string;
+    details: Record<string, unknown>;
+    userId: string;
+    daysAgo: number;
+  }[] = [];
+
+  interface RequestLine {
+    sku: string;
+    requested: number;
+    /** 0 while the gudang has not answered the request yet. */
+    approved: number;
+    dispatched: number;
+    received: number;
+  }
+
+  interface RequestPlan {
+    branchIndex: number;
+    status: 'draft' | 'submitted' | 'in_transit' | 'received';
+    daysAgo: number;
+    priority: 'normal' | 'urgent';
+    /** Days from creation; the shop writes what it needs by when. */
+    neededInDays: number;
+    notes: string | null;
+    source: 'branch' | 'online';
+    /** `null` when the channel has no shelf, so the goods leave the building. */
+    transfer: 'in_transit' | 'completed' | null;
+    items: RequestLine[];
+  }
+
+  const requestPlan: RequestPlan[] = [
+    {
+      // A draft the shop is still filling in.
+      branchIndex: 1,
+      status: 'draft',
+      daysAgo: 1,
+      priority: 'normal',
+      neededInDays: 4,
+      notes: 'Box kue dan gula halus untuk pesanan akhir pekan.',
+      source: 'branch',
+      transfer: null,
+      items: [
+        { sku: 'KMS-004', requested: 200, approved: 0, dispatched: 0, received: 0 },
+        { sku: 'GLA-002', requested: 20, approved: 0, dispatched: 0, received: 0 },
+        { sku: 'PGR-001', requested: 30, approved: 0, dispatched: 0, received: 0 },
+      ],
+    },
+    {
+      // Waiting in the gudang queue.
+      branchIndex: 1,
+      status: 'submitted',
+      daysAgo: 0,
+      priority: 'urgent',
+      neededInDays: 1,
+      notes: 'Mentega habis di rak, buttercream banyak pesanan.',
+      source: 'branch',
+      transfer: null,
+      items: [
+        { sku: 'LMK-001', requested: 12, approved: 0, dispatched: 0, received: 0 },
+        { sku: 'CHC-001', requested: 10, approved: 0, dispatched: 0, received: 0 },
+      ],
+    },
+    {
+      // Picked and on the road: the gudang approved less than asked, which is
+      // the normal case when stock is thin.
+      branchIndex: 0,
+      status: 'in_transit',
+      daysAgo: 2,
+      priority: 'normal',
+      neededInDays: 0,
+      notes: 'Restock rak Toko Pusat menjelang akhir bulan.',
+      source: 'branch',
+      transfer: 'in_transit',
+      items: [
+        { sku: 'TPG-002', requested: 60, approved: 50, dispatched: 50, received: 0 },
+        { sku: 'TLR-003', requested: 24, approved: 24, dispatched: 24, received: 0 },
+        { sku: 'GLA-001', requested: 40, approved: 30, dispatched: 30, received: 0 },
+      ],
+    },
+    {
+      // Closed: the web channel ordered, the gudang shipped straight out (no
+      // shelf to receive into) and the shop confirmed the goods arrived.
+      branchIndex: 2,
+      status: 'received',
+      daysAgo: 5,
+      priority: 'normal',
+      neededInDays: -3,
+      notes: 'Pesanan tokobahankue.com, dikirim langsung dari gudang.',
+      source: 'online',
+      transfer: null,
+      items: [
+        { sku: 'KMS-002', requested: 6, approved: 6, dispatched: 6, received: 6 },
+        { sku: 'TLR-002', requested: 12, approved: 10, dispatched: 10, received: 9 },
+      ],
+    },
+  ];
+
+  const warehouseStaff = identity.staff.find((member) => member.role === 'warehouse') ?? identity.staff[0];
+  let requestSeq = 0;
+
+  requestPlan.forEach((plan) => {
+    const branch = identity.branches[plan.branchIndex];
+    const created = new Date(startOfDay(plan.daysAgo).getTime() + 8 * HOUR_MS);
+    const approvedAt = new Date(created.getTime() + HOUR_MS);
+    const dispatchedAt = new Date(created.getTime() + 3 * HOUR_MS);
+    const receivedAt = new Date(created.getTime() + 2 * DAY_MS);
+
+    const requestId = randomUUID();
+    // One running sequence keeps the numbers unique even if two shops order
+    // on the same day (per-day counters that restart would collide).
+    requestSeq += 1;
+    const requestNumber = `REQ/${dateOnly(created).replace(/-/g, '')}-${branch.code}-${String(
+      requestSeq
+    ).padStart(4, '0')}`;
+
+    const requesterId =
+      identity.staff.find((member) => member.role === 'store_manager' && member.branchId === branch.id)?.id ??
+      branch.cashierId;
+    const receiverId = branch.cashierId;
+
+    const shelfId = identity.shelfWarehouseIds[plan.branchIndex];
+    const shipped = plan.items.filter((line) => line.dispatched > 0);
+
+    let transferId: string | null = null;
+    if (plan.transfer && shelfId && shipped.length > 0) {
+      transferId = randomUUID();
+      const closed = plan.transfer === 'completed';
+      add(
+        `INSERT INTO stock_transfers
+           (id, reference_number, source_warehouse_id, destination_warehouse_id, status,
+            notes, requested_by, approved_by, received_by, sent_at, received_at,
+            request_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          transferId,
+          `TRF-${dateOnly(dispatchedAt).replace(/-/g, '')}-${branch.code}-01`,
+          identity.centralWarehouseId,
+          shelfId,
+          plan.transfer,
+          `Pesanan ${requestNumber}`,
+          requesterId,
+          warehouseStaff.id,
+          closed ? receiverId : null,
+          stamp(dispatchedAt),
+          closed ? stamp(receivedAt) : null,
+          requestId,
+          stamp(created),
+        ]
+      );
+
+      shipped.forEach((line) => {
+        const product = productBySku.get(line.sku);
+        if (!product) return;
+        add(
+          `INSERT INTO transfer_items
+             (id, transfer_id, product_id, source_batch_id, quantity_sent, quantity_received,
+              unit_name, conversion_factor, cost_price, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)`,
+          [
+            randomUUID(),
+            transferId,
+            product.id,
+            batchesByProduct.get(locationKey(identity.centralWarehouseId, product.id))?.[0] ?? null,
+            line.dispatched,
+            plan.transfer === 'completed' ? line.received : null,
+            product.units[0].name,
+            product.def.cost,
+          ]
+        );
+      });
+    }
+
+    const answered = plan.status !== 'draft' && plan.status !== 'submitted';
+    const travelling = plan.status === 'in_transit' || plan.status === 'received';
+
     add(
-      `INSERT INTO expenses
-         (id, branch_id, category, amount, date, due_date, description, status,
-          amount_paid, supplier_id, notes, created_at)
-       VALUES (?, ?, 'Pembelian Stok', ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)`,
+      `INSERT INTO stock_requests
+         (id, request_number, branch_id, warehouse_id, status, priority, source,
+          needed_date, notes, rejection_reason, requested_by, approved_by, approved_at,
+          dispatched_by, dispatched_at, received_by, received_at, transfer_id,
+          created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        expenseId,
-        identity.branches[order.branchIndex].id,
-        total,
-        dateOnly(receivedAt),
-        dateOnly(addDays(receivedAt, supplier.termsDays)),
-        `Pembelian stok ${order.number} - ${supplier.name}`,
-        paid,
-        supplier.id,
-        order.notes,
-        stamp(receivedAt),
+        requestId,
+        requestNumber,
+        branch.id,
+        identity.centralWarehouseId,
+        plan.status,
+        plan.priority,
+        plan.source,
+        dateOnly(addDays(created, plan.neededInDays)),
+        plan.notes,
+        requesterId,
+        answered ? warehouseStaff.id : null,
+        answered ? stamp(approvedAt) : null,
+        travelling ? warehouseStaff.id : null,
+        travelling ? stamp(dispatchedAt) : null,
+        plan.status === 'received' ? receiverId : null,
+        plan.status === 'received' ? stamp(receivedAt) : null,
+        transferId,
+        stamp(created),
+        stamp(plan.status === 'received' ? receivedAt : travelling ? dispatchedAt : created),
       ]
     );
 
-    // The half-settled PO also leaves a trace in the vendor payment ledger, so
-    // the vendor screen shows a real payment history instead of an empty tab.
-    if (partiallyPaid) {
+    plan.items.forEach((line) => {
+      const product = productBySku.get(line.sku);
+      if (!product) return;
       add(
-        `INSERT INTO vendor_payments
-           (id, vendor_id, expense_id, purchase_order_id, amount, payment_date,
-            method, reference_number, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'transfer', ?, ?, ?)`,
+        `INSERT INTO stock_request_items
+           (id, request_id, product_id, unit_name, conversion_factor,
+            quantity_requested, quantity_approved, quantity_dispatched, quantity_received, notes)
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, NULL)`,
         [
           randomUUID(),
-          supplier.id,
-          expenseId,
-          purchaseOrderId,
-          paid,
-          dateOnly(addDays(receivedAt, 2)),
-          `TRF-${order.number}`,
-          identity.staff[0].id,
-          stamp(addDays(receivedAt, 2)),
+          requestId,
+          product.id,
+          product.units[0].name,
+          line.requested,
+          line.approved,
+          line.dispatched,
+          line.received,
         ]
       );
+    });
+
+    const lineSummary = plan.items.map((line) => ({
+      sku: line.sku,
+      requested: line.requested,
+      approved: line.approved,
+      dispatched: line.dispatched,
+      received: line.received,
+    }));
+
+    requestAudit.push({
+      action: plan.status === 'draft' ? 'create_stock_request' : 'submit_stock_request',
+      entityId: requestId,
+      details: { request_number: requestNumber, branch_id: branch.id, lines: lineSummary.length },
+      userId: requesterId,
+      daysAgo: plan.daysAgo,
+    });
+
+    if (answered) {
+      requestAudit.push({
+        action: 'approve_stock_request',
+        entityId: requestId,
+        details: { request_number: requestNumber, lines: lineSummary },
+        userId: warehouseStaff.id,
+        daysAgo: plan.daysAgo,
+      });
+    }
+
+    if (travelling) {
+      requestAudit.push({
+        action: 'dispatch_stock_request',
+        entityId: requestId,
+        details: {
+          request_number: requestNumber,
+          transfer_id: transferId,
+          shipped_lines: shipped.length,
+          stock_issue_method: 'fifo',
+        },
+        userId: warehouseStaff.id,
+        daysAgo: plan.daysAgo,
+      });
+    }
+
+    if (plan.status === 'received') {
+      requestAudit.push({
+        action: 'receive_stock_request',
+        entityId: requestId,
+        details: { request_number: requestNumber, lines: lineSummary },
+        userId: receiverId,
+        daysAgo: plan.daysAgo,
+      });
     }
   });
 
@@ -1108,6 +1566,11 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   // ---------------------------------------------------------------------
   const auditEntries: { action: string; entity: string; entityId: string | null; details: Record<string, unknown>; userId: string; daysAgo: number }[] = [];
 
+  // Every request transition recorded above lands in the same trail.
+  auditEntries.push(
+    ...requestAudit.map((entry) => ({ ...entry, entity: 'stock_requests' }))
+  );
+
   auditedSales.slice(0, 6).forEach((sale, index) => {
     auditEntries.push({
       action: 'checkout',
@@ -1124,33 +1587,17 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     });
   });
 
-  transferPlan.forEach((transfer) => {
-    auditEntries.push({
-      action: 'create_transfer',
-      entity: 'stock_transfers',
-      entityId: null,
-      details: { reference_number: transfer.reference, item_count: transfer.items.length },
-      userId: identity.staff[0].id,
-      daysAgo: transfer.daysAgo,
-    });
-    if (transfer.status === 'completed') {
-      auditEntries.push({
-        action: 'approve_transfer',
-        entity: 'stock_transfers',
-        entityId: null,
-        details: { reference_number: transfer.reference, item_count: transfer.items.length },
-        userId: identity.ownerId,
-        daysAgo: transfer.daysAgo - 1,
-      });
-    }
-  });
-
-  purchasePlan.forEach((order) => {
+  purchaseAudit.forEach((order) => {
     auditEntries.push({
       action: 'create_po',
       entity: 'purchase_orders',
-      entityId: null,
-      details: { po_number: order.number, item_count: order.items.length, origin: 'demo seed' },
+      entityId: order.id,
+      details: {
+        po_number: order.poNumber,
+        item_count: order.itemCount,
+        status: order.status,
+        origin: 'demo seed',
+      },
       userId: identity.staff[0].id,
       daysAgo: order.daysAgo,
     });

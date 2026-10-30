@@ -63,8 +63,8 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     expect(settings.role_permissions.tenant_owner.manage_roles).toBe(true);
   });
 
-  it('fills both branches with staff, shelves and suppliers', async () => {
-    expect(await scalar(`SELECT count(*) AS value FROM branches`)).toBe(2);
+  it('fills every branch with staff, shelves and suppliers', async () => {
+    expect(await scalar(`SELECT count(*) AS value FROM branches`)).toBe(THALIA.branches.length);
     expect(await scalar(`SELECT count(*) AS value FROM users`)).toBe(THALIA.staff.length + 1);
     expect(await scalar(`SELECT count(*) AS value FROM suppliers`)).toBe(THALIA.suppliers.length);
     expect(await scalar(`SELECT count(*) AS value FROM customers`)).toBe(THALIA.customers.length);
@@ -78,6 +78,53 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     );
     expect(owner).toHaveLength(1);
     expect(owner[0].email).toBe(THALIA.owner.email);
+
+    // One gudang plus a selling shelf in every walk-in shop; the online channel
+    // keeps none and is served straight from the gudang.
+    const warehouses = await rows<{
+      id: string;
+      name: string;
+      type: string;
+      branch_id: string | null;
+      address: string | null;
+    }>(`SELECT id, name, type, branch_id, address FROM warehouses`);
+
+    const central = warehouses.filter((row) => row.type === 'central');
+    expect(central).toHaveLength(1);
+    expect(central[0].name).toBe(THALIA.centralWarehouse.name);
+    expect(central[0].address).toContain('Arif Rahman Hakim');
+    expect(central[0].branch_id).toBeNull();
+
+    const shelfBranches = THALIA.branches.filter((branch) => branch.shelf);
+    const shelves = warehouses.filter((row) => row.type === 'store');
+    expect(shelves).toHaveLength(shelfBranches.length);
+    expect(warehouses).toHaveLength(shelfBranches.length + 1);
+    for (const shelf of shelves) {
+      const branch = shelfBranches.find((entry) => entry.shelf?.name === shelf.name);
+      expect(branch, `unknown shelf ${shelf.name}`).toBeTruthy();
+      // A shelf belongs to its shop, the gudang belongs to everyone.
+      expect(shelf.branch_id).not.toBeNull();
+    }
+
+    const mappings = await rows<{
+      branch_id: string;
+      warehouse_id: string;
+      is_default: number;
+      priority: number;
+    }>(`SELECT branch_id, warehouse_id, is_default, priority FROM branch_warehouses`);
+    // Two rows per walk-in shop (its shelf first, the gudang behind it as the
+    // fallback) and one row for the online channel.
+    expect(mappings).toHaveLength(
+      THALIA.branches.reduce((count, branch) => count + (branch.shelf ? 2 : 1), 0)
+    );
+    // Every mapping points at a real branch.
+    expect(mappings.every((mapping) => Boolean(mapping.branch_id))).toBe(true);
+    const defaults = mappings.filter((mapping) => Number(mapping.is_default) === 1);
+    expect(defaults).toHaveLength(THALIA.branches.length);
+    // The till sells from the shelf; the gudang is only the fallback.
+    for (const shelf of shelves) {
+      expect(defaults.some((mapping) => mapping.warehouse_id === shelf.id)).toBe(true);
+    }
   });
 
   it('gives every supplier vendor master data and a product catalogue', async () => {
@@ -103,7 +150,7 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     ).toHaveLength(0);
   });
 
-  it('records the part payment of PO-0013 in the vendor payment ledger', async () => {
+  it('records the part payment of one purchase bill in the vendor ledger', async () => {
     const payments = await rows<{ amount: number; method: string; amount_paid: number; total: number }>(
       `SELECT vp.amount, vp.method, e.amount_paid, e.amount AS total
          FROM vendor_payments vp
@@ -114,6 +161,61 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     // The ledger entry mirrors the payable balance, not a second liability.
     expect(Number(payments[0].amount)).toBe(Number(payments[0].amount_paid));
     expect(Number(payments[0].amount)).toBe(Math.round(Number(payments[0].total) * 0.5));
+  });
+
+  it('seeds one order per reachable state, with receipts that agree', async () => {
+    const orders = await rows<{
+      id: string;
+      po_number: string;
+      status: string;
+      received_qty: number;
+      ordered_qty: number;
+      receipts: number;
+      bills: number;
+    }>(
+      `SELECT po.id, po.po_number, po.status,
+              (SELECT COALESCE(SUM(poi.quantity_received), 0) FROM purchase_order_items poi
+                WHERE poi.purchase_order_id = po.id) AS received_qty,
+              (SELECT COALESCE(SUM(poi.quantity), 0) FROM purchase_order_items poi
+                WHERE poi.purchase_order_id = po.id) AS ordered_qty,
+              (SELECT COUNT(*) FROM goods_receipts gr WHERE gr.purchase_order_id = po.id) AS receipts,
+              (SELECT COUNT(*) FROM expenses e WHERE e.purchase_order_id = po.id) AS bills
+         FROM purchase_orders po`
+    );
+
+    // The lifecycle the PO screen filters on has to be visible in the demo,
+    // otherwise every filter but "all" looks broken.
+    expect(orders.map((order) => order.status).sort()).toEqual([
+      'approved',
+      'draft',
+      'partially_received',
+      'received',
+      'received',
+      'rejected',
+      'submitted',
+    ]);
+
+    for (const order of orders) {
+      // `received` means every line arrived; anything else must not claim it.
+      const fullyReceived = Number(order.received_qty) >= Number(order.ordered_qty);
+      expect(fullyReceived, order.po_number).toBe(order.status === 'received');
+      // One bill per delivery, and never a bill without a receipt.
+      expect(Number(order.bills), order.po_number).toBe(Number(order.receipts));
+      expect(order.po_number).toMatch(/^PO-\d{8}-\d{4}$/);
+    }
+
+    // A purchase bill is worth its delivery, not the whole order, and it
+    // carries the order it came from.
+    const bills = await rows<{ amount: number; receipt_total: number | null }>(
+      `SELECT e.amount, gr.total_amount AS receipt_total
+         FROM expenses e
+         LEFT JOIN goods_receipts gr ON gr.id = e.goods_receipt_id
+        WHERE e.category = 'Pembelian Stok'`
+    );
+    expect(bills).toHaveLength(orders.reduce((sum, order) => sum + Number(order.receipts), 0));
+    for (const bill of bills) {
+      expect(Number(bill.amount)).toBe(Number(bill.receipt_total));
+    }
   });
 
   it('keeps stock consistent with the catalog and never over-issues a batch', async () => {
@@ -127,8 +229,22 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     for (const row of stock) {
       const expected = THALIA.products.find((product) => product.sku === row.sku);
       expect(expected, `unknown sku ${row.sku}`).toBeTruthy();
-      expect(Number(row.available)).toBeCloseTo(expected!.stock[0] + expected!.stock[1], 6);
+      // The catalog authors stock per location (gudang + one shelf per shop),
+      // so the business-wide figure is the sum of the split.
+      const total =
+        expected!.stock.central + expected!.stock.shelves.reduce((sum, qty) => sum + qty, 0);
+      expect(Number(row.available)).toBeCloseTo(total, 6);
     }
+
+    // Nothing is authored onto a shelf that the channel cannot reach.
+    const shelfBatches = await rows<{ sku: string }>(
+      `SELECT p.sku
+         FROM product_batches b
+         JOIN products p ON p.id = b.product_id
+         JOIN warehouses w ON w.id = b.warehouse_id
+        WHERE w.type <> 'central' AND w.branch_id IS NULL`
+    );
+    expect(shelfBatches).toHaveLength(0);
 
     const badBatches = await rows<{ id: string }>(
       `SELECT id FROM product_batches
@@ -189,7 +305,7 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     }>(`SELECT id, status, initial_cash, expected_cash, end_time FROM shifts`);
 
     const open = shifts.filter((shift) => shift.status === 'open');
-    expect(open).toHaveLength(2);
+    expect(open).toHaveLength(THALIA.branches.length);
     expect(open.every((shift) => shift.end_time === null && shift.expected_cash === null)).toBe(true);
 
     for (const shift of shifts.filter((entry) => entry.status === 'closed')) {
@@ -202,16 +318,102 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     }
   });
 
-  it('records transfers, receivables and supplier payables', async () => {
-    const transfers = await rows<{ status: string; items: number }>(
-      `SELECT s.status, count(i.id) AS items
-         FROM stock_transfers s
-         LEFT JOIN transfer_items i ON i.transfer_id = s.id
-        GROUP BY s.id`
+  it('seeds branch orders that agree with their movement and with stock', async () => {
+    const requests = await rows<{
+      id: string;
+      request_number: string;
+      branch_id: string;
+      warehouse_id: string;
+      status: string;
+      priority: string;
+      source: string;
+      transfer_id: string | null;
+      requested_by: string | null;
+    }>(
+      `SELECT id, request_number, branch_id, warehouse_id, status, priority, source,
+              transfer_id, requested_by
+         FROM stock_requests ORDER BY created_at ASC`
     );
-    expect(transfers.filter((row) => row.status === 'completed')).toHaveLength(2);
-    expect(transfers.filter((row) => row.status === 'pending')).toHaveLength(1);
-    expect(transfers.every((row) => Number(row.items) > 0)).toBe(true);
+
+    expect(requests.map((row) => row.status).sort()).toEqual([
+      'draft',
+      'in_transit',
+      'received',
+      'submitted',
+    ]);
+    expect(new Set(requests.map((row) => row.request_number)).size).toBe(requests.length);
+    for (const request of requests) {
+      expect(request.request_number).toMatch(/^REQ\/\d{8}-THL-\d{2}-\d{4}$/);
+      // Demand always points at the gudang, never at a shop's own shelf.
+      expect(request.branch_id).toBeTruthy();
+      expect(request.requested_by).toBeTruthy();
+      expect(request.warehouse_id).toBe(
+        (
+          await rows<{ id: string }>(`SELECT id FROM warehouses WHERE type = 'central'`)
+        )[0].id
+      );
+    }
+
+    // The online channel has no shelf, so its order ships out of the building
+    // instead of producing a transfer between two shops.
+    const online = requests.filter((request) => request.source === 'online');
+    expect(online).toHaveLength(1);
+    expect(online[0].status).toBe('received');
+    expect(online[0].transfer_id).toBeNull();
+
+    // Every transfer in the demo hangs off exactly one request.
+    const transfers = await rows<{ id: string; status: string; request_id: string | null }>(
+      `SELECT id, status, request_id FROM stock_transfers`
+    );
+    expect(transfers).toHaveLength(1);
+    expect(transfers[0].status).toBe('in_transit');
+    const linked = requests.find((request) => request.transfer_id === transfers[0].id);
+    expect(linked?.status).toBe('in_transit');
+    expect(transfers[0].request_id).toBe(linked?.id);
+
+    // Quantities only ever shrink on the way through the workflow.
+    const lines = await rows<{
+      request_id: string;
+      quantity_requested: number;
+      quantity_approved: number;
+      quantity_dispatched: number;
+      quantity_received: number;
+    }>(
+      `SELECT request_id, quantity_requested, quantity_approved,
+              quantity_dispatched, quantity_received
+         FROM stock_request_items`
+    );
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      const status = requests.find((request) => request.id === line.request_id)?.status;
+      if (status === 'draft' || status === 'submitted') {
+        expect(Number(line.quantity_approved)).toBe(0);
+        continue;
+      }
+      expect(Number(line.quantity_approved)).toBeLessThanOrEqual(Number(line.quantity_requested));
+      expect(Number(line.quantity_dispatched)).toBeLessThanOrEqual(Number(line.quantity_approved));
+      expect(Number(line.quantity_received)).toBeLessThanOrEqual(Number(line.quantity_dispatched));
+    }
+
+    // No order was picked for more than the gudang actually holds.
+    const dispatched = await rows<{ product_id: string; quantity: number }>(
+      `SELECT i.product_id, SUM(i.quantity_dispatched) AS quantity
+         FROM stock_request_items i
+         JOIN stock_requests r ON r.id = i.request_id
+        WHERE r.status IN ('in_transit', 'received')
+        GROUP BY i.product_id`
+    );
+    const centralId = (
+      await rows<{ id: string }>(`SELECT id FROM warehouses WHERE type = 'central'`)
+    )[0].id;
+    for (const line of dispatched) {
+      const onHand = await scalar(
+        `SELECT COALESCE(SUM(quantity_current), 0) AS value
+           FROM product_batches WHERE warehouse_id = ? AND product_id = ?`,
+        [centralId, line.product_id]
+      );
+      expect(onHand).toBeGreaterThanOrEqual(Number(line.quantity));
+    }
 
     // Receivables are unpaid invoices; payables are unpaid purchase expenses.
     expect(await scalar(
@@ -234,6 +436,24 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     expect(snapshot.revenue30d).toBeGreaterThan(0);
     expect(snapshot.revenueAllTime).toBeGreaterThanOrEqual(snapshot.revenue30d);
     expect(snapshot.grossMargin30d).toBeGreaterThan(0);
+
+    // Scoped to the gudang the same four SKUs are short: that is the figure the
+    // ordering screens measure, since a shelf is refilled from the gudang.
+    const centralShort = await rows<{ sku: string }>(
+      `SELECT p.sku
+         FROM products p
+         JOIN product_batches b ON b.product_id = p.id
+         JOIN warehouses w ON w.id = b.warehouse_id
+        WHERE w.type = 'central'
+        GROUP BY p.id
+       HAVING SUM(b.quantity_current) < p.min_stock_level`
+    );
+    expect(centralShort.map((row) => row.sku).sort()).toEqual([
+      'CHC-003',
+      'KMS-003',
+      'LMK-003',
+      'PGR-003',
+    ]);
   });
 
   it('refuses to merge into an existing tenant without --reset', async () => {
@@ -244,6 +464,6 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     await seedDemoTenant(client, { now: NOW, reset: true });
     expect(await scalar(`SELECT count(*) AS value FROM tenants`)).toBe(1);
     expect(await scalar(`SELECT count(*) AS value FROM products`)).toBe(THALIA.products.length);
-    expect(await scalar(`SELECT count(*) AS value FROM branches`)).toBe(2);
+    expect(await scalar(`SELECT count(*) AS value FROM branches`)).toBe(THALIA.branches.length);
   });
 });

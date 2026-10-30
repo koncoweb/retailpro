@@ -45,8 +45,8 @@ function parseArgs(argv: string[]): CliOptions {
     password: process.env.DEMO_PASSWORD ?? 'Thalia2026!',
     slug: 'thalia',
     company: 'Thalia Toko Bahan Kue',
-    email: 'thalia@tokobahankue.id',
-    name: 'Thalia Wijaya',
+    email: 'owner@tokobahankue.com',
+    name: 'Surya',
   };
 
   for (let index = 0; index < argv.length; index += 1) {

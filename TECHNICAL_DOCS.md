@@ -26,6 +26,7 @@ tidak ada lagi.
 - [docs/frontend.md](docs/frontend.md) — frontend
 - [docs/backend.md](docs/backend.md) — backend & database, termasuk perubahan skema
 - [docs/fitur-tenant.md](docs/fitur-tenant.md) / [docs/fitur-platform.md](docs/fitur-platform.md) — log fitur per tanggal
+- [docs/deployment.md](docs/deployment.md) — runbook deploy (Vercel + Turso cloud)
 - [docs/kendala-solusi.md](docs/kendala-solusi.md) — masalah, solusi, pelajaran
 
 Isi lama dokumen ini masih dapat dibaca dari riwayat git:

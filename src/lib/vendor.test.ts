@@ -64,6 +64,7 @@ describe("isOverdue", () => {
 describe("labels", () => {
   it("maps known codes and falls back for unknown ones", () => {
     expect(vendorCategoryLabel("distributor")).toBe("Distributor");
+    expect(vendorCategoryLabel("trader")).toBe("Trader");
     expect(vendorCategoryLabel("unknown")).toBe("Supplier");
     expect(vendorStatusLabel("blacklisted")).toBe("Blacklist");
     expect(vendorStatusLabel(null)).toBe("Aktif");

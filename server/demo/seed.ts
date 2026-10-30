@@ -12,14 +12,14 @@
  */
 import type { Client } from '@libsql/client';
 import { randomUUID } from 'node:crypto';
-import { loadSchemaFile, renderSeed } from '../provision';
-import { THALIA } from './catalog';
+import { loadSchemaFile, renderSeed } from '../provision.js';
+import { THALIA } from './catalog.js';
 import {
   buildDemoStatements,
   createThaliaIdentity,
   type DemoStatement,
   type ThaliaIdentity,
-} from './ledger';
+} from './ledger.js';
 
 export { THALIA, createThaliaIdentity, buildDemoStatements };
 export type { ThaliaIdentity };
@@ -103,8 +103,8 @@ export async function seedDemoTenant(
       branchId: identity.branches[0].id,
       branchName: identity.branches[0].name,
       branchAddress: identity.branches[0].address,
-      warehouseId: identity.branches[0].warehouseId,
-      warehouseName: `${identity.branches[0].name} - Gudang`,
+      warehouseId: identity.centralWarehouseId,
+      warehouseName: THALIA.centralWarehouse.name,
       ownerId: identity.ownerId,
       ownerEmail: identity.owner.email,
       ownerName: identity.owner.name,

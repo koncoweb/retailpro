@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 3);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 5);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
 -- receipt/tax/bank settings as JSON text.
@@ -111,7 +111,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
   -- imported by name only (legacy rows) stay valid without a code.
   code                TEXT,
   legal_name          TEXT,
-  -- 'supplier' | 'distributor' | 'manufacturer' | 'service' | 'other'
+  -- 'supplier' | 'distributor' | 'trader' | 'manufacturer' | 'service' | 'other'
   category            TEXT NOT NULL DEFAULT 'supplier',
   tax_id              TEXT,
   contact_person      TEXT,
@@ -191,7 +191,12 @@ CREATE TABLE IF NOT EXISTS product_batches (
   quantity_current REAL NOT NULL DEFAULT 0,
   cost_price       INTEGER NOT NULL DEFAULT 0,
   received_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-  supplier_id      TEXT
+  supplier_id      TEXT,
+  -- Set when the batch arrived on a purchase, so PO -> batch is a join rather
+  -- than a `batch_number = po_number` string match. The receipt line points
+  -- back through `goods_receipt_items.batch_id`, so no third pointer is needed.
+  purchase_order_id TEXT,
+  goods_receipt_id  TEXT
 );
 
 -- Vendor-specific catalogue: which products a vendor supplies, at what
@@ -266,6 +271,9 @@ CREATE TABLE IF NOT EXISTS stock_transfers (
   received_by               TEXT,
   sent_at                   TEXT,
   received_at               TEXT,
+  -- Set when the movement was created by a branch request, so the request
+  -- stays the demand document and the transfer the execution document.
+  request_id                TEXT,
   created_at                TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -282,6 +290,48 @@ CREATE TABLE IF NOT EXISTS transfer_items (
   notes             TEXT
 );
 
+-- A branch asking the warehouse for stock. Demand and movement are separate
+-- documents on purpose: this one records what a shop wants and who approved it,
+-- `stock_transfers` records the batches that actually left the gudang.
+CREATE TABLE IF NOT EXISTS stock_requests (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  request_number    TEXT NOT NULL,
+  branch_id         TEXT NOT NULL,
+  warehouse_id      TEXT NOT NULL,
+  -- 'draft' | 'submitted' | 'approved' | 'rejected' | 'in_transit' | 'received' | 'cancelled'
+  status            TEXT NOT NULL DEFAULT 'draft',
+  -- 'normal' | 'urgent'
+  priority          TEXT NOT NULL DEFAULT 'normal',
+  -- 'branch' today; 'online' once the storefront raises its own pick lists.
+  source            TEXT NOT NULL DEFAULT 'branch',
+  needed_date       TEXT,
+  notes             TEXT,
+  rejection_reason  TEXT,
+  requested_by      TEXT,
+  approved_by       TEXT,
+  approved_at       TEXT,
+  dispatched_by     TEXT,
+  dispatched_at     TEXT,
+  received_by       TEXT,
+  received_at       TEXT,
+  transfer_id       TEXT,
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS stock_request_items (
+  id                  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  request_id          TEXT NOT NULL,
+  product_id          TEXT NOT NULL,
+  unit_name           TEXT,
+  conversion_factor   REAL NOT NULL DEFAULT 1,
+  quantity_requested  REAL NOT NULL DEFAULT 0,
+  quantity_approved   REAL NOT NULL DEFAULT 0,
+  quantity_dispatched REAL NOT NULL DEFAULT 0,
+  quantity_received   REAL NOT NULL DEFAULT 0,
+  notes               TEXT
+);
+
 CREATE TABLE IF NOT EXISTS purchase_orders (
   id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   po_number       TEXT NOT NULL,
@@ -289,13 +339,30 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   supplier_name   TEXT,
   branch_id       TEXT,
   warehouse_id    TEXT,
-  status          TEXT NOT NULL DEFAULT 'draft',
-  total_amount    INTEGER NOT NULL DEFAULT 0,
-  notes           TEXT,
-  expected_date   TEXT,
-  received_at     TEXT,
-  created_by      TEXT,
-  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  -- 'draft' | 'submitted' | 'approved' | 'partially_received' | 'received'
+  -- | 'rejected' | 'cancelled'. No stock moves before 'approved'; only a
+  -- goods receipt may advance the last two. See docs/spec-purchase-order.md.
+  status                TEXT NOT NULL DEFAULT 'draft',
+  total_amount          INTEGER NOT NULL DEFAULT 0,
+  notes                 TEXT,
+  expected_date         TEXT,
+  -- Snapshot of the vendor's terms at the time the order was raised, so a
+  -- later change to suppliers.payment_terms_days cannot move old bills.
+  payment_terms_days    INTEGER NOT NULL DEFAULT 30,
+  submitted_by          TEXT,
+  submitted_at          TEXT,
+  approved_by           TEXT,
+  approved_at           TEXT,
+  rejected_by           TEXT,
+  rejected_at           TEXT,
+  rejection_reason      TEXT,
+  cancelled_by          TEXT,
+  cancelled_at          TEXT,
+  cancel_reason         TEXT,
+  received_at           TEXT,
+  created_by            TEXT,
+  created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at            TEXT
 );
 
 CREATE TABLE IF NOT EXISTS purchase_order_items (
@@ -303,14 +370,59 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
   purchase_order_id TEXT NOT NULL,
   product_id        TEXT NOT NULL,
   quantity          REAL NOT NULL DEFAULT 0,
+  -- Running total across every goods receipt for this line, in `unit_name`.
+  quantity_received REAL NOT NULL DEFAULT 0,
   unit_name         TEXT,
   conversion_factor INTEGER NOT NULL DEFAULT 1,
   unit_cost         INTEGER NOT NULL DEFAULT 0,
-  subtotal          INTEGER NOT NULL DEFAULT 0
+  subtotal          INTEGER NOT NULL DEFAULT 0,
+  notes             TEXT
 );
 
--- What the company owes a supplier. Receiving a purchase order writes one row
--- here, so stock arriving is a liability rather than a silent asset increase.
+-- What physically arrived, separately from what was ordered. A purchase order
+-- may be received in several deliveries, each with its own date, price, lot and
+-- expiry, and each booking its own bill. Same split as
+-- stock_requests -> stock_transfers: the PO is intent, this is execution.
+CREATE TABLE IF NOT EXISTS goods_receipts (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  grn_number        TEXT NOT NULL,
+  purchase_order_id TEXT NOT NULL,
+  warehouse_id      TEXT NOT NULL,
+  branch_id         TEXT,
+  supplier_id       TEXT,
+  supplier_name     TEXT,
+  -- The vendor's own delivery-note / invoice number, free text.
+  supplier_document TEXT,
+  total_amount      INTEGER NOT NULL DEFAULT 0,
+  notes             TEXT,
+  received_by       TEXT,
+  received_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS goods_receipt_items (
+  id                     TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  goods_receipt_id       TEXT NOT NULL,
+  purchase_order_item_id TEXT NOT NULL,
+  product_id             TEXT NOT NULL,
+  -- In `unit_name`, the same unit the PO line was ordered in.
+  quantity               REAL NOT NULL DEFAULT 0,
+  unit_name              TEXT,
+  conversion_factor      REAL NOT NULL DEFAULT 1,
+  -- Price actually paid on this delivery; may differ from the PO line.
+  unit_cost              INTEGER NOT NULL DEFAULT 0,
+  subtotal               INTEGER NOT NULL DEFAULT 0,
+  batch_id               TEXT,
+  batch_number           TEXT,
+  expiry_date            TEXT
+);
+
+-- DEPRECATED — kept for compatibility, written by nothing and read by nothing.
+--
+-- The AP screens (ApAr, Expenses, Cashflow, Journal) all read `expenses`, where
+-- a purchase receipt books one row per delivery with `purchase_order_id` and
+-- `goods_receipt_id` set. Migrating those four readers onto this table is a
+-- finance-module change tracked separately in docs/spec-purchase-order.md §15.
 CREATE TABLE IF NOT EXISTS payables (
   id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   supplier_id       TEXT,
@@ -336,6 +448,10 @@ CREATE TABLE IF NOT EXISTS expenses (
   status      TEXT NOT NULL DEFAULT 'paid',
   amount_paid INTEGER NOT NULL DEFAULT 0,
   supplier_id TEXT,
+  -- Set when the expense is a purchase receipt, so the bill is joinable to its
+  -- order and delivery instead of parsed out of `description`.
+  purchase_order_id TEXT,
+  goods_receipt_id  TEXT,
   notes       TEXT,
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -448,10 +564,24 @@ CREATE INDEX        IF NOT EXISTS idx_transfers_status     ON stock_transfers(st
 CREATE INDEX        IF NOT EXISTS idx_transfers_source     ON stock_transfers(source_warehouse_id);
 CREATE INDEX        IF NOT EXISTS idx_transfers_dest       ON stock_transfers(destination_warehouse_id);
 CREATE INDEX        IF NOT EXISTS idx_transfer_items_trf   ON transfer_items(transfer_id);
+CREATE INDEX        IF NOT EXISTS idx_transfers_request    ON stock_transfers(request_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_requests_number      ON stock_requests(request_number);
+CREATE INDEX        IF NOT EXISTS idx_requests_status      ON stock_requests(status, created_at);
+CREATE INDEX        IF NOT EXISTS idx_requests_branch      ON stock_requests(branch_id, status);
+CREATE INDEX        IF NOT EXISTS idx_requests_warehouse   ON stock_requests(warehouse_id, status);
+CREATE INDEX        IF NOT EXISTS idx_request_items_req    ON stock_request_items(request_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_po_number            ON purchase_orders(po_number);
 CREATE INDEX        IF NOT EXISTS idx_po_status            ON purchase_orders(status, created_at);
+CREATE INDEX        IF NOT EXISTS idx_po_supplier          ON purchase_orders(supplier_id, status);
 CREATE INDEX        IF NOT EXISTS idx_po_warehouse         ON purchase_orders(warehouse_id);
 CREATE INDEX        IF NOT EXISTS idx_po_items_po          ON purchase_order_items(purchase_order_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_grn_number           ON goods_receipts(grn_number);
+CREATE INDEX        IF NOT EXISTS idx_grn_po               ON goods_receipts(purchase_order_id);
+CREATE INDEX        IF NOT EXISTS idx_grn_warehouse        ON goods_receipts(warehouse_id, received_at);
+CREATE INDEX        IF NOT EXISTS idx_grn_items_grn        ON goods_receipt_items(goods_receipt_id);
+CREATE INDEX        IF NOT EXISTS idx_grn_items_poitem     ON goods_receipt_items(purchase_order_item_id);
+CREATE INDEX        IF NOT EXISTS idx_batches_po           ON product_batches(purchase_order_id);
+CREATE INDEX        IF NOT EXISTS idx_expenses_po          ON expenses(purchase_order_id);
 CREATE INDEX        IF NOT EXISTS idx_payables_status      ON payables(status, due_date);
 CREATE INDEX        IF NOT EXISTS idx_payables_supplier    ON payables(supplier_id);
 

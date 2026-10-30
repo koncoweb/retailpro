@@ -7,9 +7,9 @@
  */
 import { betterAuth } from 'better-auth';
 import { admin } from 'better-auth/plugins';
-import { getControlDb } from './control-db';
-import { optionalEnv, requiredEnv } from './env';
-import { roles, type AppRole } from './access';
+import { getControlDb } from './control-db.js';
+import { optionalEnv, requiredEnv } from './env.js';
+import { roles, type AppRole } from './access.js';
 
 /** Roles allowed to call `auth.api.createUser` / `setUserPassword`. */
 export const ADMIN_ROLES: AppRole[] = ['platform_owner', 'tenant_owner', 'tenant_admin'];

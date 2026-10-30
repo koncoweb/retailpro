@@ -74,3 +74,45 @@ export async function resolveWarehouseBranch(
 export function warehouseLabel(warehouse: WarehouseOption): string {
   return warehouse.branch_id ? warehouse.name : `${warehouse.name} · bersama`;
 }
+
+/** A shop's own shelf ("rak toko"), as opposed to a gudang. */
+export function isRackWarehouse(warehouse: Pick<WarehouseOption, "type">): boolean {
+  return warehouse.type === "store";
+}
+
+/**
+ * Pickers only: stock must not be received into, or transferred to, a location
+ * that has been deactivated.
+ *
+ * `WAREHOUSES_SQL` stays unfiltered on purpose — the admin page needs the
+ * inactive rows and `warehouseLabel()` must still resolve a historical document
+ * that points at one. Filtering here keeps the rule in one place instead of
+ * adding a predicate to every caller.
+ */
+export function activeWarehouses(list: WarehouseOption[]): WarehouseOption[] {
+  return list.filter((warehouse) => warehouse.status === "active");
+}
+
+/**
+ * The warehouse a branch *orders from* — the gudang, not its own rack.
+ *
+ * A replenishment order exists to fill the shop's rack, so the source can never
+ * be that same rack. Preference: a shared warehouse (no owning branch), then a
+ * warehouse typed `central`, then whatever is left that belongs to another
+ * branch. Returns null when the tenant has no warehouse at all.
+ */
+export async function resolveSupplyWarehouse(branchId?: string | null): Promise<string | null> {
+  const fromGudang = await query<{ id: string }>(
+    `SELECT id
+       FROM warehouses
+      WHERE status = 'active'
+        AND ($1 IS NULL OR branch_id IS NULL OR branch_id <> $1)
+      ORDER BY (branch_id IS NULL) DESC, (type = 'central') DESC, is_default DESC, name ASC
+      LIMIT 1`,
+    [branchId ?? null]
+  );
+  if (fromGudang.rows[0]?.id) return fromGudang.rows[0].id;
+
+  // Single-warehouse tenants: their only location is also the supplier.
+  return resolveBranchWarehouse(branchId);
+}

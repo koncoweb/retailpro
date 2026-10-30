@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { createClient } from '@libsql/client';
 
 /** Bump together with the newest statement in db/schema/tenant.sql. */
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SCHEMA_VERSION = 5;
 
 const API_BASE = 'https://api.turso.tech/v1';
 const here = dirname(fileURLToPath(import.meta.url));

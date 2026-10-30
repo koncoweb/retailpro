@@ -1,4 +1,4 @@
-import { ReactNode, useState } from "react";
+import { ReactNode, useEffect, useState } from "react";
 import { NavLink, useLocation, Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
@@ -27,45 +27,90 @@ import {
   Warehouse,
   Contact,
   Truck,
+  ClipboardList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
+import { useAuth } from "@/hooks/use-auth";
+import { ROLES } from "@/config/roles";
+import { query } from "@/lib/db";
+import type { UserRole } from "@/types";
 
 interface BackOfficeLayoutProps {
   children: ReactNode;
+}
+
+interface NavChild {
+  title: string;
+  path: string;
+  icon: React.ElementType;
+  /** Absent means every role that reaches the back office sees it. */
+  allowedRoles?: UserRole[];
+  /** Which counter, if any, to render next to the label. */
+  badge?: "pendingOrders";
 }
 
 interface NavItem {
   title: string;
   icon: React.ElementType;
   path?: string;
-  children?: { title: string; path: string; icon: React.ElementType }[];
+  allowedRoles?: UserRole[];
+  children?: NavChild[];
 }
 
+const MANAGER_ROLES: UserRole[] = [
+  "platform_owner",
+  "tenant_owner",
+  "tenant_admin",
+  "store_manager",
+  "admin",
+];
+
+/**
+ * Stock documents only — the manager roles plus gudang staff.
+ *
+ * Warehouse staff approve and ship branch orders, count stock and move goods
+ * between locations. They must not see the rest of the back office (finance,
+ * HR, customers, settings), which is why visibility is declared per entry
+ * here instead of relying on the route guard alone: a visible link that ends
+ * in a redirect reads like a broken app.
+ */
+const STOCK_ROLES: UserRole[] = [...MANAGER_ROLES, "warehouse"];
+
 const navItems: NavItem[] = [
-  { title: "Dashboard", icon: LayoutDashboard, path: "/backoffice" },
+  // The dashboard is manager-only (`BACK_OFFICE` in `App.tsx`); showing it to
+  // gudang staff would give them a link that redirects straight back out.
+  { title: "Dashboard", icon: LayoutDashboard, path: "/backoffice", allowedRoles: MANAGER_ROLES },
   {
     title: "Cabang",
     icon: Building2,
     children: [
-      { title: "Daftar Cabang", path: "/backoffice/branches", icon: Store },
-      { title: "Gudang", path: "/backoffice/warehouses", icon: Warehouse },
-      { title: "Transfer Stok", path: "/backoffice/branches/transfer", icon: ArrowLeftRight },
+      { title: "Daftar Cabang", path: "/backoffice/branches", icon: Store, allowedRoles: MANAGER_ROLES },
+      { title: "Gudang", path: "/backoffice/warehouses", icon: Warehouse, allowedRoles: STOCK_ROLES },
+      {
+        title: "Pesanan Cabang",
+        path: "/backoffice/branches/orders",
+        icon: ClipboardList,
+        allowedRoles: STOCK_ROLES,
+        badge: "pendingOrders",
+      },
+      { title: "Transfer Stok", path: "/backoffice/branches/transfer", icon: ArrowLeftRight, allowedRoles: STOCK_ROLES },
     ],
   },
   {
     title: "Inventory",
     icon: Package,
     children: [
-      { title: "Produk", path: "/backoffice/inventory/products", icon: Package },
-      { title: "Stok Masuk", path: "/backoffice/inventory/stock-in", icon: Warehouse },
-      { title: "Stok Opname", path: "/backoffice/inventory/opname", icon: Calculator },
-      { title: "Purchase Order", path: "/backoffice/inventory/po", icon: FileText },
+      { title: "Produk", path: "/backoffice/inventory/products", icon: Package, allowedRoles: STOCK_ROLES },
+      { title: "Stok Masuk", path: "/backoffice/inventory/stock-in", icon: Warehouse, allowedRoles: MANAGER_ROLES },
+      { title: "Stok Opname", path: "/backoffice/inventory/opname", icon: Calculator, allowedRoles: STOCK_ROLES },
+      { title: "Purchase Order", path: "/backoffice/inventory/po", icon: FileText, allowedRoles: MANAGER_ROLES },
     ],
   },
   {
     title: "Vendor",
     icon: Truck,
+    allowedRoles: MANAGER_ROLES,
     children: [
       { title: "Data Vendor", path: "/backoffice/vendors", icon: Truck },
       { title: "Hutang Vendor", path: "/backoffice/finance/ap-ar", icon: DollarSign },
@@ -74,6 +119,7 @@ const navItems: NavItem[] = [
   {
     title: "CRM",
     icon: Contact,
+    allowedRoles: MANAGER_ROLES,
     children: [
       { title: "Pelanggan", path: "/backoffice/crm/customers", icon: Users },
     ],
@@ -81,6 +127,7 @@ const navItems: NavItem[] = [
   {
     title: "Keuangan",
     icon: CreditCard,
+    allowedRoles: MANAGER_ROLES,
     children: [
       { title: "Jurnal", path: "/backoffice/finance/journal", icon: FileText },
       { title: "Hutang/Piutang", path: "/backoffice/finance/ap-ar", icon: DollarSign },
@@ -91,6 +138,7 @@ const navItems: NavItem[] = [
   {
     title: "Karyawan",
     icon: Users,
+    allowedRoles: MANAGER_ROLES,
     children: [
       { title: "Data Karyawan", path: "/backoffice/hr/employees", icon: Users },
       { title: "Absensi", path: "/backoffice/hr/attendance", icon: UserCheck },
@@ -98,16 +146,91 @@ const navItems: NavItem[] = [
       { title: "Payroll", path: "/backoffice/hr/payroll", icon: DollarSign },
     ],
   },
-  { title: "Laporan", icon: BarChart3, path: "/backoffice/reports" },
-  { title: "Pengaturan", icon: Settings, path: "/backoffice/settings" },
+  { title: "Laporan", icon: BarChart3, path: "/backoffice/reports", allowedRoles: MANAGER_ROLES },
+  { title: "Pengaturan", icon: Settings, path: "/backoffice/settings", allowedRoles: MANAGER_ROLES },
 ];
+
+// Detail pages (/backoffice/vendors/:id) still belong to their list menu entry.
+const matchesRoute = (pathname: string, path: string) =>
+  pathname === path || pathname.startsWith(`${path}/`);
 
 export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
   const [expandedItems, setExpandedItems] = useState<string[]>(["Inventory", "CRM"]);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [pendingOrders, setPendingOrders] = useState(0);
   const location = useLocation();
   const { theme, setTheme } = useTheme();
+  const { user } = useAuth();
+
+  // The sidebar is the only place the signed-in person sees their own name.
+  const roleLabel = ROLES.find((role) => role.value === user?.role)?.label ?? "Staff";
+
+  const role = user?.role;
+  /** An entry with no `allowedRoles` is open to whoever reached this layout. */
+  const canSee = (item: { allowedRoles?: UserRole[] }) =>
+    !item.allowedRoles || (role ? item.allowedRoles.includes(role) : false);
+
+  // A group with nothing visible inside it is hidden rather than rendered empty.
+  const visibleNav = navItems
+    .filter(canSee)
+    .map((item) =>
+      item.children ? { ...item, children: item.children.filter(canSee) } : item
+    )
+    .filter((item) => !item.children || item.children.length > 0);
+
+  /**
+   * How many orders are waiting on this person.
+   *
+   * The shop counts what it still has to do (finish drafts, confirm arrivals);
+   * the gudang counts what it owes the shops (approve, then ship). One query,
+   * refreshed on navigation, and a failure is silent: a badge must never stop
+   * the sidebar from rendering.
+   */
+  const branchId = user?.assigned_branch_id ?? null;
+
+  useEffect(() => {
+    if (!role || !STOCK_ROLES.includes(role)) return;
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const res =
+          role === "store_manager"
+            ? await query<{ pending: number }>(
+                `SELECT COUNT(*) AS pending
+                   FROM stock_requests
+                  WHERE status IN ('in_transit', 'draft') AND branch_id = $1`,
+                [branchId ?? ""]
+              )
+            : await query<{ pending: number }>(
+                `SELECT COUNT(*) AS pending
+                   FROM stock_requests
+                  WHERE status IN ('submitted', 'approved')`
+              );
+        if (!cancelled) setPendingOrders(Number(res.rows[0]?.pending ?? 0));
+      } catch {
+        if (!cancelled) setPendingOrders(0);
+      }
+    };
+
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [role, branchId, location.pathname]);
+
+  // Opening a page from the mode selector must not leave its menu group
+  // collapsed, otherwise the active entry looks like it does not exist.
+  useEffect(() => {
+    const owner = visibleNav.find((item) =>
+      item.children?.some((child) => matchesRoute(location.pathname, child.path))
+    );
+    if (!owner) return;
+    setExpandedItems((prev) => (prev.includes(owner.title) ? prev : [...prev, owner.title]));
+    // `visibleNav` is rebuilt every render; the pathname is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.pathname]);
 
   const toggleExpand = (title: string) => {
     setExpandedItems((prev) =>
@@ -117,7 +240,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
 
   const isActive = (path?: string, children?: NavItem["children"]) => {
     if (path) return location.pathname === path;
-    return children?.some((child) => location.pathname === child.path);
+    return children?.some((child) => matchesRoute(location.pathname, child.path));
   };
 
   const SidebarContent = () => (
@@ -137,7 +260,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
 
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
-        {navItems.map((item) => (
+        {visibleNav.map((item) => (
           <div key={item.title}>
             {item.path ? (
               <NavLink
@@ -195,7 +318,12 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
                         onClick={() => setMobileOpen(false)}
                       >
                         <child.icon className="w-4 h-4" />
-                        <span>{child.title}</span>
+                        <span className="flex-1">{child.title}</span>
+                        {child.badge === "pendingOrders" && pendingOrders > 0 && (
+                          <span className="rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold leading-none text-destructive-foreground">
+                            {pendingOrders > 99 ? "99+" : pendingOrders}
+                          </span>
+                        )}
                       </NavLink>
                     ))}
                   </div>
@@ -214,8 +342,10 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
           </div>
           {!collapsed && (
             <div className="animate-fade-in">
-              <p className="text-sm font-medium text-sidebar-foreground">Admin</p>
-              <p className="text-xs text-sidebar-foreground/60">Super Admin</p>
+              <p className="text-sm font-medium text-sidebar-foreground">
+                {user?.name ?? "Memuat…"}
+              </p>
+              <p className="text-xs text-sidebar-foreground/60">{roleLabel}</p>
             </div>
           )}
         </div>
