@@ -1,0 +1,103 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Bodoni Moda", ui-serif, Georgia, "Times New Roman", serif;
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+
+  --color-bg: var(--thalia-bg);
+  --color-surface: var(--thalia-surface);
+  --color-fg: var(--thalia-fg);
+  --color-muted: var(--thalia-muted);
+  --color-subtle: var(--thalia-subtle);
+  --color-accent: var(--thalia-accent);
+  --color-accent-fg: var(--thalia-accent-fg);
+  --color-line: var(--thalia-line);
+  --color-primary: var(--thalia-primary);
+  --color-primary-fg: var(--thalia-primary-fg);
+  --color-frame: var(--thalia-frame);
+
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 28px;
+}
+
+:root {
+  --thalia-bg: #f4ebe4;
+  --thalia-surface: #fff8f3;
+  --thalia-fg: #2a211c;
+  --thalia-muted: #8a7368;
+  --thalia-subtle: #c4b2a8;
+  --thalia-accent: #a88889;
+  --thalia-accent-fg: #fff8f3;
+  --thalia-line: color-mix(in oklab, #2a211c 12%, transparent);
+  --thalia-primary: #2a211c;
+  --thalia-primary-fg: #f6ede8;
+  --thalia-frame: #d9cfc6;
+  --shadow-border:
+    0px 0px 0px 1px rgba(42, 33, 28, 0.06),
+    0px 1px 2px -1px rgba(42, 33, 28, 0.06),
+    0px 8px 24px -12px rgba(42, 33, 28, 0.12);
+}
+
+html.dark {
+  --thalia-bg: #0a0908;
+  --thalia-surface: #14110e;
+  --thalia-fg: #f6efe3;
+  --thalia-muted: #a89478;
+  --thalia-subtle: #6b5c48;
+  --thalia-accent: #c5ac7a;
+  --thalia-accent-fg: #0a0908;
+  --thalia-line: color-mix(in oklab, #f6efe3 14%, transparent);
+  --thalia-primary: #c5ac7a;
+  --thalia-primary-fg: #0a0908;
+  --thalia-frame: #050403;
+  --shadow-border: 0 0 0 1px rgba(246, 239, 227, 0.1);
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  background: var(--thalia-bg);
+  color: var(--thalia-fg);
+  font-family: var(--font-sans);
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  img {
+    outline: 1px solid color-mix(in oklab, var(--thalia-fg) 10%, transparent);
+    outline-offset: -1px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

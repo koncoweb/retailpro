@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 540,
+      "bodyTextHash": "32b66a5af009d8dab498c043dee071df80762820c6d4b2ea15821e8d17d582df",
+      "bodyTextPrefix": "ELISA CAKE Semua Signature Ulang tahun Acara Box SIGNATURE Rose ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/grid-home.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 540,
+      "bodyTextHash": "32b66a5af009d8dab498c043dee071df80762820c6d4b2ea15821e8d17d582df",
+      "bodyTextPrefix": "ELISA CAKE Semua Signature Ulang tahun Acara Box SIGNATURE Rose ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/grid-home-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/grid-home.json"
+}

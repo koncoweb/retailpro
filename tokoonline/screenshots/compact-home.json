@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 929,
+      "bodyTextHash": "4df632957bf17d4430b2678803406d6c0cb63afa7d70e51861ee4705db0e578c",
+      "bodyTextPrefix": "ELISA CAKE SIGNATURE Rose Garden Signature blush, piped vintage ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/compact-home.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 929,
+      "bodyTextHash": "4df632957bf17d4430b2678803406d6c0cb63afa7d70e51861ee4705db0e578c",
+      "bodyTextPrefix": "ELISA CAKE SIGNATURE Rose Garden Signature blush, piped vintage ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/compact-home-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/compact-home.json"
+}

@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/menu",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 504,
+      "bodyTextHash": "38df538a99faecf573e9b204228a32e6053e5ff8f356cefad4829fefa05c1fa8",
+      "bodyTextPrefix": "ELISA CAKE Menu 15 kue · pre-order H-2 Semua Signature Ulang tah",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/grid-menu.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 504,
+      "bodyTextHash": "38df538a99faecf573e9b204228a32e6053e5ff8f356cefad4829fefa05c1fa8",
+      "bodyTextPrefix": "ELISA CAKE Menu 15 kue · pre-order H-2 Semua Signature Ulang tah",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/grid-menu-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/grid-menu.json"
+}

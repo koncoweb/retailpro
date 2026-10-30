@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 1064,
+      "bodyTextHash": "2032f78fde284cd371835fc61fbf201e6195c99528e61f780c5bd960072b23da",
+      "bodyTextPrefix": "ELISA CAKE ATELIER · JAKARTA Kue yang dibuat dengan tenang. Pre-",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "Elisa Cake",
+      "hasCanvas": false,
+      "bodyTextLen": 1064,
+      "bodyTextHash": "2032f78fde284cd371835fc61fbf201e6195c99528e61f780c5bd960072b23da",
+      "bodyTextPrefix": "ELISA CAKE ATELIER · JAKARTA Kue yang dibuat dengan tenang. Pre-",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
