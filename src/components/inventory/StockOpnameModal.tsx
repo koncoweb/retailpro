@@ -28,23 +28,46 @@ import { toast } from "sonner";
 import { Package, Search, CheckCircle2, AlertTriangle } from "lucide-react";
 import { warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 
-interface Product {
+/** A sellable variant, as an opname needs it: its own stock per warehouse. */
+export interface OpnameVariant {
+  id: string;
+  label: string;
+  sku: string;
+  warehouses: Record<string, number>;
+}
+
+/** `variants` absent or empty means the product is counted as a whole. */
+export interface OpnameProduct {
   id: string;
   sku: string;
   name: string;
   stock: number;
   warehouses: Record<string, number>;
+  variants?: OpnameVariant[];
+}
+
+/** One line of the counting sheet. */
+interface OpnameRow {
+  key: string;
+  productId: string;
+  variantId: string | null;
+  productName: string;
+  variantName: string;
+  sku: string;
+  systemStock: number;
 }
 
 interface StockOpnameModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  products: Product[];
+  products: OpnameProduct[];
   warehouses: WarehouseOption[];
   onSave: (opname: {
     warehouseId: string;
     items: Array<{
       productId: string;
+      /** Which variant was counted; null means "the whole product". */
+      variantId: string | null;
       systemStock: number;
       actualStock: number;
       difference: number;
@@ -55,23 +78,66 @@ interface StockOpnameModalProps {
 export function StockOpnameModal({ open, onOpenChange, products, warehouses, onSave }: StockOpnameModalProps) {
   const [selectedWarehouse, setSelectedWarehouse] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  // Keyed by ROW, not by product: a carton and a piece of the same product are
+  // counted separately, so one input per product would overwrite the other.
   const [actualStocks, setActualStocks] = useState<Record<string, string>>({});
 
-  const getLocationProducts = () => {
+  /**
+   * One counting row per sellable unit. A product with variants yields one row
+   * per variant; a product without them keeps a single product-wide row, which
+   * the opname writer still accepts.
+   */
+  const buildRows = (): OpnameRow[] => {
     if (!selectedWarehouse) return [];
-    return products.map(p => ({
-      ...p,
-      locationStock: p.warehouses[selectedWarehouse] || 0,
-    })).filter(p => 
-      p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.sku.toLowerCase().includes(searchQuery.toLowerCase())
+    const rows: OpnameRow[] = [];
+
+    for (const product of products) {
+      const variants = product.variants ?? [];
+      if (variants.length > 0) {
+        for (const variant of variants) {
+          rows.push({
+            key: `${product.id}|${variant.id}`,
+            productId: product.id,
+            variantId: variant.id,
+            productName: product.name,
+            variantName: variant.label,
+            sku: variant.sku || product.sku,
+            systemStock: variant.warehouses[selectedWarehouse] ?? 0,
+          });
+        }
+        continue;
+      }
+
+      rows.push({
+        key: `${product.id}|`,
+        productId: product.id,
+        variantId: null,
+        productName: product.name,
+        variantName: "",
+        sku: product.sku,
+        systemStock: product.warehouses[selectedWarehouse] ?? 0,
+      });
+    }
+
+    const needle = searchQuery.toLowerCase();
+    return rows.filter(
+      (row) =>
+        row.productName.toLowerCase().includes(needle) ||
+        row.sku.toLowerCase().includes(needle) ||
+        row.variantName.toLowerCase().includes(needle)
     );
   };
 
-  const locationProducts = getLocationProducts();
+  const locationRows = buildRows();
 
-  const handleActualStockChange = (productId: string, value: string) => {
-    setActualStocks({ ...actualStocks, [productId]: value });
+  const handleActualStockChange = (rowKey: string, value: string) => {
+    setActualStocks({ ...actualStocks, [rowKey]: value });
+  };
+
+  /** What was actually typed, falling back to the system count. */
+  const actualFor = (row: OpnameRow) => {
+    const raw = actualStocks[row.key];
+    return raw !== undefined && raw !== "" ? parseInt(raw) : row.systemStock;
   };
 
   const handleSubmit = () => {
@@ -80,17 +146,15 @@ export function StockOpnameModal({ open, onOpenChange, products, warehouses, onS
       return;
     }
 
-    const items = locationProducts.map(product => {
-      const actualStockStr = actualStocks[product.id];
-      const actualStock = actualStockStr !== undefined && actualStockStr !== "" 
-        ? parseInt(actualStockStr) 
-        : product.locationStock;
-      
+    const items = locationRows.map((row) => {
+      const actualStock = actualFor(row);
+
       return {
-        productId: product.id,
-        systemStock: product.locationStock,
+        productId: row.productId,
+        variantId: row.variantId,
+        systemStock: row.systemStock,
         actualStock,
-        difference: actualStock - product.locationStock,
+        difference: actualStock - row.systemStock,
       };
     });
 
@@ -108,13 +172,7 @@ export function StockOpnameModal({ open, onOpenChange, products, warehouses, onS
   };
 
   const getTotalDifference = () => {
-    return locationProducts.reduce((sum, product) => {
-      const actualStockStr = actualStocks[product.id];
-      const actual = actualStockStr !== undefined && actualStockStr !== "" 
-        ? parseInt(actualStockStr) 
-        : product.locationStock;
-      return sum + (actual - product.locationStock);
-    }, 0);
+    return locationRows.reduce((sum, row) => sum + (actualFor(row) - row.systemStock), 0);
   };
 
   return (
@@ -163,7 +221,7 @@ export function StockOpnameModal({ open, onOpenChange, products, warehouses, onS
             <div className="flex gap-4">
               <div className="flex-1 bg-muted/50 rounded-lg p-3">
                 <p className="text-sm text-muted-foreground">Total Produk</p>
-                <p className="text-xl font-bold">{locationProducts.length}</p>
+                <p className="text-xl font-bold">{locationRows.length}</p>
               </div>
               <div className={`flex-1 rounded-lg p-3 ${getTotalDifference() === 0 ? 'bg-success/10' : getTotalDifference() > 0 ? 'bg-info/10' : 'bg-destructive/10'}`}>
                 <p className="text-sm text-muted-foreground">Selisih Total</p>
@@ -175,7 +233,7 @@ export function StockOpnameModal({ open, onOpenChange, products, warehouses, onS
           )}
 
           {/* Products Table */}
-          {selectedWarehouse && locationProducts.length > 0 && (
+          {selectedWarehouse && locationRows.length > 0 && (
             <div className="border rounded-lg overflow-hidden">
               <Table>
                 <TableHeader>
@@ -188,34 +246,38 @@ export function StockOpnameModal({ open, onOpenChange, products, warehouses, onS
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {locationProducts.map((product) => {
-                    const actualStockStr = actualStocks[product.id];
-                    const actualStock = actualStockStr !== undefined && actualStockStr !== "" 
-                      ? parseInt(actualStockStr) 
-                      : product.locationStock;
-                    const difference = actualStock - product.locationStock;
+                  {locationRows.map((row) => {
+                    const actualStock = actualFor(row);
+                    const difference = actualStock - row.systemStock;
                     
                     return (
-                      <TableRow key={product.id}>
+                      <TableRow key={row.key}>
                         <TableCell>
                           <div className="flex items-center gap-2">
                             <Package className="w-4 h-4 text-muted-foreground" />
                             <div>
-                              <p className="font-medium">{product.name}</p>
-                              <p className="text-xs text-muted-foreground">{product.sku}</p>
+                              <p className="font-medium">
+                                {row.productName}
+                                {row.variantName && (
+                                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                    {row.variantName}
+                                  </span>
+                                )}
+                              </p>
+                              <p className="text-xs text-muted-foreground">{row.sku}</p>
                             </div>
                           </div>
                         </TableCell>
                         <TableCell className="text-center">
-                          <Badge variant="secondary">{product.locationStock}</Badge>
+                          <Badge variant="secondary">{row.systemStock}</Badge>
                         </TableCell>
                         <TableCell className="text-center">
                           <Input
                             type="number"
                             className="w-20 mx-auto text-center"
-                            placeholder={product.locationStock.toString()}
-                            value={actualStocks[product.id] || ""}
-                            onChange={(e) => handleActualStockChange(product.id, e.target.value)}
+                            placeholder={row.systemStock.toString()}
+                            value={actualStocks[row.key] || ""}
+                            onChange={(e) => handleActualStockChange(row.key, e.target.value)}
                           />
                         </TableCell>
                         <TableCell className="text-center">
@@ -238,7 +300,7 @@ export function StockOpnameModal({ open, onOpenChange, products, warehouses, onS
             </div>
           )}
 
-          {selectedWarehouse && locationProducts.length === 0 && (
+          {selectedWarehouse && locationRows.length === 0 && (
             <div className="text-center py-8 text-muted-foreground">
               Tidak ada produk ditemukan di gudang ini
             </div>

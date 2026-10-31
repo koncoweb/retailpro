@@ -62,6 +62,28 @@ export interface ProductUnit {
   conversion_factor: number;
   price: number;
   barcode: string;
+  /** Buy price per pack; 0 when the vendor has not quoted it yet. */
+  cost?: number;
+}
+
+/**
+ * One sellable SKU of a product: the flavour or size that is actually stocked.
+ *
+ * A product is the MODEL; a variant is what carries a barcode, a price and its
+ * own batches. Packs belong to the variant, so a carton of one flavour is never
+ * priced from the piece of another.
+ */
+export interface ProductVariant {
+  id: string;
+  sku: string;
+  /** Ready to render, e.g. "Susu 250ml"; resolved from the product's groups. */
+  label: string;
+  /** Selling price of this variant's base unit. */
+  price: number;
+  /** This variant's own packs. */
+  units: ProductUnit[];
+  /** On-hand quantity per warehouse id, in base units. */
+  stock_by_warehouse: Record<string, number>;
 }
 
 export interface Product {
@@ -76,6 +98,8 @@ export interface Product {
   unit_type: string;
   min_stock_alert: number;
   units: ProductUnit[]; // Multi-unit support
+  /** One row per sellable SKU. Omitted by callers that only price the model. */
+  variants?: ProductVariant[];
   
   // Frontend helper for multi-warehouse stock view
   // In real DB, this comes from aggregation of product_batches
@@ -101,6 +125,10 @@ export interface CartItem {
   quantity: number;
   unit_name: string;
   conversion_factor: number;
+  /** Which variant sold; null means the product-wide line of a legacy item. */
+  variant_id?: string | null;
+  /** "Susu 250ml" for the cart line and the receipt. */
+  variant_name?: string;
   // The cashier never picks a batch: the tenant's issue policy (FIFO / LIFO /
   // FEFO, stored in `tenants.settings.inventory.stock_issue_method`) decides
   // which batch leaves first when the sale is committed.

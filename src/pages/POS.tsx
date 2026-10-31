@@ -23,12 +23,13 @@ import {
 } from "@/components/ui/select";
 import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package, MapPin } from "lucide-react";
 import { toast } from "sonner";
-import { Product, Branch, Transaction, CartItem } from "@/types";
+import { Product, ProductUnit, ProductVariant, Branch, Transaction, CartItem } from "@/types";
 import { query, runTransaction, batchQuery, parseJson, type BatchStatement } from "@/lib/db";
 import { logAuditTx } from "@/lib/audit";
 import { resolveBranchWarehouse } from "@/lib/warehouse";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
 import { sortBatchesForIssue } from "@/lib/stock-issue";
+import { parseVariantAttributes, parseVariantGroups, variantLabel } from "@/lib/variants";
 
 // Mock Session Data (In real app, this comes from Context/Auth)
 const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
@@ -73,6 +74,8 @@ export default function POS() {
 
   const [isUnitSelectionOpen, setIsUnitSelectionOpen] = useState(false);
   const [selectedProductForUnit, setSelectedProductForUnit] = useState<Product | null>(null);
+  /** Null until the cashier has chosen which flavour/size is being sold. */
+  const [selectedVariantForUnit, setSelectedVariantForUnit] = useState<ProductVariant | null>(null);
 
   const currentBranch = useMemo(() =>
     branches.find(b => b.id === currentBranchId) || { id: "", name: "Loading...", tenant_id: "" } as Branch,
@@ -150,11 +153,43 @@ export default function POS() {
                      'barcode', barcode
                    ))
                    FROM product_units 
-                   WHERE product_id = p.id
+                   WHERE product_id = p.id AND variant_id IS NULL
                 ), '[]') as units
               FROM products p
               LEFT JOIN product_batches pb ON p.id = pb.product_id AND pb.warehouse_id = $1
               GROUP BY p.id
+            `,
+            params: [warehouseId],
+          },
+          // Variants are loaded as three flat lists and stitched by id, because
+          // a nested aggregate cannot guarantee a pack lands on its own variant.
+          {
+            sql: `
+              SELECT v.id, v.product_id, v.sku, v.attributes, v.cost_price,
+                     COALESCE((
+                       SELECT pu.price FROM product_units pu
+                        WHERE pu.variant_id = v.id AND pu.conversion_factor = 1
+                        ORDER BY pu.created_at ASC LIMIT 1
+                     ), 0) AS base_price
+                FROM product_variants v
+               WHERE v.status = 'active'
+               ORDER BY v.created_at ASC
+            `,
+          },
+          {
+            sql: `
+              SELECT variant_id, name, conversion_factor, price, barcode
+                FROM product_units
+               WHERE variant_id IS NOT NULL
+               ORDER BY conversion_factor ASC
+            `,
+          },
+          {
+            sql: `
+              SELECT variant_id, COALESCE(SUM(quantity_current), 0) AS qty
+                FROM product_batches
+               WHERE warehouse_id = $1 AND variant_id IS NOT NULL AND quantity_current > 0
+               GROUP BY variant_id
             `,
             params: [warehouseId],
           },
@@ -169,7 +204,56 @@ export default function POS() {
           });
         }
 
-        const [productRes, shiftRes] = await batchQuery(statements);
+        const [productRes, variantRes, packRes, variantStockRes, shiftRes] =
+          await batchQuery(statements);
+
+        const packsByVariant = new Map<string, ProductVariant["units"]>();
+        for (const row of packRes.rows as unknown as {
+          variant_id: string;
+          name: string;
+          conversion_factor: number;
+          price: number;
+          barcode: string | null;
+        }[]) {
+          const list = packsByVariant.get(row.variant_id) ?? [];
+          list.push({
+            name: row.name,
+            conversion_factor: Number(row.conversion_factor) || 1,
+            price: Number(row.price) || 0,
+            barcode: row.barcode ?? "",
+          });
+          packsByVariant.set(row.variant_id, list);
+        }
+
+        const stockByVariant = new Map<string, number>();
+        for (const row of variantStockRes.rows as unknown as {
+          variant_id: string;
+          qty: number;
+        }[]) {
+          stockByVariant.set(row.variant_id, Number(row.qty) || 0);
+        }
+
+        const variantsByProduct = new Map<string, (ProductVariant & { attributes: string })[]>();
+        for (const row of variantRes.rows as unknown as {
+          id: string;
+          product_id: string;
+          sku: string;
+          attributes: string;
+          base_price: number;
+        }[]) {
+          const list = variantsByProduct.get(row.product_id) ?? [];
+          list.push({
+            id: row.id,
+            sku: row.sku,
+            // Filled in below, once the product's attribute groups are known.
+            label: "",
+            attributes: row.attributes,
+            price: Number(row.base_price) || 0,
+            units: packsByVariant.get(row.id) ?? [],
+            stock_by_warehouse: { [warehouseId]: stockByVariant.get(row.id) ?? 0 },
+          });
+          variantsByProduct.set(row.product_id, list);
+        }
 
         // Map to Product interface
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -180,7 +264,13 @@ export default function POS() {
             stock_by_warehouse: { [warehouseId]: parseFloat(row.stock) },
             // JSON columns arrive as TEXT — parse them before use.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            units: parseJson<any[]>(row.units, [])
+            units: parseJson<any[]>(row.units, []),
+            // Labels need the product's own group order, so they are resolved
+            // here rather than while the flat lists were read.
+            variants: (variantsByProduct.get(row.id) ?? []).map((variant) => ({
+              ...variant,
+              label: variantLabel(parseVariantAttributes(variant.attributes), parseVariantGroups(row.variant_attributes)),
+            })),
         }));
         
         setProducts(mappedProducts);
@@ -217,10 +307,34 @@ export default function POS() {
     return product.stock_by_warehouse?.[currentWarehouseId] || 0;
   };
 
+  /**
+   * On-hand in this branch's stockroom for what is actually being sold.
+   *
+   * A variant keeps its own batches, so selling a carton of one flavour must
+   * not spend the stock of another. A product with no variant falls back to the
+   * product-wide figure.
+   */
+  const getStock = (productId: string, variantId: string | null) => {
+    const product = products.find((entry) => entry.id === productId);
+    if (!product) return 0;
+    if (variantId) {
+      const variant = product.variants?.find((entry) => entry.id === variantId);
+      if (variant) return currentWarehouseId ? variant.stock_by_warehouse?.[currentWarehouseId] || 0 : 0;
+    }
+    return getProductStock(product);
+  };
+
+  /** Cart rows are distinct by product AND variant AND pack. */
+  const cartKey = (item: Pick<CartItem, "id" | "variant_id" | "unit_name">) =>
+    `${item.id}|${item.variant_id ?? ""}|${item.unit_name}`;
+
   const lowStockProducts = useMemo(() => 
     products.filter((p) => getProductStock(p) < p.min_stock_alert),
     [products, currentWarehouseId]
   );
+
+  /** More than one SKU behind the product means the till must ask which. */
+  const hasVariantChoice = (product: Product | null) => (product?.variants?.length ?? 0) > 1;
 
   const addToCart = (product: Product) => {
     if (!isShiftActive) { toast.error("Buka shift terlebih dahulu"); return; }
@@ -228,24 +342,53 @@ export default function POS() {
     const stock = getProductStock(product);
     if (stock <= 0) { toast.error("Stok produk habis di cabang ini"); return; }
 
+    // A product with several SKUs must say which one first: a carton of Susu and
+    // a carton of Cokelat are different stock at different prices.
+    if (hasVariantChoice(product)) {
+      setSelectedProductForUnit(product);
+      setSelectedVariantForUnit(null);
+      setIsUnitSelectionOpen(true);
+      return;
+    }
+
+    // Every product has at least one variant row (migration 006 backfills the
+    // single `Default` SKU), but one SKU is not a choice: preselect it so the
+    // till still records which variant the stock and price belong to, and go
+    // straight to its packs.
+    if (product.variants && product.variants.length === 1) {
+      setSelectedProductForUnit(product);
+      setSelectedVariantForUnit(product.variants[0]);
+      setIsUnitSelectionOpen(true);
+      return;
+    }
+
     // Check if product has multiple units
     if (product.units && product.units.length > 0) {
       setSelectedProductForUnit(product);
+      setSelectedVariantForUnit(null);
       setIsUnitSelectionOpen(true);
       return;
     }
 
     // Default to Pcs if no units
-    addCartItem(product, product.unit_type || "Pcs", 1, product.price);
+    addCartItem(product, null, product.unit_type || "Pcs", 1, product.price);
   };
 
-  const addCartItem = (product: Product, unitName: string, conversionFactor: number, price: number) => {
-    const stock = getProductStock(product);
+  const addCartItem = (
+    product: Product,
+    variant: ProductVariant | null,
+    unitName: string,
+    conversionFactor: number,
+    price: number
+  ) => {
+    const stock = getStock(product.id, variant?.id ?? null);
     
     setCart((prev) => {
-      const existing = prev.find((item) => item.id === product.id && item.unit_name === unitName);
+      const sameStock = (item: CartItem) =>
+        item.id === product.id && (item.variant_id ?? null) === (variant?.id ?? null);
+      const existing = prev.find((item) => sameStock(item) && item.unit_name === unitName);
       
-      const currentTotalBaseQty = prev.filter(i => i.id === product.id).reduce((sum, i) => sum + (i.quantity * i.conversion_factor), 0);
+      const currentTotalBaseQty = prev.filter(sameStock).reduce((sum, item) => sum + (item.quantity * item.conversion_factor), 0);
       const addedBaseQty = 1 * conversionFactor;
 
       if (currentTotalBaseQty + addedBaseQty > stock) {
@@ -254,33 +397,37 @@ export default function POS() {
       }
 
       if (existing) {
-        return prev.map((item) => (item.id === product.id && item.unit_name === unitName) ? { ...item, quantity: item.quantity + 1 } : item);
+        return prev.map((item) => (sameStock(item) && item.unit_name === unitName) ? { ...item, quantity: item.quantity + 1 } : item);
       }
       
       return [...prev, { 
         id: product.id,
-        sku: product.sku,
+        sku: variant?.sku || product.sku,
         name: product.name,
         quantity: 1,
         price: price, 
         unit_name: unitName,
-        conversion_factor: conversionFactor
+        conversion_factor: conversionFactor,
+        variant_id: variant?.id ?? null,
+        // Only a product with something to choose between names the SKU; the
+        // backfilled `Default` row is the product itself.
+        variant_name: variant && hasVariantChoice(product) ? variant.label : "",
       }];
     });
   };
 
-  const updateQuantity = (id: string, unitName: string, delta: number) => {
-    const product = products.find(p => p.id === id);
-    if (!product) return;
-    
-    const stock = getProductStock(product);
+  const updateQuantity = (line: CartItem, delta: number) => {
+    const stock = getStock(line.id, line.variant_id ?? null);
+    const key = cartKey(line);
     
     setCart((prev) => {
-      // Calculate total base quantity currently in cart for this product
-      const currentTotalBaseQty = prev.filter(i => i.id === id).reduce((sum, i) => sum + (i.quantity * i.conversion_factor), 0);
+      // Total base quantity currently in cart for this product AND variant.
+      const currentTotalBaseQty = prev
+        .filter((i) => i.id === line.id && (i.variant_id ?? null) === (line.variant_id ?? null))
+        .reduce((sum, i) => sum + (i.quantity * i.conversion_factor), 0);
       
       return prev.map((item) => {
-        if (item.id === id && item.unit_name === unitName) {
+        if (cartKey(item) === key) {
           const newQty = item.quantity + delta;
           const newBaseQty = newQty * item.conversion_factor;
           const oldBaseQty = item.quantity * item.conversion_factor;
@@ -296,17 +443,17 @@ export default function POS() {
     });
   };
 
-  const setQuantity = (id: string, unitName: string, qty: number) => {
-    const product = products.find(p => p.id === id);
-    if (!product) return;
-    
-    const stock = getProductStock(product);
+  const setQuantity = (line: CartItem, qty: number) => {
+    const stock = getStock(line.id, line.variant_id ?? null);
+    const key = cartKey(line);
 
     setCart((prev) => {
-      const currentTotalBaseQty = prev.filter(i => i.id === id).reduce((sum, i) => sum + (i.quantity * i.conversion_factor), 0);
+      const currentTotalBaseQty = prev
+        .filter((i) => i.id === line.id && (i.variant_id ?? null) === (line.variant_id ?? null))
+        .reduce((sum, i) => sum + (i.quantity * i.conversion_factor), 0);
 
       return prev.map((item) => {
-         if (item.id === id && item.unit_name === unitName) {
+         if (cartKey(item) === key) {
             const newBaseQty = qty * item.conversion_factor;
             const oldBaseQty = item.quantity * item.conversion_factor;
             
@@ -321,8 +468,9 @@ export default function POS() {
     });
   };
 
-  const removeFromCart = (id: string, unitName: string) => {
-    setCart((prev) => prev.filter((item) => !(item.id === id && item.unit_name === unitName)));
+  const removeFromCart = (line: CartItem) => {
+    const key = cartKey(line);
+    setCart((prev) => prev.filter((item) => cartKey(item) !== key));
   };
   const clearCart = () => { setCart([]); setDiscount(0); };
 
@@ -330,6 +478,57 @@ export default function POS() {
   const discountAmount = subtotal * (discount / 100);
   const total = subtotal - discountAmount;
   const totalItems = cart.reduce((sum, item) => sum + item.quantity, 0);
+
+  /**
+   * Variant chosen: a variant that only sells in one pack needs no second tap,
+   * otherwise the dialog stays open and asks which pack.
+   */
+  const pickVariant = (product: Product, variant: ProductVariant) => {
+    if (variant.units.length <= 1) {
+      const pack = variant.units[0];
+      addCartItem(
+        product,
+        variant,
+        pack?.name ?? (product.unit_type || "Pcs"),
+        pack?.conversion_factor ?? 1,
+        pack?.price ?? variant.price
+      );
+      // Closing only. The dialog fades out still mounted, so clearing the
+      // variant here would repaint it as the flavour list on the way out.
+      setIsUnitSelectionOpen(false);
+      return;
+    }
+    setSelectedVariantForUnit(variant);
+  };
+
+  /** Packs the unit dialog offers for whatever is currently selected. */
+  const dialogPacks = useMemo<ProductUnit[]>(() => {
+    const product = selectedProductForUnit;
+    if (!product) return [];
+    if (selectedVariantForUnit) {
+      // A variant with no pack row still sells as its base unit.
+      return selectedVariantForUnit.units.length > 0
+        ? selectedVariantForUnit.units
+        : [
+            {
+              name: product.unit_type || "Pcs",
+              conversion_factor: 1,
+              price: selectedVariantForUnit.price,
+              barcode: "",
+            },
+          ];
+    }
+    return product.units.length > 0
+      ? product.units
+      : [
+          {
+            name: product.unit_type || "Pcs",
+            conversion_factor: 1,
+            price: product.price,
+            barcode: "",
+          },
+        ];
+  }, [selectedProductForUnit, selectedVariantForUnit]);
 
   const filteredProducts = products.filter((product) => {
     const matchesSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase());
@@ -368,23 +567,39 @@ export default function POS() {
         // Pre-flight stock check. It must happen before the transaction opens:
         // a shortage discovered halfway through used to leave a committed
         // transaction with only part of its stock deducted.
-        const requiredByProduct = new Map<string, number>();
+        //
+        // Keyed by product AND variant: two flavours of one product are two
+        // separate piles of stock, so their requirements cannot be summed.
+        const requiredByStock = new Map<
+          string,
+          { productId: string; variantId: string | null; name: string; required: number }
+        >();
         for (const item of cart) {
+          const variantId = item.variant_id ?? null;
+          const key = `${item.id}|${variantId ?? ""}`;
           const base = item.quantity * item.conversion_factor;
-          requiredByProduct.set(item.id, (requiredByProduct.get(item.id) ?? 0) + base);
+          const bucket = requiredByStock.get(key);
+          if (bucket) bucket.required += base;
+          else
+            requiredByStock.set(key, {
+              productId: item.id,
+              variantId,
+              name: item.name,
+              required: base,
+            });
         }
-        for (const [productId, required] of requiredByProduct) {
+        for (const entry of requiredByStock.values()) {
           const stockRes = await query<{ available: number }>(
             `SELECT COALESCE(SUM(quantity_current), 0) AS available
                FROM product_batches
-              WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0`,
-            [productId, warehouseId]
+              WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0
+                AND ($3 IS NULL OR variant_id = $3)`,
+            [entry.productId, warehouseId, entry.variantId]
           );
           const available = Number(stockRes.rows[0]?.available ?? 0);
-          if (available + 0.001 < required) {
-            const productName = cart.find((c) => c.id === productId)?.name ?? productId;
+          if (available + 0.001 < entry.required) {
             throw new Error(
-              `Stok tidak cukup untuk ${productName}: tersedia ${available}, dibutuhkan ${required}`
+              `Stok tidak cukup untuk ${entry.name}: tersedia ${available}, dibutuhkan ${entry.required}`
             );
           }
         }
@@ -404,14 +619,17 @@ export default function POS() {
             for (const item of cart) {
                 // Calculate total base units needed
                 let remainingBaseQty = item.quantity * item.conversion_factor;
+                const variantId = item.variant_id ?? null;
                 
                 // Candidates come back unordered; the policy decides which one
                 // leaves first. `id` still breaks ties so the order is
                 // deterministic when two batches share a timestamp.
+                // A sale only spends the batches of the variant it sold.
                 const batchesRes = await client.query(`
                     SELECT * FROM product_batches 
                     WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0
-                `, [item.id, warehouseId]);
+                      AND ($3 IS NULL OR variant_id = $3)
+                `, [item.id, warehouseId, variantId]);
 
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const batches = sortBatchesForIssue(batchesRes.rows as any[], issueMethod);
@@ -445,11 +663,12 @@ export default function POS() {
                     // Add transaction item
                     await client.query(`
                         INSERT INTO transaction_items
-                        (transaction_id, product_id, batch_id, quantity, unit_price, cost_price, subtotal, unit_name, conversion_factor)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        (transaction_id, product_id, variant_id, batch_id, quantity, unit_price, cost_price, subtotal, unit_name, conversion_factor)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                     `, [
                         transactionId, 
                         item.id, 
+                        variantId,
                         batch.id, 
                         quantityInSoldUnit, 
                         item.price, 
@@ -693,7 +912,10 @@ export default function POS() {
                       {isLowStock && !isOutOfStock && <div className="absolute top-1 right-1"><AlertTriangle className="w-4 h-4 text-warning" /></div>}
                     </div>
                     <h4 className={`font-medium text-xs md:text-sm line-clamp-2 ${!isOutOfStock && 'group-hover:text-primary'}`}>{product.name}</h4>
-                    <p className="text-xs text-muted-foreground mt-1">{product.sku}</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {product.sku}
+                      {product.variants && product.variants.length > 1 ? ` · ${product.variants.length} varian` : ""}
+                    </p>
                     <div className="flex items-center justify-between mt-2">
                       <span className="font-bold text-primary text-xs md:text-sm">{formatCurrency(product.price)}</span>
                       <Badge variant={isOutOfStock ? "destructive" : isLowStock ? "destructive" : "secondary"} className="text-xs">
@@ -712,28 +934,31 @@ export default function POS() {
           <div className="p-3 md:p-4 border-b"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">Keranjang</h2><p className="text-sm text-muted-foreground">{totalItems} item</p></div>{cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart} className="text-destructive"><Trash2 className="w-4 h-4 mr-1" />Hapus</Button>}</div></div>
           <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-2 md:space-y-3 min-h-[150px] max-h-[200px] lg:max-h-none">
             {cart.length === 0 ? <div className="h-full flex flex-col items-center justify-center text-muted-foreground py-8"><QrCode className="w-12 h-12 md:w-16 md:h-16 mb-4 opacity-50" /><p className="font-medium">Keranjang kosong</p><p className="text-sm">Scan barcode atau pilih produk</p></div> : cart.map((item) => (
-              <div key={`${item.id}-${item.unit_name}`} className="flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-lg bg-muted/50">
+              <div key={cartKey(item)} className="flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-lg bg-muted/50">
                 <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg bg-gradient-to-br from-primary/20 to-info/20 flex items-center justify-center text-lg md:text-xl">📦</div>
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-xs md:text-sm truncate">
                     {item.name}
                     <span className="ml-1 text-[10px] text-muted-foreground px-1.5 py-0.5 bg-background rounded border">{item.unit_name}</span>
                   </p>
+                  {item.variant_name && (
+                    <p className="text-[11px] text-muted-foreground truncate">{item.variant_name}</p>
+                  )}
                   <p className="text-xs md:text-sm text-primary font-semibold">{formatCurrency(item.price)}</p>
                   <p className="text-xs text-muted-foreground">Total: {formatCurrency(item.price * item.quantity)}</p>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item.id, item.unit_name, -1)}><Minus className="w-3 h-3" /></Button>
+                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item, -1)}><Minus className="w-3 h-3" /></Button>
                   <Input
                     type="number"
                     min="1"
                     value={item.quantity}
-                    onChange={(e) => setQuantity(item.id, item.unit_name, parseInt(e.target.value) || 0)}
+                    onChange={(e) => setQuantity(item, parseInt(e.target.value) || 0)}
                     className="w-12 md:w-14 text-center font-medium text-sm h-8 px-1"
                   />
-                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item.id, item.unit_name, 1)}><Plus className="w-3 h-3" /></Button>
+                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item, 1)}><Plus className="w-3 h-3" /></Button>
                 </div>
-                <Button variant="ghost" size="iconSm" onClick={() => removeFromCart(item.id, item.unit_name)} className="text-destructive"><X className="w-4 h-4" /></Button>
+                <Button variant="ghost" size="iconSm" onClick={() => removeFromCart(item)} className="text-destructive"><X className="w-4 h-4" /></Button>
               </div>
             ))}
           </div>
@@ -749,52 +974,84 @@ export default function POS() {
       <PaymentModal open={isPaymentOpen} onOpenChange={setIsPaymentOpen} total={total} onPaymentComplete={handlePaymentComplete} banks={banks} />
       <ShiftModal open={isShiftOpen} onOpenChange={setIsShiftOpen} mode={shiftMode} shiftData={shiftData ? { ...shiftData, transactions } : undefined} onShiftAction={handleShiftAction} />
       
-      <Dialog open={isUnitSelectionOpen} onOpenChange={setIsUnitSelectionOpen}>
-        <DialogContent className="sm:max-w-[400px]">
+      {/*
+        One dialog, two steps: which variant, then which pack. A product
+        without variants skips straight to the pack list, exactly as before.
+      */}
+      <Dialog
+        open={isUnitSelectionOpen}
+        onOpenChange={(open) => {
+          setIsUnitSelectionOpen(open);
+          if (!open) setSelectedVariantForUnit(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-[420px]">
           <DialogHeader>
-            <DialogTitle>Pilih Satuan - {selectedProductForUnit?.name}</DialogTitle>
+            <DialogTitle>
+              {hasVariantChoice(selectedProductForUnit) && !selectedVariantForUnit
+                ? `Pilih Varian - ${selectedProductForUnit?.name ?? ""}`
+                : hasVariantChoice(selectedProductForUnit) && selectedVariantForUnit
+                  ? `Pilih Satuan - ${selectedVariantForUnit.label}`
+                  : `Pilih Satuan - ${selectedProductForUnit?.name ?? ""}`}
+            </DialogTitle>
           </DialogHeader>
-          <div className="grid gap-2 py-4">
-            {selectedProductForUnit && (
-              <>
-                <Button 
-                  variant="outline" 
-                  className="justify-between h-auto py-3"
-                  onClick={() => {
-                    if (selectedProductForUnit) {
-                      addCartItem(selectedProductForUnit, selectedProductForUnit.unit_type || "Pcs", 1, selectedProductForUnit.price);
-                      setIsUnitSelectionOpen(false);
-                    }
-                  }}
-                >
-                  <div className="flex flex-col items-start">
-                    <span className="font-medium">{selectedProductForUnit.unit_type || "Pcs"} (1)</span>
-                    <span className="text-xs text-muted-foreground">Satuan Dasar</span>
-                  </div>
-                  <span className="font-bold">{formatCurrency(selectedProductForUnit.price)}</span>
-                </Button>
-                
-                {selectedProductForUnit.units?.map((u) => (
-                  <Button 
-                    key={u.name} 
-                    variant="outline" 
+          <div className="grid gap-2 py-4 max-h-[60vh] overflow-y-auto">
+            {hasVariantChoice(selectedProductForUnit) && !selectedVariantForUnit
+              ? selectedProductForUnit?.variants?.map((variant) => {
+                  const onHand = currentWarehouseId
+                    ? variant.stock_by_warehouse?.[currentWarehouseId] ?? 0
+                    : 0;
+                  return (
+                    <Button
+                      key={variant.id}
+                      variant="outline"
+                      className="justify-between h-auto py-3"
+                      disabled={onHand <= 0}
+                      onClick={() => pickVariant(selectedProductForUnit, variant)}
+                    >
+                      <div className="flex flex-col items-start">
+                        <span className="font-medium">{variant.label}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {variant.sku} · stok {onHand}
+                        </span>
+                      </div>
+                      <span className="font-bold">{formatCurrency(variant.price)}</span>
+                    </Button>
+                  );
+                })
+              : dialogPacks.map((pack) => (
+                  <Button
+                    key={`${pack.name}-${pack.conversion_factor}`}
+                    variant="outline"
                     className="justify-between h-auto py-3"
                     onClick={() => {
-                      if (selectedProductForUnit) {
-                        addCartItem(selectedProductForUnit, u.name, u.conversion_factor, u.price);
-                        setIsUnitSelectionOpen(false);
-                      }
+                      if (!selectedProductForUnit) return;
+                      addCartItem(
+                        selectedProductForUnit,
+                        selectedVariantForUnit,
+                        pack.name,
+                        pack.conversion_factor,
+                        pack.price
+                      );
+                      // Closing only: the dialog's exit animation keeps its
+                      // content mounted, and the pick it is fading out on is the
+                      // one just made. `onOpenChange` clears the selection.
+                      setIsUnitSelectionOpen(false);
                     }}
                   >
                     <div className="flex flex-col items-start">
-                      <span className="font-medium">{u.name} ({u.conversion_factor})</span>
-                      <span className="text-xs text-muted-foreground">Konversi: {u.conversion_factor} {selectedProductForUnit.unit_type || "Pcs"}</span>
+                      <span className="font-medium">
+                        {pack.name} ({pack.conversion_factor})
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {pack.conversion_factor === 1
+                          ? "Satuan Dasar"
+                          : `Konversi: ${pack.conversion_factor} ${selectedProductForUnit?.unit_type || "Pcs"}`}
+                      </span>
                     </div>
-                    <span className="font-bold">{formatCurrency(u.price)}</span>
+                    <span className="font-bold">{formatCurrency(pack.price)}</span>
                   </Button>
                 ))}
-              </>
-            )}
           </div>
         </DialogContent>
       </Dialog>

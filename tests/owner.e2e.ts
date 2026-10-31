@@ -82,6 +82,38 @@ describe('owner', { tags: ['owner'], agentContext: APP_CONTEXT }, () => {
     await expect(dialog.getByText('Setujui Purchase Order')).toBeVisible();
   });
 
+  /**
+   * The vendor screen is the owner's control over buy prices: one agreed price
+   * per variant per pack, which is what a purchase order fills itself from, and
+   * a history of what the supplier actually charged.
+   */
+  test('a vendor pricelist holds buy prices per variant and pack', { session: 'owner' }, async ({ app, screen }) => {
+    await app.open('/backoffice/vendors');
+    await expect(screen.getByRole('heading', 'Vendor', { level: 1 })).toBeVisible();
+
+    // The dairy supplier is the one that quotes both flavours of the condensed
+    // milk, so its pricelist has something to show.
+    await screen.getByPlaceholder('Cari nama, kode, kontak, atau email...').fill('Dairy Prima');
+    await screen.getByRole('button', { name: /CV Dairy Prima Nusantara/ }).tap();
+    await expect(screen.getByRole('heading', 'CV Dairy Prima Nusantara', { level: 1 })).toBeVisible();
+
+    // Tab one: the agreed prices, one row per variant per pack.
+    await screen.getByRole('tab', { name: /Harga Beli/ }).tap();
+    await expect(screen.getByRole('heading', 'Harga Beli per Varian & Pecahan')).toBeVisible();
+    await expect(screen.getByText('Putih', { exact: true })).toBeVisible();
+    await expect(screen.getByText('Cokelat', { exact: true })).toBeVisible();
+    // Both flavours quote the base can, which is the pack a PO defaults to.
+    await expect(screen.getByText(/kaleng/).first()).toBeVisible();
+    await expect(screen.getByText(/12\.500/).first()).toBeVisible();
+    await expect(screen.getByText(/13\.500/).first()).toBeVisible();
+
+    // Tab two: what the supplier really billed on each goods receipt.
+    await screen.getByRole('tab', { name: /Riwayat Harga/ }).tap();
+    await expect(screen.getByRole('heading', 'Riwayat Harga Beli')).toBeVisible();
+    await expect(screen.getByRole('columnheader', 'Harga / Pecahan')).toBeVisible();
+    await expect(screen.getByRole('columnheader', 'Harga / Satuan')).toBeVisible();
+  });
+
   test('Ganti Mode switches screen without ending the session', { session: 'owner' }, async ({ app, screen, browser }) => {
     await app.open('/backoffice');
 

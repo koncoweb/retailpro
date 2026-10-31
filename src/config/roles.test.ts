@@ -58,6 +58,24 @@ describe('resolveRolePermissions', () => {
     }
   });
 
+  it('keeps variant and price control with the owner, not the operator', () => {
+    // §8: the person who raises an order must not also set the agreed price,
+    // and the person receiving goods must not set the shelf price.
+    for (const role of ['store_manager', 'warehouse', 'purchasing', 'cashier'] as const) {
+      const effective = resolveRolePermissions(role);
+      for (const permission of ['manage_variants', 'manage_vendor_prices', 'manage_sell_prices']) {
+        expect(effective[permission], `${role}.${permission}`).toBeFalsy();
+      }
+    }
+
+    for (const role of ['tenant_owner', 'tenant_admin', 'platform_owner'] as const) {
+      const effective = resolveRolePermissions(role);
+      for (const permission of ['manage_variants', 'manage_vendor_prices', 'manage_sell_prices']) {
+        expect(effective[permission], `${role}.${permission}`).toBe(true);
+      }
+    }
+  });
+
   it('gives every role a complete matrix for the permissions it holds', () => {
     const effective = resolveRolePermissions('tenant_owner');
     for (const permission of ALL_PERMISSIONS) {

@@ -90,6 +90,11 @@ export const PERMISSION_GROUPS = {
     "approve_po",
     "receive_po",
     "cancel_po",
+    // Variants and prices stay with the owner. Separate from `create_po` on
+    // purpose: whoever raises an order must not also decide its agreed price.
+    "manage_variants",
+    "manage_vendor_prices",
+    "manage_sell_prices",
   ],
   employees: ["view_employees", "add_employee", "edit_employee", "delete_employee"],
   reports: ["view_reports", "export_reports"],
@@ -113,6 +118,9 @@ export const PERMISSION_LABELS: Record<string, string> = {
   approve_po: "Setujui Purchase Order",
   receive_po: "Terima Barang Datang",
   cancel_po: "Batalkan Purchase Order",
+  manage_variants: "Kelola Varian Produk",
+  manage_vendor_prices: "Kelola Harga Beli Vendor",
+  manage_sell_prices: "Kelola Harga Jual",
   view_employees: "Lihat Karyawan",
   add_employee: "Tambah Karyawan",
   edit_employee: "Edit Karyawan",

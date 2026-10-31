@@ -26,10 +26,45 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { ArrowRight, Package, Plus, Trash2 } from "lucide-react";
-import { Product, ProductUnit } from "@/types";
 import { warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 
-interface TransferItem {
+/**
+ * One sellable variant of a product, as a transfer needs it: its own stock per
+ * warehouse and its own packs. A carton of one flavour is not the piece of
+ * another, so the two have to be picked separately.
+ */
+export interface TransferVariant {
+  id: string;
+  /** Human label: "Susu 250ml". */
+  label: string;
+  sku: string;
+  /**
+   * On-hand quantity per warehouse id, in base units. Optional because a caller
+   * that only knows product-level stock (the branch transfer page) still passes
+   * `Product[]`; the picker then falls back to the product figure.
+   */
+  warehouses?: Record<string, number>;
+  units: Array<{ name: string; conversion_factor: number }>;
+}
+
+/**
+ * What this modal needs from a product.
+ *
+ * `variants` is optional on purpose: a caller with no variant data (the branch
+ * transfer page) keeps working unchanged and moves stock product-wide, which
+ * `createTransfer` still accepts.
+ */
+export interface TransferProduct {
+  id: string;
+  sku: string;
+  name: string;
+  unit_type?: string;
+  units?: Array<{ name: string; conversion_factor: number }>;
+  stock_by_warehouse?: Record<string, number>;
+  variants?: TransferVariant[];
+}
+
+export interface TransferItem {
   productId: string;
   productName: string;
   sku: string;
@@ -37,12 +72,15 @@ interface TransferItem {
   unitName: string;
   conversionFactor: number;
   availableStock: number; // In selected unit
+  /** Which variant moves; null means "the whole product". */
+  variantId: string | null;
+  variantName: string;
 }
 
 interface StockTransferModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  products: Product[];
+  products: TransferProduct[];
   warehouses: WarehouseOption[];
   onTransfer: (transfer: {
     from: string;
@@ -56,16 +94,52 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
   const [fromWarehouse, setFromWarehouse] = useState("");
   const [toWarehouse, setToWarehouse] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
+  const [selectedVariant, setSelectedVariant] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
   const [quantity, setQuantity] = useState("");
   const [transferItems, setTransferItems] = useState<TransferItem[]>([]);
   const [notes, setNotes] = useState("");
 
-  const getAvailableStock = (productId: string, warehouseId: string) => {
-    const product = products.find(p => p.id === productId);
+  const variantsOf = (product: TransferProduct | undefined) => product?.variants ?? [];
+
+  /** Stock of one variant — or of the product as a whole — in one warehouse. */
+  const getAvailableStock = (
+    product: TransferProduct | undefined,
+    warehouseId: string,
+    variantId?: string | null
+  ) => {
     if (!product) return 0;
+    if (variantId) {
+      const variant = product.variants?.find((row) => row.id === variantId);
+      if (variant) return variant.warehouses?.[warehouseId] ?? product.stock_by_warehouse?.[warehouseId] ?? 0;
+    }
     // Keys are warehouse ids.
-    return product.stock_by_warehouse?.[warehouseId] || 0;
+    return product.stock_by_warehouse?.[warehouseId] ?? 0;
+  };
+
+  /**
+   * The packs this selection may be moved in. A variant's own packs win; the
+   * base unit is always offered so a product with no packs stays movable.
+   *
+   * Names are unique because they are the `SelectItem` values — two packs that
+   * share a name would make the picker ambiguous.
+   */
+  const unitOptionsFor = (product: TransferProduct | undefined, variantId: string | null) => {
+    if (!product) return [];
+    const variant = product.variants?.find((row) => row.id === variantId);
+    const packs = variant?.units ?? product.units ?? [];
+    const baseName = product.unit_type || "Pcs";
+
+    const options: Array<{ name: string; conversion_factor: number }> = [];
+    for (const unit of packs) {
+      const name = unit.name || baseName;
+      if (options.some((option) => option.name === name)) continue;
+      options.push({ name, conversion_factor: Number(unit.conversion_factor) || 1 });
+    }
+    if (!options.some((option) => option.conversion_factor === 1)) {
+      options.unshift({ name: baseName, conversion_factor: 1 });
+    }
+    return options;
   };
 
   const handleAddItem = () => {
@@ -77,19 +151,19 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
     const product = products.find(p => p.id === selectedProduct);
     if (!product) return;
 
+    // A product with variants must move ONE of them: the packs and the stock
+    // available belong to the variant, not to the product as a whole.
+    const variants = variantsOf(product);
+    const variantId = variants.length > 0 ? selectedVariant || variants[0].id : null;
+    const variant = variants.find((row) => row.id === variantId);
+
     // Determine unit details
-    let unitName = product.unit_type || "Pcs";
-    let conversionFactor = 1;
+    const options = unitOptionsFor(product, variantId);
+    const chosen = options.find((option) => option.name === selectedUnit) ?? options[0];
+    const unitName = chosen?.name ?? (product.unit_type || "Pcs");
+    const conversionFactor = chosen?.conversion_factor ?? 1;
 
-    if (selectedUnit) {
-      const unit = product.units?.find(u => u.name === selectedUnit);
-      if (unit) {
-        unitName = unit.name;
-        conversionFactor = unit.conversion_factor;
-      }
-    }
-
-    const baseAvailableStock = getAvailableStock(product.id, fromWarehouse);
+    const baseAvailableStock = getAvailableStock(product, fromWarehouse, variantId);
     const availableStockInUnit = Math.floor(baseAvailableStock / conversionFactor);
     const qty = parseInt(quantity);
 
@@ -99,7 +173,9 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
     }
 
     const existingIndex = transferItems.findIndex(item => 
-      item.productId === product.id && item.unitName === unitName
+      item.productId === product.id &&
+      item.variantId === variantId &&
+      item.unitName === unitName
     );
 
     if (existingIndex >= 0) {
@@ -122,10 +198,13 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
         unitName,
         conversionFactor,
         availableStock: availableStockInUnit,
+        variantId,
+        variantName: variant?.label ?? "",
       }]);
     }
 
     setSelectedProduct("");
+    setSelectedVariant("");
     setSelectedUnit("");
     setQuantity("");
   };
@@ -174,11 +253,29 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
     setNotes("");
   };
 
+  /** Picking a product also picks the variant most likely to be moved. */
+  const pickProduct = (productId: string) => {
+    setSelectedProduct(productId);
+    setSelectedUnit("");
+    const product = products.find((p) => p.id === productId);
+    const variants = variantsOf(product);
+    const withStock = variants.find((row) => getAvailableStock(product, fromWarehouse, row.id) > 0);
+    setSelectedVariant(withStock?.id ?? variants[0]?.id ?? "");
+  };
+
+  /** A product counts as available when the product or any variant holds stock. */
   const filteredProducts = fromWarehouse 
-    ? products.filter(p => (p.stock_by_warehouse?.[fromWarehouse] || 0) > 0)
+    ? products.filter(p =>
+        (p.stock_by_warehouse?.[fromWarehouse] || 0) > 0 ||
+        variantsOf(p).some((row) => getAvailableStock(p, fromWarehouse, row.id) > 0)
+      )
     : products;
 
   const selectedProductData = products.find(p => p.id === selectedProduct);
+  const selectedVariants = variantsOf(selectedProductData);
+  const activeVariantId = selectedVariant || selectedVariants[0]?.id || null;
+  const selectedUnitOptions = unitOptionsFor(selectedProductData, activeVariantId);
+  const selectedStock = getAvailableStock(selectedProductData, fromWarehouse, activeVariantId);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -223,12 +320,9 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
           {fromWarehouse && (
             <div className="border rounded-lg p-4 bg-muted/50">
               <Label className="text-sm font-medium">Tambah Produk</Label>
-              <div className="flex gap-2 mt-2">
-                <Select value={selectedProduct} onValueChange={(val) => {
-                  setSelectedProduct(val);
-                  setSelectedUnit(""); // Reset unit when product changes
-                }}>
-                  <SelectTrigger className="flex-1">
+              <div className="flex flex-wrap gap-2 mt-2">
+                <Select value={selectedProduct} onValueChange={pickProduct}>
+                  <SelectTrigger className="flex-1 min-w-[200px]">
                     <SelectValue placeholder="Pilih produk" />
                   </SelectTrigger>
                   <SelectContent>
@@ -240,18 +334,41 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
                   </SelectContent>
                 </Select>
 
+                {/* Only shown when the product actually has variants, so a
+                    single-variant catalogue looks exactly as before. */}
+                {selectedProductData && selectedVariants.length > 0 && (
+                  <Select
+                    value={activeVariantId ?? ""}
+                    onValueChange={(val) => {
+                      setSelectedVariant(val);
+                      setSelectedUnit("");
+                    }}
+                  >
+                    <SelectTrigger className="w-[170px]">
+                      <SelectValue placeholder="Varian" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {selectedVariants.map((variant) => (
+                        <SelectItem key={variant.id} value={variant.id}>
+                          {variant.label} ({getAvailableStock(selectedProductData, fromWarehouse, variant.id)})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+
                 {selectedProductData && (
-                  <Select value={selectedUnit} onValueChange={setSelectedUnit}>
+                  <Select
+                    value={selectedUnit || selectedUnitOptions[0]?.name || ""}
+                    onValueChange={setSelectedUnit}
+                  >
                     <SelectTrigger className="w-[120px]">
                       <SelectValue placeholder="Satuan" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value={selectedProductData.unit_type || "Pcs"}>
-                        {selectedProductData.unit_type || "Pcs"} (1)
-                      </SelectItem>
-                      {selectedProductData.units?.filter(u => u.name && u.name.trim() !== "").map((u) => (
-                        <SelectItem key={u.name} value={u.name}>
-                          {u.name} ({u.conversion_factor})
+                      {selectedUnitOptions.map((option) => (
+                        <SelectItem key={option.name} value={option.name}>
+                          {option.name} ({option.conversion_factor})
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -269,6 +386,12 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
                   <Plus className="w-4 h-4" />
                 </Button>
               </div>
+              {selectedProductData && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Stok tersedia di gudang asal: {selectedStock}{" "}
+                  {activeVariantId ? "satuan dasar varian ini" : "satuan dasar"}
+                </p>
+              )}
             </div>
           )}
 
@@ -285,13 +408,16 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
                 </TableHeader>
                 <TableBody>
                   {transferItems.map((item, index) => (
-                    <TableRow key={`${item.productId}-${item.unitName}`}>
+                    <TableRow key={`${item.productId}-${item.variantId ?? "all"}-${item.unitName}`}>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Package className="w-4 h-4 text-muted-foreground" />
                           <div>
                             <p className="font-medium">{item.productName}</p>
-                            <p className="text-xs text-muted-foreground">{item.sku}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {item.sku}
+                              {item.variantName ? ` · ${item.variantName}` : ""}
+                            </p>
                           </div>
                         </div>
                       </TableCell>

@@ -28,6 +28,24 @@ export interface DemoStock {
   shelves: [number, number];
 }
 
+/** One flavour/colour/size of a product: its own SKU, stock and prices. */
+export interface DemoVariant {
+  /** One value per group, e.g. `{ Rasa: 'Cokelat' }`. */
+  attributes: Record<string, string>;
+  /** Buy cost per base unit of THIS variant; defaults to the product's. */
+  cost?: number;
+  /** Packs this variant sells in; defaults to the product's own list. */
+  units?: DemoUnit[];
+  /** Stock per location; defaults to an even split of the product's stock. */
+  stock?: DemoStock;
+}
+
+/** An authored attribute group, e.g. `{ name: 'Rasa', values: ['Putih','Cokelat'] }`. */
+export interface DemoVariantGroup {
+  name: string;
+  values: string[];
+}
+
 export interface DemoProduct {
   sku: string;
   name: string;
@@ -49,6 +67,14 @@ export interface DemoProduct {
   /** Days the batch stays usable; `null` for tools and packaging. */
   shelfLifeDays: number | null;
   units: [DemoUnit, ...DemoUnit[]];
+  /**
+   * Attribute groups this product is sold in. Omitted means the product is a
+   * single SKU, which the seeder still writes as one `Default` variant so every
+   * stock row names a variant.
+   */
+  variantGroups?: DemoVariantGroup[];
+  /** One entry per sellable SKU. Omitted means `Default`. */
+  variants?: DemoVariant[];
 }
 
 export interface DemoStaff {
@@ -190,6 +216,28 @@ export interface DemoCatalog {
   products: DemoProduct[];
   monthlyCosts: DemoRecurringCost[];
   oneOffCosts: DemoOneOffCost[];
+}
+
+// ---------------------------------------------------------------------------
+// The demo's two variant products
+//
+// Everything else is sold as one SKU. These two exist so the variant screens
+// (product form, vendor pricelist, PO, till, storefront) have real flavours to
+// show instead of an empty picker.
+// ---------------------------------------------------------------------------
+
+/**
+ * Attaches variants to a product definition.
+ *
+ * `units` stays on the product as the "from" summary the purchase documents
+ * print; the per-variant packs in `variants[].units` are what actually sell.
+ */
+function withVariants(
+  definition: DemoProduct,
+  groups: DemoVariantGroup[],
+  variants: DemoVariant[]
+): DemoProduct {
+  return { ...definition, variantGroups: groups, variants };
 }
 
 export const THALIA: DemoCatalog = {
@@ -500,9 +548,31 @@ export const THALIA: DemoCatalog = {
     product('TLR-002', 'Susu Bubuk Full Cream 400g', SUSU, 3, 42_000, 49_000, 12, { central: 20, shelves: [10, 6] }, 365, 'pcs', [
       ['dus', 12, 500_000],
     ]),
-    product('TLR-003', 'Susu Kental Manis 490g', SUSU, 3, 12_500, 15_000, 24, { central: 40, shelves: [18, 14] }, 365, 'kaleng', [
-      ['dus', 48, 590_000],
-    ]),
+    // Two flavours, two carton prices: the carton of Cokelat costs more than
+    // the carton of Putih, which is exactly what a per-variant pricelist holds.
+    withVariants(
+      product('TLR-003', 'Susu Kental Manis 490g', SUSU, 3, 12_500, 15_000, 24, { central: 40, shelves: [18, 14] }, 365, 'kaleng', [
+        ['dus', 48, 590_000],
+      ]),
+      [{ name: 'Rasa', values: ['Putih', 'Cokelat'] }],
+      [
+        {
+          attributes: { Rasa: 'Putih' },
+          units: [
+            { name: 'kaleng', factor: 1, price: 15_000 },
+            { name: 'dus', factor: 48, price: 590_000 },
+          ],
+        },
+        {
+          attributes: { Rasa: 'Cokelat' },
+          cost: 13_500,
+          units: [
+            { name: 'kaleng', factor: 1, price: 16_000 },
+            { name: 'dus', factor: 48, price: 640_000 },
+          ],
+        },
+      ]
+    ),
     product('TLR-004', 'Whipping Cream 1L', SUSU, 3, 36_000, 44_000, 10, { central: 12, shelves: [4, 2] }, 90, 'liter', [
       ['dus', 12, 415_000],
     ]),
@@ -523,7 +593,13 @@ export const THALIA: DemoCatalog = {
     product('PGR-003', 'Vanili Essens 30ml', PENGEMBANG, 0, 6_500, 9_000, 40, { central: 8, shelves: [7, 5] }, 730, 'pcs', [
       ['dus', 12, 62_000],
     ]),
-    product('PGR-004', 'Pewarna Makanan Set 12 Warna', PENGEMBANG, 0, 21_000, 27_000, 12, { central: 16, shelves: [8, 6] }, 1095, 'pcs'),
+    // Four colours, one SKU each, stocked separately: selling all the Merah must
+    // not spend the Biru.
+    withVariants(
+      product('PGR-004', 'Pewarna Makanan Set 12 Warna', PENGEMBANG, 0, 21_000, 27_000, 12, { central: 16, shelves: [8, 6] }, 1095, 'pcs'),
+      [{ name: 'Warna', values: ['Merah', 'Kuning', 'Hijau', 'Biru'] }],
+      ['Merah', 'Kuning', 'Hijau', 'Biru'].map((warna) => ({ attributes: { Warna: warna } }))
+    ),
     product('KMS-001', 'Loyang Bulat 20 cm', KEMASAN, 4, 38_000, 52_000, 8, { central: 9, shelves: [4, 3] }, null, 'pcs', [
       ['dus', 12, 420_000],
     ]),

@@ -52,6 +52,56 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await expect(browser).toHaveURL('/pos/transactions');
   });
 
+  /**
+   * A product sold in flavours is several SKUs on the shelf, each with its own
+   * stock and its own price. The till has to know which one left, so it asks
+   * flavour first and pack second — and the price must come from that flavour.
+   */
+  test('a variant product asks which flavour before which pack', { session: 'kasir' }, async ({ app, screen }) => {
+    // Same precondition as the sale above, repeated so this case also runs alone.
+    // The heading has to be there before the form is asked about, or the check
+    // races the first render and reads an empty page.
+    await app.open('/pos/shifts');
+    await expect(screen.getByRole('heading', 'Manajemen Shift', { level: 1 })).toBeVisible();
+    if (await screen.getByText('Buka Shift Baru').isVisible()) {
+      await screen.getByPlaceholder('Contoh: 200000').fill('200000');
+      await screen.getByRole('button', 'Buka Shift Sekarang').tap();
+    }
+    await expect(screen.getByText('Shift Aktif')).toBeVisible();
+
+    await app.open('/pos');
+    const search = screen.getByPlaceholder('Cari produk...');
+    await expect(search).toBeVisible();
+    await search.fill('Susu Kental Manis');
+    await screen.getByRole('button', { name: /Susu Kental Manis/ }).tap();
+
+    // Step one: which flavour. Every row is a SKU with its own stock.
+    const variants = screen.getByRole('dialog', { name: /Pilih Varian/ });
+    await expect(variants).toBeVisible();
+    await expect(variants.getByText(/TLR-003-PUTIH/)).toBeVisible();
+    await expect(variants.getByText(/TLR-003-COKELAT/)).toBeVisible();
+
+    // Cokelat is the dearer flavour, so the next screen proves the picker handed
+    // over that variant's pricelist rather than the product's cheapest one.
+    await variants.getByRole('button', { name: /TLR-003-COKELAT/ }).tap();
+
+    const packs = screen.getByRole('dialog', { name: /Pilih Satuan - Cokelat/ });
+    await expect(packs).toBeVisible();
+    await expect(packs.getByText(/16\.000/).first()).toBeVisible();
+    await expect(packs.getByText(/15\.000/)).toBeHidden();
+    await packs.getByRole('button', { name: /kaleng \(1\)/ }).tap();
+
+    // The picker closes once the pick is made; until it has, its flavour labels
+    // are still in the DOM and would answer for the cart line below.
+    await expect(packs).toBeHidden();
+
+    // The line keeps the flavour beside the product and is priced as Cokelat.
+    await expect(screen.getByText('1 item')).toBeVisible();
+    await expect(screen.getByText('Cokelat', { exact: true })).toBeVisible();
+    await expect(screen.getByText('kaleng', { exact: true })).toBeVisible();
+    await expect(screen.getByText(/16\.000/).first()).toBeVisible();
+  });
+
   test('the till keeps the shift and its cash total visible', { session: 'kasir' }, async ({ app, screen }) => {
     await app.open('/pos/shifts');
 

@@ -127,6 +127,82 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     }
   });
 
+  it('gives every product at least one variant and never leaves a stock row unattributed', async () => {
+    // The invariant migration 006 backfills: a product is a MODEL, its variants
+    // are the SKUs. Anything that moves stock or money must name one.
+    const orphans = await rows<{ sku: string }>(
+      `SELECT p.sku FROM products p
+        WHERE NOT EXISTS (SELECT 1 FROM product_variants v WHERE v.product_id = p.id)`
+    );
+    expect(orphans).toHaveLength(0);
+
+    for (const [table, column] of [
+      ['product_units', 'variant_id'],
+      ['product_batches', 'variant_id'],
+      ['transaction_items', 'variant_id'],
+    ] as const) {
+      expect(
+        await scalar(`SELECT count(*) AS value FROM ${table} WHERE ${column} IS NULL`),
+        `${table}.${column} left NULL`
+      ).toBe(0);
+    }
+
+    // Every pack hangs off a variant of its own product, not of a neighbour.
+    expect(
+      await rows(
+        `SELECT pu.id FROM product_units pu
+           JOIN product_variants v ON v.id = pu.variant_id
+          WHERE v.product_id <> pu.product_id`
+      )
+    ).toHaveLength(0);
+
+    // The two catalogue products that are sold in flavours must expose one row
+    // per flavour, with its own SKU and its own packs.
+    for (const sku of ['TLR-003', 'PGR-004']) {
+      const definition = THALIA.products.find((product) => product.sku === sku);
+      expect(definition?.variants?.length ?? 0).toBeGreaterThan(1);
+      const variants = await rows<{ id: string; sku: string; name: string }>(
+        `SELECT v.id, v.sku, v.name
+           FROM product_variants v
+           JOIN products p ON p.id = v.product_id
+          WHERE p.sku = ?
+          ORDER BY v.name`,
+        [sku]
+      );
+      expect(variants).toHaveLength(definition?.variants?.length ?? 0);
+      expect(new Set(variants.map((variant) => variant.sku)).size).toBe(variants.length);
+      expect(new Set(variants.map((variant) => variant.name)).size).toBe(variants.length);
+    }
+
+    // A carton carries its own quoted price: it is never the piece price times
+    // the pack size, which is what `product_units.cost` exists to avoid.
+    const cartons = await rows<{
+      variant_name: string;
+      unit_price: number;
+      pack_cost: number;
+      piece_cost: number;
+    }>(
+      `SELECT v.name AS variant_name, carton.price AS unit_price,
+              carton.cost AS pack_cost, piece.cost AS piece_cost
+         FROM product_variants v
+         JOIN products p ON p.id = v.product_id
+         JOIN product_units carton ON carton.variant_id = v.id AND carton.name = 'dus'
+         JOIN product_units piece ON piece.variant_id = v.id AND piece.conversion_factor = 1
+        WHERE p.sku = 'TLR-003'
+        ORDER BY v.name`
+    );
+    expect(cartons).toHaveLength(2);
+    for (const carton of cartons) {
+      // A 48-can carton must not be priced like 48 loose cans.
+      expect(Number(carton.unit_price)).toBeLessThan(
+        Number(carton.piece_cost) * 48
+      );
+      expect(Number(carton.pack_cost)).toBeGreaterThan(Number(carton.piece_cost));
+    }
+    // ... and the two flavours do not share a price.
+    expect(Number(cartons[0].unit_price)).not.toBe(Number(cartons[1].unit_price));
+  });
+
   it('gives every supplier vendor master data and a product catalogue', async () => {
     const vendors = await rows<{ code: string; status: string; terms: number }>(
       `SELECT code, status, payment_terms_days AS terms FROM suppliers ORDER BY code`

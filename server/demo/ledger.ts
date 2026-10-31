@@ -10,7 +10,14 @@
  * orders → costs → attendance → audit trail.
  */
 import { randomUUID } from 'node:crypto';
-import { THALIA, THALIA_NOTES, type DemoProduct } from './catalog.js';
+import {
+  THALIA,
+  THALIA_NOTES,
+  type DemoProduct,
+  type DemoStock,
+  type DemoUnit,
+  type DemoVariant,
+} from './catalog.js';
 
 export interface DemoStatement {
   sql: string;
@@ -79,11 +86,27 @@ export interface ThaliaUnitRow {
   barcode: string;
 }
 
+/** One sellable SKU: its own barcode-carrying packs, buy cost and stock. */
+export interface ThaliaVariantRow {
+  id: string;
+  sku: string;
+  /** "Putih", "Merah": the attribute values, joined for display. */
+  label: string;
+  attributes: Record<string, string>;
+  /** Buy cost per base unit of this variant. */
+  cost: number;
+  /** `units[0]` is always the base unit (factor 1). */
+  units: ThaliaUnitRow[];
+  stock: DemoStock;
+}
+
 export interface ThaliaProductRow {
   id: string;
   def: DemoProduct;
-  /** `units[0]` is always the base unit (factor 1). */
+  /** The first variant's packs; what the purchase documents print. */
   units: ThaliaUnitRow[];
+  /** At least one entry: a product with no declared variants gets `Default`. */
+  variants: ThaliaVariantRow[];
 }
 
 export interface ThaliaIdentity {
@@ -122,6 +145,24 @@ const EAN_PREFIX = '899';
 /** Stable 13-digit barcode per selling unit. */
 function makeBarcode(sequence: number): string {
   return `${EAN_PREFIX}${String(1_000_000 + sequence * 37).padStart(10, '0')}`;
+}
+
+/**
+ * Stock for one variant when the catalogue does not say.
+ *
+ * Totals are divided as evenly as possible with the remainder on the first
+ * variant, so the product-level figures (and every test that reads them) stay
+ * exactly what the catalogue authored.
+ */
+function splitStock(stock: DemoStock, count: number, index: number): DemoStock {
+  const share = (total: number) => {
+    const base = Math.floor(total / count);
+    return index === 0 ? total - base * (count - 1) : base;
+  };
+  return {
+    central: share(stock.central),
+    shelves: [share(stock.shelves[0]), share(stock.shelves[1])],
+  };
 }
 
 /**
@@ -182,17 +223,36 @@ export function createThaliaIdentity(
     suppliers: THALIA.suppliers.map((supplier) => ({ id: randomUUID(), ...supplier })),
     customers: THALIA.customers.map((customer) => ({ id: randomUUID(), ...customer })),
     categories: THALIA.categories.map((name) => ({ id: randomUUID(), name })),
-    products: THALIA.products.map((def) => ({
-      id: randomUUID(),
-      def,
-      units: def.units.map((unit) => ({
-        id: randomUUID(),
-        name: unit.name,
-        factor: unit.factor,
-        price: unit.price,
-        barcode: makeBarcode(++barcodeSeq),
-      })),
-    })),
+    products: THALIA.products.map((def) => {
+      const declared = def.variants ?? [];
+      // A product with no declared variants is still one sellable SKU, named
+      // `Default` and keeping the product's own SKU — the same row migration 006
+      // backfills, so a fresh demo and an upgraded tenant match.
+      const declaredVariants = declared.length > 0 ? declared : [{} as DemoVariant];
+      const variants: ThaliaVariantRow[] = declaredVariants.map(
+        (variant, index) => {
+          const attributes = variant.attributes ?? {};
+          const label = Object.values(attributes).join(' ') || 'Default';
+          const packs = variant.units ?? def.units;
+          return {
+            id: randomUUID(),
+            sku: label === 'Default' ? def.sku : `${def.sku}-${label.toUpperCase()}`,
+            label,
+            attributes,
+            cost: variant.cost ?? def.cost,
+            stock: variant.stock ?? splitStock(def.stock, declaredVariants.length, index),
+            units: packs.map((unit: DemoUnit) => ({
+              id: randomUUID(),
+              name: unit.name,
+              factor: unit.factor,
+              price: unit.price,
+              barcode: makeBarcode(++barcodeSeq),
+            })),
+          };
+        }
+      );
+      return { id: randomUUID(), def, units: variants[0].units, variants };
+    }),
   };
 }
 
@@ -387,8 +447,9 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     const supplier = identity.suppliers[product.def.supplier];
     add(
       `INSERT INTO products
-         (id, sku, name, description, category, cost_price, min_stock_level, is_tracked, supplier_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+         (id, sku, name, description, category, cost_price, min_stock_level, is_tracked,
+          supplier_id, variant_attributes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
       [
         product.id,
         product.def.sku,
@@ -398,14 +459,57 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
         product.def.cost,
         product.def.minStock,
         supplier?.id ?? null,
+        JSON.stringify(product.def.variantGroups ?? []),
       ]
     );
-    product.units.forEach((unit) => {
+
+    // Identity first, then the packs that hang off it: a pack belongs to a
+    // variant, so `product_units.variant_id` is never left empty.
+    product.variants.forEach((variant) => {
       add(
-        `INSERT INTO product_units (id, product_id, name, conversion_factor, price, barcode)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [unit.id, product.id, unit.name, unit.factor, unit.price, unit.barcode]
+        `INSERT INTO product_variants
+           (id, product_id, sku, name, attributes, cost_price, price)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          variant.id,
+          product.id,
+          variant.sku,
+          variant.label,
+          JSON.stringify(variant.attributes),
+          variant.cost,
+          variant.units[0]?.price ?? 0,
+        ]
       );
+
+      variant.units.forEach((unit) => {
+        add(
+          `INSERT INTO product_units
+             (id, product_id, variant_id, name, conversion_factor, price, cost, barcode)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            unit.id,
+            product.id,
+            variant.id,
+            unit.name,
+            unit.factor,
+            unit.price,
+            // Buy price PER PACK, never derived from the piece price.
+            Math.round(variant.cost * unit.factor),
+            unit.barcode,
+          ]
+        );
+      });
+
+      // The vendor quotes the base pack by default; a carton price can be added
+      // from the vendor screen, which is what the pricelist tab is for.
+      if (supplier) {
+        add(
+          `INSERT INTO vendor_price_list
+             (vendor_id, variant_id, unit_name, conversion_factor, buy_price, min_qty)
+           VALUES (?, ?, ?, 1, ?, 1)`,
+          [supplier.id, variant.id, variant.units[0].name, variant.cost]
+        );
+      }
     });
 
     // Each product's main vendor also owns a catalogue entry, so the vendor
@@ -435,10 +539,15 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   // ---------------------------------------------------------------------
   const batchesByProduct = new Map<string, string[]>();
   let batchSeq = 0;
-  const locationKey = (warehouseId: string, productId: string) =>
-    `${warehouseId}|${productId}`;
+  const locationKey = (warehouseId: string, productId: string, variantId: string) =>
+    `${warehouseId}|${productId}|${variantId}`;
 
-  const addBatches = (warehouseId: string, product: ThaliaProductRow, total: number) => {
+  const addBatches = (
+    warehouseId: string,
+    product: ThaliaProductRow,
+    variant: ThaliaVariantRow,
+    total: number
+  ) => {
     if (total <= 0) return;
     const shelfLife = product.def.shelfLifeDays;
     const olderAge = Math.max(4, Math.min(55, Math.floor((shelfLife ?? 120) * 0.35)));
@@ -446,8 +555,8 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
 
     const olderQty = Math.round(total * 0.6);
     const legs = [
-      { quantity: olderQty, ageDays: olderAge, cost: Math.round(product.def.cost * 0.96), multiplier: 1.3 },
-      { quantity: total - olderQty, ageDays: newerAge, cost: product.def.cost, multiplier: 1.1 },
+      { quantity: olderQty, ageDays: olderAge, cost: Math.round(variant.cost * 0.96), multiplier: 1.3 },
+      { quantity: total - olderQty, ageDays: newerAge, cost: variant.cost, multiplier: 1.1 },
     ];
     const batchIds: string[] = [];
 
@@ -459,13 +568,14 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       batchSeq += 1;
       add(
         `INSERT INTO product_batches
-           (id, warehouse_id, product_id, batch_number, expiry_date,
+           (id, warehouse_id, product_id, variant_id, batch_number, expiry_date,
             quantity_initial, quantity_current, cost_price, received_at, supplier_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           batchId,
           warehouseId,
           product.id,
+          variant.id,
           `GRN-${dateOnly(receivedAt).replace(/-/g, '')}-${String(batchSeq).padStart(3, '0')}`,
           shelfLife === null ? null : dateOnly(addDays(receivedAt, shelfLife)),
           Math.ceil(leg.quantity * leg.multiplier),
@@ -477,15 +587,19 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       );
     });
 
-    batchesByProduct.set(locationKey(warehouseId, product.id), batchIds);
+    batchesByProduct.set(locationKey(warehouseId, product.id, variant.id), batchIds);
   };
 
   identity.products.forEach((product) => {
-    addBatches(identity.centralWarehouseId, product, product.def.stock.central);
-    identity.shelfWarehouseIds.forEach((shelfId, branchIndex) => {
-      if (!shelfId) return;
-      // `shelves` is authored in branch order, so the index lines up.
-      addBatches(shelfId, product, product.def.stock.shelves[branchIndex] ?? 0);
+    // Stock is held per variant: each flavour has its own batches, so FIFO at
+    // the till drains the flavour that was actually sold.
+    product.variants.forEach((variant) => {
+      addBatches(identity.centralWarehouseId, product, variant, variant.stock.central);
+      identity.shelfWarehouseIds.forEach((shelfId, branchIndex) => {
+        if (!shelfId) return;
+        // `shelves` is authored in branch order, so the index lines up.
+        addBatches(shelfId, product, variant, variant.stock.shelves[branchIndex] ?? 0);
+      });
     });
   });
 
@@ -502,7 +616,7 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     cashierId: string;
     createdAt: Date;
     invoice: string;
-    lines: { product: ThaliaProductRow; unit: ThaliaUnitRow; quantity: number }[];
+    lines: { product: ThaliaProductRow; variant: ThaliaVariantRow; unit: ThaliaUnitRow; quantity: number }[];
     method: string;
     customerId: string | null;
     amountPaidOverride?: number;
@@ -515,16 +629,19 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     const sellingLocationId =
       identity.shelfWarehouseIds[options.branchIndex] ?? identity.centralWarehouseId;
     const items = options.lines.map((line) => {
-      const batchIds = batchesByProduct.get(locationKey(sellingLocationId, line.product.id));
+      const batchIds = batchesByProduct.get(
+        locationKey(sellingLocationId, line.product.id, line.variant.id)
+      );
       return {
         id: randomUUID(),
         productId: line.product.id,
+        variantId: line.variant.id,
         batchId: batchIds?.[0] ?? null,
         quantity: line.quantity,
         unitName: line.unit.name,
         factor: line.unit.factor,
         unitPrice: line.unit.price,
-        costPrice: Math.round(line.product.def.cost * line.unit.factor),
+        costPrice: Math.round(line.variant.cost * line.unit.factor),
         subtotal: Math.round(line.unit.price * line.quantity),
       };
     });
@@ -555,13 +672,14 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     items.forEach((item) => {
       add(
         `INSERT INTO transaction_items
-           (id, transaction_id, product_id, batch_id, quantity, unit_name,
+           (id, transaction_id, product_id, variant_id, batch_id, quantity, unit_name,
             conversion_factor, unit_price, cost_price, subtotal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           item.id,
           transactionId,
           item.productId,
+          item.variantId,
           item.batchId,
           item.quantity,
           item.unitName,
@@ -589,19 +707,29 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
 
   /** A believable bakery basket: 1â€“4 lines, mostly base units, now and then a sack. */
   const buildBasket = () => {
-    const lines: { product: ThaliaProductRow; unit: ThaliaUnitRow; quantity: number }[] = [];
+    const lines: {
+      product: ThaliaProductRow;
+      variant: ThaliaVariantRow;
+      unit: ThaliaUnitRow;
+      quantity: number;
+    }[] = [];
     const wanted = int(1, 4);
     const used = new Set<string>();
     let guard = 0;
     while (lines.length < wanted && guard < 20) {
       guard += 1;
       const product = pick(identity.products);
-      if (used.has(product.id)) continue;
-      used.add(product.id);
-      const bulk = product.units.length > 1 && product.units[1].factor >= 5 && chance(0.18);
-      const unit = bulk ? product.units[1] : product.units[0];
+      const variant = pick(product.variants);
+      // One line per product AND variant: two flavours in one basket is a
+      // normal bakery order, the same flavour twice is not.
+      const key = `${product.id}|${variant.id}`;
+      if (used.has(key)) continue;
+      used.add(key);
+      const packs = variant.units;
+      const bulk = packs.length > 1 && packs[1].factor >= 5 && chance(0.18);
+      const unit = bulk ? packs[1] : packs[0];
       const quantity = bulk ? 1 : pick(QUANTITY_STEPS[unit.name] ?? [1, 2, 3]);
-      lines.push({ product, unit, quantity });
+      lines.push({ product, variant, unit, quantity });
     }
     return lines;
   };
@@ -1007,21 +1135,25 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     const itemIds = new Map<string, string>();
     items.forEach((item) => {
       const itemId = randomUUID();
+      // The plan is authored by product SKU, so the order buys the product's
+      // first variant. A flavour-specific order is raised from the vendor screen.
+      const variant = item.product.variants[0];
       itemIds.set(item.product.def.sku, itemId);
       add(
         `INSERT INTO purchase_order_items
-           (id, purchase_order_id, product_id, quantity, quantity_received, unit_name,
-            conversion_factor, unit_cost, subtotal)
-         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+           (id, purchase_order_id, product_id, variant_id, quantity, quantity_received,
+            unit_name, conversion_factor, unit_cost, subtotal)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
         [
           itemId,
           purchaseOrderId,
           item.product.id,
+          variant.id,
           item.quantity,
           receivedBySku.get(item.product.def.sku) ?? 0,
-          item.product.units[0].name,
-          item.product.def.cost,
-          item.product.def.cost * item.quantity,
+          variant.units[0].name,
+          variant.cost,
+          variant.cost * item.quantity,
         ]
       );
     });
@@ -1061,20 +1193,22 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       );
 
       lines.forEach((line) => {
+        const variant = line.product.variants[0];
         add(
           `INSERT INTO goods_receipt_items
-             (id, goods_receipt_id, purchase_order_item_id, product_id, quantity, unit_name,
-              conversion_factor, unit_cost, subtotal, batch_number, expiry_date)
-           VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+             (id, goods_receipt_id, purchase_order_item_id, product_id, variant_id, quantity,
+              unit_name, conversion_factor, unit_cost, subtotal, batch_number, expiry_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
           [
             randomUUID(),
             receiptId,
             line.itemId,
             line.product.id,
+            variant.id,
             line.quantity,
-            line.product.units[0].name,
-            line.product.def.cost,
-            line.product.def.cost * line.quantity,
+            variant.units[0].name,
+            variant.cost,
+            variant.cost * line.quantity,
             grnNumber,
             line.product.def.shelfLifeDays === null
               ? null
@@ -1297,20 +1431,24 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       shipped.forEach((line) => {
         const product = productBySku.get(line.sku);
         if (!product) return;
+        const variant = product.variants[0];
         add(
           `INSERT INTO transfer_items
-             (id, transfer_id, product_id, source_batch_id, quantity_sent, quantity_received,
-              unit_name, conversion_factor, cost_price, notes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)`,
+             (id, transfer_id, product_id, variant_id, source_batch_id, quantity_sent,
+              quantity_received, unit_name, conversion_factor, cost_price, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)`,
           [
             randomUUID(),
             transferId,
             product.id,
-            batchesByProduct.get(locationKey(identity.centralWarehouseId, product.id))?.[0] ?? null,
+            variant.id,
+            batchesByProduct.get(
+              locationKey(identity.centralWarehouseId, product.id, variant.id)
+            )?.[0] ?? null,
             line.dispatched,
             plan.transfer === 'completed' ? line.received : null,
-            product.units[0].name,
-            product.def.cost,
+            variant.units[0].name,
+            variant.cost,
           ]
         );
       });
@@ -1352,16 +1490,18 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     plan.items.forEach((line) => {
       const product = productBySku.get(line.sku);
       if (!product) return;
+      const variant = product.variants[0];
       add(
         `INSERT INTO stock_request_items
-           (id, request_id, product_id, unit_name, conversion_factor,
+           (id, request_id, product_id, variant_id, unit_name, conversion_factor,
             quantity_requested, quantity_approved, quantity_dispatched, quantity_received, notes)
-         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, NULL)`,
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, NULL)`,
         [
           randomUUID(),
           requestId,
           product.id,
-          product.units[0].name,
+          variant.id,
+          variant.units[0].name,
           line.requested,
           line.approved,
           line.dispatched,

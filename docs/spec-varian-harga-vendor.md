@@ -654,6 +654,11 @@ pertanyaan "kenapa margin bulan ini turun" tidak bisa dijawab.
 | `src/components/vendors/VendorPriceList.tsx` | tab Harga Beli (§6.2) |
 | `src/components/vendors/VendorPriceHistory.tsx` | tab Riwayat Harga, membaca `audit_logs` |
 
+> **Realisasi:** tiga berkas komponen di atas tidak dipisah. Matriks varian menempel di
+> `AddProductModal.tsx`, dan kedua tab harga menempel di `pages/vendors/VendorDetail.tsx`,
+> karena keduanya hanya dipakai di satu tempat. `src/lib/pricing.ts` dan `src/lib/variants.ts`
+> tetap berdiri sendiri supaya bisa diuji murni — lihat §16.
+
 **Diubah** (urutan pengerjaan mengikuti §12)
 
 | Path | Perubahan |
@@ -676,6 +681,7 @@ pertanyaan "kenapa margin bulan ini turun" tidak bisa dijawab.
 | `api/storefront/catalog.ts` | `variants[]` |
 | `server/demo/catalog.ts`, `server/demo/ledger.ts`, `server/demo/seed.ts` | varian + pricelist realistis |
 | `tests/{kasir,gudang,owner}.e2e.ts` | lihat §11 |
+| `tokoonline/src/lib/{products,store,products.test}.ts` | bentuk `variants[]` dan keranjang ber-varian |
 | `docs/{backend,arsitektur,frontend,fitur-tenant}.md`, `requirement.md`, `README.md` | sinkronisasi |
 
 ---
@@ -716,12 +722,17 @@ pertanyaan "kenapa margin bulan ini turun" tidak bisa dijawab.
 
 **E2E**
 
-- `kasir.e2e.ts`: pilih varian → pilih pecahan → bayar; stok varian yang dipilih
-  berkurang, varian lain tidak.
-- `gudang.e2e.ts`: terima PO dengan harga ≠ pricelist → muncul peringatan
+- `kasir.e2e.ts` (**sudah ditulis & lulus**): produk dua rasa → dialog **Pilih Varian** →
+  pecahan rasa terpilih menampilkan harga rasa itu (Cokelat 16.000, bukan Putih
+  15.000) → dialog tertutup → baris keranjang membawa label rasa. Produk satu SKU
+  langsung ke daftar pecahan, tanpa langkah "Default" (ditahan oleh kasus penjualan tunai
+  yang sudah ada).
+- `gudang.e2e.ts` (belum): terima PO dengan harga ≠ pricelist → muncul peringatan
   selisih, batch masuk ke rak yang benar.
-- `owner.e2e.ts`: buka Vendor → Harga Beli, ubah satu harga, muncul di Riwayat
-  Harga; `store_manager` tidak melihat tombol ubah harga.
+- `owner.e2e.ts` (**sudah ditulis & lulus**): Vendor → **Harga Beli** menampilkan baris per
+  varian × pecahan, **Riwayat Harga** menampilkan harga yang benar-benar ditagihkan.
+  Belum: mengubah satu harga lalu melihatnya pindah ke Riwayat, dan `store_manager`
+  tidak melihat tombol ubah harga.
 
 ---
 
@@ -833,8 +844,15 @@ Semua ini celah nyata; tidak ada yang perlu ikut perubahan ini.
 
 ## 16. Status implementasi
 
-Diperbarui: 2026-10-31. Skema sudah di versi **6**; semua test lulus kecuali
-yang menunggu `Inventory.tsx` (lihat bawah).
+Diperbarui: 2026-10-31. Skema sudah di versi **6**. `npm run typecheck` bersih
+(program app dan node), `npm run build` lulus, `npx vitest run` **207/207** lulus di
+16 berkas. Toko online: `npm run typecheck`, `npm run lint`, dan `npm run build`
+bersih, `npm test` **39/39** lulus. Kedua kasus E2E varian di §11 sudah **dijalankan**
+pada tenant demo `rp-thalia` (skema v6, di-seed ulang) melawan SPA `:8080` + API
+`:3000`: `kasir.e2e.ts` 3/3 lulus (kasus varian dua kali berturut-turut), dan
+`owner.e2e.ts` lulus 7 dari 9 kasus — dua sisanya berhenti di
+`ExceededBudget` milik penyedia model (kasus `agent.act`/`agent.assert` lama),
+bukan karena kode.
 
 ### Sudah jalan
 
@@ -851,36 +869,36 @@ yang menunggu `Inventory.tsx` (lihat bawah).
 | `src/lib/goods-receipt.ts` | `variant_id` ikut ke `product_batches` dan `goods_receipt_items`; selisih harga penerimaan mengisi `vendor_price_list` yang belum ada (`ON CONFLICT DO NOTHING`, tidak pernah menimpa kesepakatan) |
 | `src/lib/stock-movement.ts` | `variantId` opsional di sepanjang `stockOnHand` / `createTransfer` / `drainBatches` / `dispatchTransfer` / `shipOutOfStock`; batch tujuan mewarisi varian |
 | `src/pages/vendors/VendorDetail.tsx` | Tab **Harga Beli** (pricelist per varian x pecahan, harga terakhir dibayar, aktif/nonaktif) dan tab **Riwayat Harga** (harga yang benar-benar ditagihkan per penerimaan) |
+| `src/pages/Inventory.tsx` | `ProductVariantRow` + `variantGroups`; `PRODUCTS_SQL` mengembalikan `variant_attributes` dan pecahan dengan `cost` + `variant_id`; tiga proyeksi datar (`VARIANTS_SQL`, `VARIANT_UNITS_SQL`, `VARIANT_STOCK_SQL`) dijahit di `mapProductRows` dalam satu `batchQuery`; `handleSaveProduct` menulis varian lalu pecahan lalu batch, menolak menghapus varian yang masih berstok, dan `reduceStock` memfilter `variant_id`; `handleImport` membuat varian `Default` + pecahan `Pcs` |
+| `src/config/roles.ts` | `manage_variants`, `manage_vendor_prices`, `manage_sell_prices` di `PERMISSION_GROUPS.inventory` + `PERMISSION_LABELS`; ketiganya **tertutup** untuk `store_manager`, `warehouse`, `purchasing` sesuai §8. Owner/admin mendapatkannya otomatis karena `DEFAULT_ROLE_PERMISSIONS` dibangun dari `Object.values(PERMISSION_GROUPS).flat()` |
+| `src/config/roles.test.ts` | Test yang menahan §8: ketiga izin harga/varian wajib tertutup untuk operator dan terbuka untuk owner/admin |
 
-Catatan perilaku: `variantId` kosong di `stock-movement.ts` berarti "seluruh produk".
-Itu disengaja — baris lama pra-migrasi tetap bisa dipindahkan, dan backfill
-memang memindahkan batch lama ke varian `Default`.
+| `src/components/inventory/StockTransferModal.tsx` | Pemilih varian di atas pemilih pecahan; stok yang ditampilkan dan diperiksa adalah stok varian itu di gudang asal, paket yang ditawarkan adalah paket varian tersebut. Baris keranjang berkunci `productId + variantId + unitName`, jadi dua rasa dengan nama pecahan sama tidak bergabung. Produk tanpa data varian tetap berjalan seperti sebelumnya (`variants` opsional) |
+| `src/components/inventory/StockOpnameModal.tsx` | Satu baris hitung per varian (`productId\|variantId`) dengan stok sistem per gudang per varian; selisih disimpan per `variantId`, sehingga rasa yang kurang tidak tertutup oleh rasa yang lebih |
+| `src/pages/POS.tsx` | Pemilih dua langkah: varian dulu, lalu pecahan varian. Katalog kasir mengambil `product_variants` + pecahan per varian + stok per varian dalam satu `batchQuery` (proyeksi datar dijahit dengan `variantLabel`); stok yang ditekan, pra-cek sebelum bayar, dan `drainBatches` semuanya ber-filter varian; `transaction_items.variant_id` terisi sejak transaksi pertama, bukan lewat backfill |
+| `server/demo/catalog.ts` | Tipe `DemoVariant` / `DemoVariantGroup`; `TLR-003` (Susu Kental Manis, Rasa Putih/Cokelat) dan `PGR-004` (Pewarna, Warna Merah/Kuning/Hijau/Biru) punya harga beli, harga jual pecahan, dan stok sendiri per varian |
+| `server/demo/ledger.ts` | Identitas varian (`ThaliaVariantRow`): satu baris `product_variants` per varian, pecahan dengan `cost = harga beli dasar × faktor`, pricelist per (vendor, varian, pecahan), batch per varian di gudang maupun rak. Penjualan, PO, penerimaan, transfer, dan permintaan stok semuanya menulis `variant_id` |
+| `db/__tests__/demo-tenant.test.ts` | Test invarian: tidak ada produk tanpa varian, tidak ada `variant_id` NULL di `product_units` / `product_batches` / `transaction_items`, pecahan selalu milik varian produknya sendiri, dua produk contoh benar-benar punya >1 varian dengan SKU unik, dan harga karton tetap lebih murah dari 48 pcs |
+| `api/storefront/catalog.ts` | Payload katalog menambah `variants[]` (sku, label, atribut, stok gudang pemenuh, pecahan + harga). `units` tingkat produk kini **hanya** berisi pecahan `variant_id IS NULL` ditambah ringkasan satu baris per (nama, faktor) dengan harga termurah, jadi klien lama melihat satu daftar harga yang konsisten, bukan dua "kaleng" dengan harga berbeda |
+| `tokoonline/src/lib/products.ts` | Tipe `Variant` + `Shelf`; `shelves(product)` mengubah `variants[]` jadi daftar rak yang dijual, dan seluruh helper (`baseUnit`, `fromPrice`, `sellableUnits`, `maxQuantity`, `unitLabel`, `stockLabel`) menerima `Shelf`. Varian tanpa atribut (baris `Default` hasil migrasi) tidak diberi label supaya keranjang tidak berbunyi "… · Default" |
+| `tokoonline/src/routes/product.$slug.tsx` | Baris chip **Pilihan** (hanya bila ada >1 rak), stok dan daftar pecahan mengikuti rak terpilih, keranjang menerima `variantId` + `variantLabel` |
+| `tokoonline/src/lib/store.ts` | `CartItem.variantId`/`variantLabel`; kunci baris `slug + variantId + unitName` supaya dua rasa tidak bergabung; `persist` versi 2 + `migrate` membangun ulang kunci keranjang lama |
+| `tokoonline/src/components/product-card.tsx`, `routes/{cart,checkout,orders,order.$id}.tsx` | Kartu produk memakai `isProductSoldOut` (habis hanya bila semua rak habis) + "N pilihan"; baris keranjang, checkout, dan riwayat pesanan menampilkan label varian |
+| `tokoonline/src/lib/products.test.ts` | 7 test `node:test` untuk kontrak Shelf (satu SKU, dua rasa, stok tidak saling menutup, pecahan yang bisa dipenuhi, label satuan, baris `Default`, varian tanpa pecahan) — masuk `npm test` toko online |
+| `src/pages/POS.tsx` | Pemilih varian hanya muncul bila produk punya **>1** SKU; varian tunggal (baris `Default`) dipilih otomatis sehingga kasir langsung melihat daftar pecahan, dan `transaction_items.variant_id` tetap terisi. Dialog ditutup tanpa mengosongkan varian terpilih, karena animasi keluar Radix masih me-mount isinya: kalau varian dikosongkan di detik yang sama, dialog sempat berkedip kembali ke daftar rasa |
+| `tests/kasir.e2e.ts` | Kasus baru: produk dua rasa → dialog **Pilih Varian** (SKU `TLR-003-PUTIH`/`TLR-003-COKELAT`) → **Pilih Satuan - Cokelat** menampilkan harga Cokelat (16.000) dan bukan harga Putih (15.000) → dialog tertutup → baris keranjang membawa label Cokelat dengan harga 16.000 |
+| `tests/owner.e2e.ts` | Kasus baru: Vendor → cari `CV Dairy Prima Nusantara` → tab **Harga Beli** memuat baris Putih & Cokelat dengan harga beli 12.500/13.500 per `kaleng`, tab **Riwayat Harga** memuat tabel harga yang benar-benar ditagihkan |
 
-### Belum jalan
-
-Dua berkas tertahan di antrean simpan editor dan **belum tersentuh**:
-
-1. **`src/pages/Inventory.tsx`** — satu-satunya error kompilasi yang tersisa
-   (`TS2322` di `onAdd={handleSaveProduct}`). Selama ini form produk mengirim
-   matriks varian tetapi halaman masih memakai kontrak lama, sehingga
-   **belum ada penulis `product_variants` / `product_units.variant_id` di
-   aplikasi** — satu-satunya sumber saat ini adalah backfill migrasi.
-   Pekerjaan yang kurang: `Product` + `ProductVariantRow`, `PRODUCTS_SQL`
-   mengembalikan `variant_attributes` dan pecahan dengan `cost` + `variant_id`,
-   tiga proyeksi datar (`VARIANTS_SQL`, `VARIANT_UNITS_SQL`,
-   `VARIANT_STOCK_SQL`) yang dijahit di `mapProductRows`, `handleSaveProduct`
-   menulis varian lalu pecahan lalu batch dan menghapus varian/pecahan yang
-   dibuang form, serta `reduceStock` memfilter `variant_id`.
-2. **`src/config/roles.ts`** — `manage_variants`, `manage_vendor_prices`,
-   `manage_sell_prices` belum ada di `PERMISSION_GROUPS.inventory`,
-   `PERMISSION_LABELS`, dan default `store_manager`. Tanpa itu
-   `can("manage_vendor_prices")` selalu `false`, jadi tombol tambah/ubah harga
-   di tab Harga Beli belum muncul untuk siapa pun — termasuk owner.
+Catatan perilaku: `variantId` kosong di `stock-movement.ts` dan `variantId` opsional di
+kedua modal masih berarti "seluruh produk". Itu disengaja — baris lama pra-migrasi tetap
+bisa dipindahkan, dan pemanggil yang tidak punya data varian (halaman transfer cabang)
+tetap berfungsi dengan angka stok tingkat produk.
 
 ### Menyusul
 
-- `StockTransferModal.tsx` / `StockOpnameModal.tsx` belum menampilkan pemilih
-  varian; keduanya masih bergantung pada bentuk baris dari `Inventory.tsx`.
-- `handleImport` di `Inventory.tsx` belum membuat varian maupun pecahan.
-- Seed demo dan katalog storefront masih mengabaikan `variant_id`.
+- `gudang.e2e.ts` belum menguji penerimaan PO dengan harga ≠ pricelist (peringatan selisih).
+- Dua kasus `owner.e2e.ts` yang memakai `agent.act`/`agent.assert` (dashboard live, pencarian produk)
+  terhenti di `ExceededBudget` penyedia model; kasus-kasus baru sengaja ditulis deterministik supaya
+  tidak ikut bergantung pada kredit model.
+- Toko online belum punya spec E2E sendiri; pengujian variannya masih level helper.
 
