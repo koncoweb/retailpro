@@ -154,11 +154,10 @@ export function slugify(input: string): string {
     .slice(0, 32);
 }
 
-/** `rp-acme-8f3k2` — lowercase, dash-only, always <= 64 characters. */
+/** `retailpro-tenant-acme` — lowercase, dash-only, always <= 64 characters. */
 export function buildDatabaseName(slug: string): string {
   const base = slugify(slug) || 'tenant';
-  const suffix = Math.random().toString(36).slice(2, 7).padEnd(5, '0');
-  return `rp-${base.slice(0, 48)}-${suffix}`.slice(0, 64);
+  return `retailpro-tenant-${base}`.slice(0, 64);
 }
 
 export function assertUsableSlug(slug: string): string {

@@ -56,6 +56,8 @@ are visible to Vite but not to the API or the CLI scripts (tracked as KS-22 in
 | `TENANT_TOKEN_TTL` | server | Lifetime of the token handed to the browser (`60m`) |
 | `STOREFRONT_TENANT_SLUG` | server | Tenant the public catalogue serves when `?slug=` is omitted (`thalia`) |
 | `VITE_CATALOG_API_URL` | storefront | API origin for `tokoonline/`; baked into the bundle at build time |
+| `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL` | e2e | OpenAI-compatible endpoint and model that drive `agent.act`/`agent.assert` in `e2e.config.ts` |
+| `APP_URL` | e2e | SPA origin the e2e tests drive (`http://localhost:8080`) |
 
 Only `VITE_*` values are public, and `VITE_API_BASE_URL` must never carry a
 Turso secret. Never import anything from `server/` in `src/`.
@@ -70,12 +72,39 @@ Turso secret. Never import anything from `server/` in `src/`.
 | `npm test` | Vitest (schema, seed, SQL translation, date range, inventory utils, stock issue, demo tenant) |
 | `npm run typecheck` | TypeScript, app project |
 | `npm run lint` | ESLint |
+| `npm run test:e2e` | End-to-end tests (tester.army), see below |
 | `npm run bootstrap:control` | Create/schema the control database |
 | `npm run schema:apply-all` | Dry-run drift report per tenant; `--apply` runs pending `db/migrations/*.sql` then `db/schema/tenant.sql` (`--only <slug>` for one tenant) |
 | `npm run audit:sql` | Replay every SQL literal against the tenant schema |
 | `npm run demo:tenant` | Seed the demo tenant (see below) |
 | `npm run demo:cloud` | Create/reseed the demo tenant in Turso cloud; `-- --write-env` also rewrites `.env` |
 | `cd tokoonline && npm run dev` | Storefront for the online branch on port 8082 |
+
+## End-to-end tests (tester.army)
+
+`tests/**/*.e2e.ts` drives the SPA in a real browser. Deterministic steps use
+locators; `agent.act` / `agent.assert` hand a goal to an LLM whenever a step
+needs judgement instead of a selector.
+
+The agent model comes from `e2e.config.ts`, which reads `E2E_AI_BASE_URL`,
+`E2E_AI_API_KEY` and `E2E_AI_MODEL` (loaded from `.env` through
+`process.loadEnvFile()`). The default points at SumoPod's OpenAI-compatible
+endpoint, so switching provider or model is an `.env` change only. The model
+must support tool calls; it need not support structured output (`extract` is
+the only step that requires it).
+
+```bash
+# terminal 1 — the app under test (add `npm run dev:api` for auth flows)
+npm run dev
+# terminal 2
+npx e2e run                  # whole suite
+npx e2e run --grep login     # one file/title
+```
+
+Reports and failure artifacts land in `.e2e/` (`report.json`, plus
+`artifacts/.../screen.txt` listing the rendered node text — the fastest way to
+fix a locator). `.e2e/cache/` holds verified `agent.act` replays; it is
+gitignored, so a fresh clone pays model calls once per act step.
 
 ## Demo tenant: Thalia Toko Bahan Kue
 

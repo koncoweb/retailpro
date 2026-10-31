@@ -9,6 +9,7 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { query } from "@/lib/db";
+import { cn } from "@/lib/utils";
 
 interface ChartData {
   name: string; // Day name (Sen, Sel, etc.)
@@ -36,6 +37,7 @@ const dayMap: Record<string, string> = {
 export function SalesChart() {
   const [data, setData] = useState<ChartData[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -94,11 +96,32 @@ export function SalesChart() {
 
       } catch (error) {
         console.error("Failed to fetch sales chart data:", error);
+      } finally {
+        setLoaded(true);
       }
     };
 
     fetchData();
   }, []);
+
+  // A week without a sale draws flat lines on the zero axis, which reads as a
+  // broken chart; say it instead.
+  const hasSales = data.some((day) =>
+    branches.some((branch) => Number(day[branch.id] ?? 0) > 0)
+  );
+
+  // The chart itself is an SVG: nothing inside it reaches the accessibility
+  // tree, so the panel states its own figures.
+  const weekTotal = branches.reduce(
+    (sum, branch) =>
+      sum + data.reduce((daySum, day) => daySum + Number(day[branch.id] ?? 0), 0),
+    0
+  );
+  const weekTotalLabel = new Intl.NumberFormat("id-ID", {
+    style: "currency",
+    currency: "IDR",
+    maximumFractionDigits: 0,
+  }).format(weekTotal);
 
   return (
     <div className="bg-card rounded-xl border p-5 animate-fade-in">
@@ -119,7 +142,16 @@ export function SalesChart() {
           ))}
         </div>
       </div>
-      <div className="h-[300px]">
+      {loaded && !hasSales && (
+        <div className="h-[300px] flex items-center justify-center text-center text-muted-foreground text-sm">
+          Belum ada penjualan dalam 7 hari terakhir
+        </div>
+      )}
+      <div
+        className={cn("h-[300px]", loaded && !hasSales && "hidden")}
+        role="img"
+        aria-label={`Grafik penjualan 7 hari terakhir per cabang, total ${weekTotalLabel}`}
+      >
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data}>
             <defs>

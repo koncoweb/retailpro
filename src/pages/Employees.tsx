@@ -64,6 +64,7 @@ import { logAudit } from "@/lib/audit";
 import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
 import { ROLES, DEFAULT_ROLE_PERMISSIONS, PERMISSION_LABELS } from "@/config/roles";
+import { MIN_PASSWORD_LENGTH, passwordProblem } from "@/lib/password";
 import { authClient } from "@/lib/auth-client";
 
 /** Same-origin by default; `VITE_API_BASE_URL` only for split-origin dev. */
@@ -108,6 +109,9 @@ export default function Employees() {
   const [newEmpName, setNewEmpName] = useState("");
   const [newEmpEmail, setNewEmpEmail] = useState("");
   const [newEmpPassword, setNewEmpPassword] = useState("");
+  // Shown under the field once the admin submits an unusable password; cleared
+  // as soon as the typed value becomes valid.
+  const [newEmpPasswordError, setNewEmpPasswordError] = useState<string | null>(null);
   const [newEmpRole, setNewEmpRole] = useState("cashier");
   const [newEmpBranch, setNewEmpBranch] = useState("");
   const [newEmpSalary, setNewEmpSalary] = useState("0");
@@ -189,10 +193,19 @@ export default function Employees() {
   };
 
   const handleAddEmployee = async () => {
-    if (!newEmpName || !newEmpEmail || !newEmpPassword || !newEmpRole) {
-      toast.error("Mohon lengkapi nama, email, password, dan role");
+    if (!newEmpName || !newEmpEmail || !newEmpRole) {
+      toast.error("Mohon lengkapi nama, email, dan role");
       return;
     }
+
+    // The employee signs in with this password, so a weak one is refused here
+    // (beside the field) and again by the API, which other callers reach too.
+    const problem = passwordProblem(newEmpPassword);
+    if (problem) {
+      setNewEmpPasswordError(problem);
+      return;
+    }
+    setNewEmpPasswordError(null);
 
     setIsSubmitting(true);
     try {
@@ -208,6 +221,9 @@ export default function Employees() {
           name: newEmpName,
           role: newEmpRole,
           branchId: newEmpBranch || null,
+          // The password typed here is the one the employee signs in with; the
+          // endpoint only generates one when this is empty.
+          password: newEmpPassword,
         }),
       });
 
@@ -217,6 +233,9 @@ export default function Employees() {
       if (!response.ok) {
         if (response.status === 409) {
           throw new Error("Email sudah terdaftar. Silakan gunakan email lain.");
+        }
+        if (created?.error === "weak_password") {
+          throw new Error(`Password minimal ${MIN_PASSWORD_LENGTH} karakter`);
         }
         throw new Error(created?.message || "Gagal membuat akun karyawan");
       }
@@ -257,11 +276,13 @@ export default function Employees() {
       setNewEmpName("");
       setNewEmpEmail("");
       setNewEmpPassword("");
+      setNewEmpPasswordError(null);
       setNewEmpBranch("");
       fetchData();
     } catch (error) {
       console.error("Failed to add employee:", error);
-      toast.error("Gagal menambahkan karyawan");
+      // The thrown messages above are written for the admin, not for the console.
+      toast.error(error instanceof Error ? error.message : "Gagal menambahkan karyawan");
     } finally {
       setIsSubmitting(false);
     }
@@ -650,9 +671,25 @@ export default function Employees() {
                 id="password"
                 type="password"
                 value={newEmpPassword}
-                onChange={(e) => setNewEmpPassword(e.target.value)}
-                placeholder="******"
+                onChange={(e) => {
+                  setNewEmpPassword(e.target.value);
+                  // Re-check only after a failed submit, so the field does not
+                  // complain while the admin is still typing the first characters.
+                  if (newEmpPasswordError) setNewEmpPasswordError(passwordProblem(e.target.value));
+                }}
+                aria-invalid={newEmpPasswordError ? true : undefined}
+                aria-describedby={newEmpPasswordError ? "password-error" : undefined}
+                placeholder={`minimal ${MIN_PASSWORD_LENGTH} karakter`}
               />
+              <p className="text-xs text-muted-foreground">
+                Dipakai karyawan untuk login pertama. Password hanya ditampilkan sekali setelah
+                disimpan.
+              </p>
+              {newEmpPasswordError && (
+                <p id="password-error" role="alert" className="text-xs text-destructive">
+                  {newEmpPasswordError}
+                </p>
+              )}
             </div>
             <div className="grid gap-2">
               <Label htmlFor="salary">Gaji Pokok</Label>

@@ -11,6 +11,7 @@
  * already holds.
  */
 import { randomBytes } from 'node:crypto';
+import { MIN_PASSWORD_LENGTH } from '../../src/lib/password.js';
 import { auth } from '../../server/auth.js';
 import type { AppRole } from '../../server/access.js';
 import { requireAdminSession } from '../../server/auth-helpers.js';
@@ -68,6 +69,19 @@ async function handler(req: ApiRequest, res: ApiResponse) {
     throw new HttpError(400, 'invalid_role', `Role "${role}" cannot be assigned.`);
   }
 
+  // The Employees dialog checks this first and says so beside the field. This
+  // is the backstop for every other caller: without it an admin (or a script)
+  // could set a one-character password, because the endpoint used to generate
+  // the password itself and never had to judge one.
+  const typedPassword = body.password?.trim() ?? '';
+  if (typedPassword.length > 0 && typedPassword.length < MIN_PASSWORD_LENGTH) {
+    throw new HttpError(
+      400,
+      'weak_password',
+      `A password needs at least ${MIN_PASSWORD_LENGTH} characters.`
+    );
+  }
+
   const control = getControlDb();
   const existing = await control
     .selectFrom('user')
@@ -82,7 +96,7 @@ async function handler(req: ApiRequest, res: ApiResponse) {
     );
   }
 
-  const password = body.password?.trim() || generatePassword();
+  const password = typedPassword || generatePassword();
 
   let created: { user?: { id?: string } } | undefined;
   try {

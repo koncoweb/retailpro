@@ -132,6 +132,15 @@ export default function POS() {
               SELECT 
                 p.*, 
                 COALESCE(SUM(pb.quantity_current), 0) as stock,
+                -- The till sells the base unit first: its price is the unit row
+                -- with conversion 1, exactly as the product list reads it.
+                COALESCE((
+                  SELECT price FROM product_units
+                  WHERE product_id = p.id AND conversion_factor = 1
+                  ORDER BY created_at ASC
+                  LIMIT 1
+                ), 0) as base_price,
+                COALESCE(p.cost_price, 0) as cost,
                 COALESCE((
                    SELECT json_group_array(json_object(
                      'id', id, 
@@ -166,8 +175,8 @@ export default function POS() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const mappedProducts: Product[] = (productRes.rows as any[]).map((row) => ({
             ...row,
-            price: parseFloat(row.price),
-            cost: parseFloat(row.cost),
+            price: parseFloat(row.base_price) || 0,
+            cost: parseFloat(row.cost) || 0,
             stock_by_warehouse: { [warehouseId]: parseFloat(row.stock) },
             // JSON columns arrive as TEXT — parse them before use.
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -328,7 +337,7 @@ export default function POS() {
     return matchesSearch && matchesCategory;
   });
 
-  const handlePaymentComplete = async (method: string, details: PaymentDetails) => {
+  const handlePaymentComplete = async (method: string, details: PaymentDetails): Promise<boolean> => {
     try {
         let finalMethod = method;
         if (method === 'card' && details.cardType) {
@@ -486,10 +495,12 @@ export default function POS() {
         setIsPaymentOpen(false);
         // Refresh products to show updated stock
         fetchProducts();
+        return true;
         
     } catch (error) {
         console.error("Payment failed:", error);
         toast.error("Transaksi gagal: " + (error instanceof Error ? error.message : "Unknown error"));
+        return false;
     }
   };
 

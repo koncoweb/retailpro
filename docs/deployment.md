@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/deployment.md` |
-| Terakhir diperbarui | **2026-10-28** |
+| Terakhir diperbarui | **2026-10-31** |
 | Cakupan | Cara aplikasi berjalan di produksi: dua proyek Vercel, dua database Turso cloud, variabel lingkungan, langkah deploy & verifikasi, serta aturan platform yang tidak boleh dilanggar |
 | Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-30 |
 
@@ -134,6 +134,10 @@ Tidak ada variabel lain: toko tidak memegang kredensial database mana pun.
 `BETTER_AUTH_URL` yang salah adalah penyebab paling umum "login berhasil tetapi sesi hilang" di
 produksi, karena cookie `secure` dan trusted origin mengikuti nilai itu.
 
+**Tidak** termasuk di sini: `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL` dan `APP_URL`. Variabel
+itu hanya dibaca `e2e.config.ts` di mesin operator (lihat [backend.md](backend.md) §2 dan §7.1 di bawah), jadi
+jangan ditambahkan ke dashboard Vercel — kunci model bukan milik runtime aplikasi.
+
 ---
 
 ## 5. Deploy back office + API
@@ -218,6 +222,20 @@ permintaan jaringan hanya ke `retailpro-thalia.vercel.app`. Login di back office
 dashboard kosong sementara katalog benar, yang salah biasanya `BETTER_AUTH_URL` atau sesi, bukan
 database.
 
+### 7.1 Uji UI otomatis (e2e) terhadap deployment
+
+Smoke test `tests/login.e2e.ts` hanya membaca (membuka `/login`, memeriksa field dan tombol), jadi
+aman diarahkan ke produksi:
+
+```powershell
+$env:APP_URL = "https://retailpro-thalia.vercel.app"; npx e2e run --grep login
+```
+
+`e2e` berjalan di mesin operator, bukan di Vercel: kunci model tetap di `.env` lokal dan tidak perlu
+dimasukkan sebagai env proyek. Artefak `.e2e/` tidak di-commit. Alur yang **menulis** data (POS,
+penerimaan barang, pengeluaran) jangan diarahkan ke tenant produksi — jalankan terhadap
+`http://localhost:8080` dengan tenant demo.
+
 ---
 
 ## 8. Aturan platform yang mengikat kode
@@ -246,14 +264,15 @@ database.
 | Memeriksa kuota | `GET /v1/organizations/{org}/usage`; batas tenant dijaga `TURSO_MAX_TENANT_DATABASES` |
 | Rotasi token yang bocor | Turso → Settings → Tokens → revoke, buat token baru, perbarui env Vercel + `.env`, deploy ulang (KS-17) |
 
-Deployment tidak menjalankan `npm run typecheck`, `npm test`, atau `npm run audit:sql` — belum ada
-CI (KS-21), jadi ketiganya dijalankan manual sebelum `vercel --prod`.
+Deployment tidak menjalankan `npm run typecheck`, `npm test`, `npm run test:e2e`, atau `npm run audit:sql` — belum ada
+CI (KS-21), jadi keempatnya dijalankan manual sebelum `vercel --prod`.
 
 ---
 
 ## 10. Checklist rilis
 
-1. `npm run typecheck && npm test && npm run audit:sql` lulus di root.
+1. `npm run typecheck && npm test && npm run audit:sql` lulus di root. Bila perubahan menyentuh UI,
+   jalankan juga `npm run test:e2e` dengan `npm run dev` (`:8080`) dan `npm run dev:api` (`:3000`) hidup.
 2. `cd tokoonline && npm run typecheck` lulus.
 3. Variabel produksi lengkap (§4) dan `BETTER_AUTH_URL` menunjuk domain final.
 4. `npm run demo:cloud` hanya dijalankan bila memang ingin me-reset data demo.
@@ -268,7 +287,8 @@ CI (KS-21), jadi ketiganya dijalankan manual sebelum `vercel --prod`.
 
 1. **Pesanan dari toko online belum masuk ke database tenant** — masih disimpan di perangkat
    pengunjung (prototype); yang live adalah katalog, harga, satuan, dan stok.
-2. **Belum ada CI** dan belum ada staging; setiap deploy langsung ke produksi.
+2. **Belum ada CI** dan belum ada staging; setiap deploy langsung ke produksi, dan uji e2e dijalankan
+   manual dari mesin operator.
 3. **Satu region** (`ap-southeast-2`) untuk semua database; tidak ada replika baca.
 4. **Menghapus tenant belum ada di UI** (fitur-platform gap #7) — pembersihan masih lewat API
    Turso atau `deleteDatabase()`.

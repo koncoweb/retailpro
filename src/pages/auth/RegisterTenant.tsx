@@ -206,12 +206,14 @@ export default function RegisterTenant() {
                         render={({ field }) => (
                         <FormItem>
                             <FormLabel>Nomor Telepon</FormLabel>
-                            <FormControl>
+                            {/* FormControl is a Slot: the input itself must be
+                                its direct child, or the label has no control. */}
                             <div className="relative">
                                 <Phone className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                                <Input placeholder="08123456789" className="pl-9" {...field} />
+                                <FormControl>
+                                    <Input placeholder="08123456789" className="pl-9" {...field} />
+                                </FormControl>
                             </div>
-                            </FormControl>
                             <FormMessage />
                         </FormItem>
                         )}
@@ -223,12 +225,12 @@ export default function RegisterTenant() {
                     render={({ field }) => (
                     <FormItem>
                         <FormLabel>Alamat Lengkap</FormLabel>
-                        <FormControl>
                         <div className="relative">
                             <MapPin className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                            <Textarea placeholder="Jl. Sudirman No. 123, Jakarta Selatan" className="pl-9 min-h-[80px]" {...field} />
+                            <FormControl>
+                                <Textarea placeholder="Jl. Sudirman No. 123, Jakarta Selatan" className="pl-9 min-h-[80px]" {...field} />
+                            </FormControl>
                         </div>
-                        </FormControl>
                         <FormMessage />
                     </FormItem>
                     )}
@@ -239,12 +241,12 @@ export default function RegisterTenant() {
                     render={({ field }) => (
                     <FormItem>
                         <FormLabel>Domain / Subdomain (Opsional)</FormLabel>
-                        <FormControl>
                         <div className="relative">
                             <Globe className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                            <Input placeholder="tokoanda.retailpro.com" className="pl-9" {...field} />
+                            <FormControl>
+                                <Input placeholder="tokoanda.retailpro.com" className="pl-9" {...field} />
+                            </FormControl>
                         </div>
-                        </FormControl>
                         <FormDescription>
                             Kosongkan jika ingin menggunakan domain default
                         </FormDescription>
@@ -258,24 +260,24 @@ export default function RegisterTenant() {
                     render={({ field: { value, onChange, ...field } }) => (
                     <FormItem>
                         <FormLabel>Logo & Branding (Opsional)</FormLabel>
-                        <FormControl>
                         <div className="flex items-center gap-4">
                             <div className="flex-1">
                                 <div className="relative cursor-pointer">
                                     <Upload className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                                    <Input 
-                                        type="file" 
-                                        className="pl-9 cursor-pointer" 
-                                        accept="image/*"
-                                        onChange={(e) => {
-                                            onChange(e.target.files?.[0]);
-                                        }}
-                                        {...field} 
-                                    />
+                                    <FormControl>
+                                        <Input
+                                            type="file"
+                                            className="pl-9 cursor-pointer"
+                                            accept="image/*"
+                                            onChange={(e) => {
+                                                onChange(e.target.files?.[0]);
+                                            }}
+                                            {...field}
+                                        />
+                                    </FormControl>
                                 </div>
                             </div>
                         </div>
-                        </FormControl>
                         <FormDescription>
                             Format: PNG, JPG (Max 2MB)
                         </FormDescription>
@@ -310,12 +312,12 @@ export default function RegisterTenant() {
                         render={({ field }) => (
                         <FormItem>
                             <FormLabel>Email Resmi</FormLabel>
-                            <FormControl>
                             <div className="relative">
                                 <Mail className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                                <Input type="email" placeholder="admin@tokoanda.com" className="pl-9" {...field} />
+                                <FormControl>
+                                    <Input type="email" placeholder="admin@tokoanda.com" className="pl-9" {...field} />
+                                </FormControl>
                             </div>
-                            </FormControl>
                             <FormDescription>Email ini akan digunakan untuk login admin</FormDescription>
                             <FormMessage />
                         </FormItem>
@@ -328,12 +330,12 @@ export default function RegisterTenant() {
                     render={({ field }) => (
                     <FormItem>
                         <FormLabel>Password</FormLabel>
-                        <FormControl>
                         <div className="relative">
                             <Lock className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                            <Input type="password" placeholder="••••••••" className="pl-9" {...field} />
+                            <FormControl>
+                                <Input type="password" placeholder="••••••••" className="pl-9" {...field} />
+                            </FormControl>
                         </div>
-                        </FormControl>
                         <FormMessage />
                     </FormItem>
                     )}

@@ -194,7 +194,12 @@ export function EmployeeRoleSettings() {
                 </TableCell>
                 <TableCell>
                   <div className="flex gap-1">
-                    <Button variant="ghost" size="iconSm" onClick={() => handleEdit(role)}>
+                    <Button
+                      variant="ghost"
+                      size="iconSm"
+                      aria-label={`Ubah permission ${role.name}`}
+                      onClick={() => handleEdit(role)}
+                    >
                       <Edit className="w-4 h-4" />
                     </Button>
                     {/* Delete button removed for system roles */}

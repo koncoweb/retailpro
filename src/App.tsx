@@ -36,6 +36,15 @@ import SalesReport from "./pages/SalesReport";
 import InventoryReport from "./pages/InventoryReport";
 import FinanceReports from "./pages/FinanceReports";
 import type { UserRole } from "./types";
+import {
+  ALL_ROLE_VALUES,
+  MANAGER_ROLES,
+  FRONT_OFFICE_ROLES,
+  BACK_OFFICE_ROLES,
+  STOCK_DOC_ROLES,
+  PROCUREMENT_ROLES,
+  HR_ROLES,
+} from "./config/roles";
 
 const queryClient = new QueryClient();
 
@@ -45,50 +54,17 @@ const queryClient = new QueryClient();
  *   RequireTenant  -> is their company database reachable?
  * Nothing below mounts until both hold, so no page can issue a query without a
  * tenant client.
- */
-const ALL_ROLES: UserRole[] = [
-  "platform_owner",
-  "tenant_owner",
-  "tenant_admin",
-  "store_manager",
-  "cashier",
-  "warehouse",
-  "purchasing",
-  "staff",
-  "admin",
-];
-
-const MANAGERS: UserRole[] = [
-  "platform_owner",
-  "tenant_owner",
-  "tenant_admin",
-  "store_manager",
-  "admin",
-];
-
-const FRONT_OFFICE: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "store_manager", "cashier", "admin"];
-
-const BACK_OFFICE: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "store_manager", "admin"];
-
-/**
- * Stock documents only: the manager roles plus warehouse staff.
  *
- * The `warehouse` role runs the gudang side of a replenishment order (approve,
- * ship) and counts stock, so it needs a narrow slice of the back office and
- * nothing else — no finance, no HR, no settings. Used only by the stock routes
- * below; `BACK_OFFICE` stays untouched so no other screen widens with it.
+ * The lists live in `config/roles.ts` so a screen that links to a guarded page
+ * (the mode chooser, the sidebar) can use the same one.
  */
-const STOCK_DOCS: UserRole[] = [...MANAGERS, "warehouse"];
-
-/**
- * Procurement screens: the managers, the gudang that receives the delivery,
- * and the purchasing desk that raises the order. Approval itself is gated by
- * the `approve_po` permission, not by this list — a store manager may open the
- * screen and still must not sign off their own order.
- */
-const PROCUREMENT: UserRole[] = [...MANAGERS, "warehouse", "purchasing"];
-
-const HR_ONLY: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "admin"];
+const ALL_ROLES = ALL_ROLE_VALUES;
+const MANAGERS = MANAGER_ROLES;
+const FRONT_OFFICE = FRONT_OFFICE_ROLES;
+const BACK_OFFICE = BACK_OFFICE_ROLES;
+const STOCK_DOCS = STOCK_DOC_ROLES;
+const PROCUREMENT = PROCUREMENT_ROLES;
+const HR_ONLY = HR_ROLES;
 
 function guarded(element: React.ReactNode, allowedRoles: UserRole[]) {
   return (

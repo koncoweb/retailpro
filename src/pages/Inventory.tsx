@@ -1137,6 +1137,16 @@ export default function Inventory() {
                       </TableCell>
                     </TableRow>
                   )}
+                  {!isLoading && filteredProducts.length === 0 && (
+                    <TableRow>
+                      <TableCell
+                        colSpan={8 + (selectedWarehouse === "all" ? warehouses.length : 1)}
+                        className="py-12 text-center text-muted-foreground"
+                      >
+                        Tidak ada produk yang cocok dengan pencarian atau filter ini
+                      </TableCell>
+                    </TableRow>
+                  )}
                   {filteredProducts.map((product) => {
                     const isLowStock = product.stock <= product.minStock;
                     const margin = ((product.price - product.cost) / product.price) * 100;
@@ -1272,6 +1282,13 @@ export default function Inventory() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
+                    {transfers.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">
+                          Belum ada transfer stok
+                        </TableCell>
+                      </TableRow>
+                    )}
                     {transfers.map((t) => (
                       <TableRow key={t.id}>
                         <TableCell className="font-medium">{t.reference_number}</TableCell>

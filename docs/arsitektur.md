@@ -4,7 +4,7 @@
 |---|---|
 | Aplikasi | RetailPro — ERP/POS multi-tenant, multi-cabang (pasar Indonesia, IDR) |
 | Dokumen | `docs/arsitektur.md` |
-| Terakhir diperbarui | **2026-10-28** |
+| Terakhir diperbarui | **2026-10-31** |
 | Versi skema tenant | `schema_version = 4` (`db/schema/tenant.sql` + `db/migrations/`) |
 | Status | Berjalan di lokal **dan** di Vercel (back office + toko online) dengan Turso cloud; belum dipakai data produksi nyata |
 
@@ -79,6 +79,7 @@ identitas, provisioning, penerbitan token, dan katalog publik toko.
 | Control DB | Turso | Identitas (Better Auth) + registry tenant | Menyimpan data transaksi/bisnis |
 | DB tenant | Turso (1 per tenant) | Seluruh data bisnis | Menyimpan kredensial atau data tenant lain |
 | Scripts | `scripts/` | Bootstrap control, apply schema massal, audit SQL, seed demo lokal & cloud | Dipanggil dari browser |
+| Harness e2e | `tests/`, `e2e.config.ts` | Menjalankan SPA di Chromium untuk menguji alur UI; langkah yang butuh penilaian dinilai model lewat endpoint OpenAI-compatible | Ikut berjalan di runtime aplikasi, atau menyimpan kunci model di repo |
 
 ---
 
@@ -245,6 +246,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | Runtime API | Node ≥ 20 (Vercel Functions, `node:crypto`) |
 | Database | Turso libSQL cloud, grup `ap-southeast-2`; control DB + satu DB per tenant |
 | Dev lokal | `npm run dev` (SPA :8080) + `npm run dev:api` (:3000, proxy `VITE_API_PROXY_TARGET`) + `cd tokoonline && npm run dev` (:8082) |
+| Verifikasi | `npm run typecheck`, `npm test` (Vitest 13 berkas/161 test), `npm run audit:sql`, dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI |
 | Variabel | Lihat tabel env di [backend.md](backend.md) §2 (lokal) dan [deployment.md](deployment.md) §4 (produksi) |
 | Kontrak platform | Import relatif `.js` di `api/`+`server/`; route bracket lewat `rewrites` di `vercel.json`; `db/schema/**` ikut ke lambda |
 
@@ -264,6 +266,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | 8 | 2026-10-27 — Urutan pengeluaran stok = kebijakan tenant (`fifo`/`lifo`/`fefo`), diurutkan di memori | `ORDER BY received_at` dipaku di SQL tiap jalur | Satu aturan untuk kelima jalur stok keluar dan bisa diubah tanpa migrasi; kueri batch tidak lagi punya `ORDER BY`, jadi urutan wajib lewat `sortBatchesForIssue()` |
 | 9 | 2026-10-28 — Permintaan (`stock_requests`) dipisah dari eksekusi (`stock_transfers`), dengan `shelves` per cabang dan **satu** modul perpindahan stok | (a) Menambah `branch_id` kembali ke `product_batches`; (b) menaruh logika persetujuan di masing-masing halaman | Permintaan bisa ditolak/disesuaikan tanpa menyentuh stok, dan batch hanya berpindah lewat `src/lib/stock-movement.ts`. Harga: satu dokumen tambahan, dan stok sudah bisa dijual di rak saat gudang mengirim (lihat §9) |
 | 10 | 2026-10-28 — Produksi memakai Turso **cloud** + **dua** proyek Vercel, bukan database lokal dan bukan satu deployment | (a) Deploy SPA saja dengan data contoh statis; (b) satu proyek monolit yang juga menyajikan toko; (c) database file dibundel ke fungsi | Kedua aplikasi hidup di origin terpisah dengan kunci sendiri; tidak ada kredensial database di repo maupun di toko. Harga: dua pipeline deploy, dan kode `api/`+`server/` harus patuh pada cara Vercel men-transpile tiap berkas (`.js` eksplisit, route bracket lewat rewrite). Lihat [deployment.md](deployment.md) dan KS-26/KS-27 |
+| 11 | 2026-10-31 — Uji UI end-to-end memakai tester.army (`e2e` + `@e2e-dev/web`) dengan model pihak ketiga lewat endpoint OpenAI-compatible (SumoPod) | (a) Menulis semua alur dengan selector Playwright murni; (b) membangun runner sendiri; (c) memakai gateway Vercel bawaan `e2e init` beserta kuncinya | Langkah deterministik tetap murah dan reproducible, sedangkan langkah yang butuh penilaian cukup satu `agent.assert`; menambah berkas uji tanpa menyentuh kode aplikasi. Harga: kunci API model harus ada di mesin operator, model wajib mendukung tool call, dan model tanpa `responseFormat` tidak bisa `agent.extract` (KS-32) |
 
 ---
 
@@ -277,7 +280,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 4. **Bundle tunggal ±2 MB** — belum di-split per route.
 5. **Data bisnis belum lewat TanStack Query** — masih `useEffect` + `query()`; hanya sesi auth
    yang memakai Query.
-6. **Tidak ada CI dan tidak ada staging** — typecheck, test, dan `audit:sql` dijalankan manual
+6. **Tidak ada CI dan tidak ada staging** — typecheck, `npm test`, `npm run test:e2e`, dan `audit:sql` dijalankan manual
    sebelum `vercel --prod`, dan deploy langsung ke produksi (lihat [deployment.md](deployment.md) §9,
    KS-21).
 7. **Stok rak sudah bisa dijual saat gudang mengirim, bukan saat barang tiba.** Pengiriman memindahkan

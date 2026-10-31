@@ -2,10 +2,11 @@ import { ReactNode, useState, useEffect } from "react";
 // Layout component for Point of Sale pages
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { ShoppingCart, FileText, Clock, LogOut, Store, Moon, Sun, MapPin } from "lucide-react";
+import { ShoppingCart, FileText, Clock, LogOut, Store, Moon, Sun, MapPin, ArrowLeftRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 import { useAuth } from "@/hooks/use-auth";
+import { useSignOut } from "@/hooks/use-sign-out";
 import { query } from "@/lib/db";
 
 interface POSLayoutProps {
@@ -22,6 +23,7 @@ export function POSLayout({ children }: POSLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
   const { user } = useAuth();
+  const signOut = useSignOut();
   const [branchName, setBranchName] = useState<string>("Loading...");
 
   useEffect(() => {
@@ -106,10 +108,20 @@ export function POSLayout({ children }: POSLayoutProps) {
           </Button>
           <Link to="/mode-select">
             <Button variant="outline" size="sm" className="gap-2">
-              <LogOut className="w-4 h-4" />
-              <span className="hidden sm:inline">Keluar POS</span>
+              <ArrowLeftRight className="w-4 h-4" />
+              <span className="hidden sm:inline">Ganti Mode</span>
             </Button>
           </Link>
+          {/* Leaving the till is not the same as leaving the account. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-2 text-muted-foreground hover:text-destructive"
+            onClick={() => void signOut()}
+          >
+            <LogOut className="w-4 h-4" />
+            <span className="hidden sm:inline">Keluar</span>
+          </Button>
         </div>
       </header>
 

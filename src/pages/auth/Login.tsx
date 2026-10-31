@@ -104,12 +104,15 @@ export default function Login() {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Email</FormLabel>
-                    <FormControl>
-                      <div className="relative">
-                        <Mail className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                    {/* The icon wrapper sits outside FormControl: FormControl is a
+                        Slot, so it must receive the input itself to hand down the
+                        id the label points at. */}
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                      <FormControl>
                         <Input placeholder="nama@perusahaan.com" className="pl-9" {...field} />
-                      </div>
-                    </FormControl>
+                      </FormControl>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -128,12 +131,12 @@ export default function Login() {
                             Lupa password?
                         </Link>
                     </div>
-                    <FormControl>
-                      <div className="relative">
-                        <Lock className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                      <FormControl>
                         <Input type="password" placeholder="••••••••" className="pl-9" {...field} />
-                      </div>
-                    </FormControl>
+                      </FormControl>
+                    </div>
                     <FormMessage />
                   </FormItem>
                 )}

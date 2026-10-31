@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/frontend.md` |
-| Terakhir diperbarui | **2026-10-28** |
+| Terakhir diperbarui | **2026-10-31** |
 | Stack | React 18 + Vite 5 + TypeScript, shadcn/ui, Tailwind, React Router 6 |
 | Bahasa UI | Indonesia (label, pesan, format Rupiah) |
 
@@ -24,7 +24,8 @@
 | Build | `vite build` → `dist/` (satu bundle ±2 MB, ada peringatan ukuran chunk) |
 | Typecheck | `npx tsc --noEmit -p tsconfig.app.json` (terpisah dari build) |
 | Lint | `npm run lint` (ESLint 9, config datar) |
-| Test | `npm run test` (Vitest; **10 file, 120 test**) |
+| Test | `npm run test` (Vitest; **13 file, 161 test**) |
+| Test E2E | `npm run test:e2e` (tester.army; `tests/**/*.e2e.ts`, butuh dev server `:8080` dan kunci model di `.env` — lihat §12) |
 | Toko online | `cd tokoonline && npm run dev` → port **8082**, `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) |
 
 ---
@@ -219,6 +220,7 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-10-31 | — (working tree) | Harness uji end-to-end `e2e` (tester.army) + `e2e.config.ts` dan smoke test layar login `tests/login.e2e.ts` — lihat §12 |
 | 2026-10-28 | — (working tree) | Halaman `/backoffice/branches/orders` (pesanan cabang): kartu statistik, tab status, filter cabang terkunci untuk manajer toko, form pesanan, modal detail dengan linimasa & aksi per peran |
 | 2026-10-28 | — (working tree) | `lib/stock-movement.ts` + `lib/branch-orders.ts` menggantikan logika yang sebelumnya disalin di dalam halaman (`Inventory.tsx`, `BranchTransfers.tsx`) |
 | 2026-10-28 | — (working tree) | Route dokumen stok memakai grup `STOCK_DOCS` (`MANAGERS` + `warehouse`); sidebar punya `allowedRoles` per item dan badge jumlah pesanan menunggu |
@@ -263,3 +265,57 @@ Dua jebakan yang sudah dialami: (a) sub-aplikasi ikut memakai `postcss.config.js
 sehingga Tailwind v4-nya dijalankan sebagai v3 — `vite.config.ts` toko memaku
 `css.postcss.plugins = []`; (b) port 8080 sudah dipakai back office, jadi dev server toko memakai
 8082.
+
+---
+
+## 12. Uji end-to-end (tester.army / `e2e`)
+
+Lapisan verifikasi ketiga setelah Vitest (logika) dan typecheck. `e2e` menjalankan SPA di Chromium
+sungguhan; langkah yang butuh ketepatan selector ditulis deterministik, langkah yang butuh penilaian
+("apakah layar ini benar?") diserahkan ke model.
+
+| Aspek | Nilai |
+|---|---|
+| Berkas uji | `tests/**/*.e2e.ts` — 7 berkas, 37 test: `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac` |
+| Konfigurasi | `e2e.config.ts` |
+| Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `kasir`, `gudang`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts` |
+| Target | `APP_URL`, default `http://localhost:8080` (`npm run dev`) |
+| Model agent | Provider OpenAI-compatible dari `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL`; bawaan SumoPod + `deepseek-v4.1-flash:netra` |
+| Perintah | `npm run test:e2e`, atau `npx e2e run --grep login` untuk sebagian |
+| Artefak | `.e2e/report.json` + `.e2e/artifacts/*/screen.txt` (daftar teks node yang dirender) |
+| Timeout | assertion 60 detik, action 180 detik, test 300 detik; `workers: 1`, `retries: 1` |
+
+Aturan yang dipakai di repo ini:
+
+1. **Deterministik dulu, agent untuk penilaian.** Navigasi, isian, dan nilai yang sudah diketahui
+   memakai locator (`getByRole`, `getByPlaceholder`, `getByLabel`); satu `agent.assert` per alur
+   untuk menilai hasil, dan `agent.act` hanya bila langkahnya tidak bisa diungkap dengan selector.
+2. **`getByText` mencocokkan seluruh teks node**, bukan substring. Label hasil interpolasi
+   (`"Pesanan (4)"`) tidak cocok dengan `getByText('Pesanan')` — pakai regex.
+3. **Jangan menekan Enter untuk submit di form web.** Form HTML + React Router bisa berubah menjadi
+   GET dan memuat ulang halaman, sehingga state SPA hilang; pakai `.fill()` lalu `.tap()` tombol submit.
+4. **Satu tenant demo dipakai bersama** → `workers: 1`; data uji diberi nama unik dan dibersihkan di
+   `afterEach` bila menulis ke DB.
+5. **Kunci model tidak pernah masuk bundle.** Hanya di `.env` lokal (`.env.example` kosong); nilai
+   produksi tidak membutuhkannya karena e2e berjalan di mesin operator.
+6. **Timeout dinaikkan, bukan diakali dengan sleep.** Vite mengompilasi route saat pertama dibuka
+   (puluhan detik); tunggu keadaan layar, jangan menambah delay tetap.
+7. **Kata sandi hanya di `credentials`, tidak pernah di kode tes.** Nilainya `Secret` opaque yang
+   hanya diterima `locator.fill` dan `agent.act`, jadi tidak muncul di log, tangkapan layar, maupun
+   prompt model; `E2E_USER_<NAME>_PASSWORD` menimpa tanpa menyunting berkas.
+8. **Sesi disimpan sekali, dipulihkan per tes.** `tests/auth.setup.e2e.ts` login sekali per peran lalu
+   `session.save()`; tes lain memakainya lewat `{ session }`. Tes yang menguji tombol Keluar harus
+   login sendiri di dalam tubuh tes, karena `signOut()` mencabut sesi itu di server dan tes lain yang
+   memulihkannya akan menjadi anonim.
+
+Menjalankan:
+
+```sh
+npm run dev        # terminal 1 — SPA :8080
+npm run dev:api    # terminal 2 — API :3000 (perlu untuk alur login)
+npm run test:e2e
+```
+
+Batasannya: model yang dipilih mendukung tool call tetapi **tidak** mendukung `responseFormat`,
+sehingga `agent.extract` tidak bisa dipakai (KS-32 di [kendala-solusi.md](kendala-solusi.md)).
+

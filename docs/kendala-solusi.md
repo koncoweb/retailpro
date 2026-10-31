@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/kendala-solusi.md` |
-| Terakhir diperbarui | **2026-10-28** |
+| Terakhir diperbarui | **2026-10-31** |
 | Isi | Masalah, bug, error, dan ketidaksesuaian yang benar-benar dihadapi — beserta cara mengatasi dan pelajarannya |
 
 ## Cara memakai log ini
@@ -48,6 +48,7 @@
 | KS-29 | 2026-10-28 | `vercel login` tidak pernah tersimpan (proses device flow mati) | Selesai |
 | KS-30 | 2026-10-28 | Deploy toko diblokir CVE TanStack Start, lalu error tipe setelah upgrade | Selesai |
 | KS-31 | 2026-10-28 | `demo:cloud` diulang: gagal sesaat lalu membuat owner baru | Sebagian (perilaku didokumentasikan) |
+| KS-32 | 2026-10-31 | Model e2e menolak `responseFormat` → `agent.extract` gagal | Terbuka (batasan model) |
 
 ---
 
@@ -424,6 +425,19 @@
 | **Bukti** | `scripts/setup-cloud-demo.ts` (blok *Owner account*), dua id owner berbeda di control DB |
 | **Pelajaran** | "Idempoten" harus dinyatakan per objek: skrip ini idempoten untuk database dan data tenant, tetapi **rotasi** untuk identitas. Menyebutkan cakupan idempotensi lebih jujur daripada satu kata "aman diulang" |
 
+---
+
+## KS-32 · 2026-10-31 · Model e2e menolak `responseFormat`, sehingga `agent.extract` gagal — **TERBUKA (batasan model)**
+
+| | |
+|---|---|
+| **Gejala** | Setiap panggilan `agent.*` pada `npx e2e run` mencetak peringatan AI SDK: `Warning (sumopod.chat / deepseek-v4.1-flash:netra): The feature "responseFormat" is not supported. JSON response format schema is only supported with structuredOutputs` |
+| **Akar masalah** | `agent.act`, `agent.assert`, dan `agent.waitFor` hanya butuh tool call, sedangkan `agent.extract` meminta keluaran terstruktur (`responseFormat`/JSON schema). Endpoint SumoPod menerima tool call tetapi menolak parameter itu, jadi hanya langkah `extract` yang tidak bisa dipakai — ketiga test smoke tetap lulus |
+| **Solusi** | Diterima sebagai batasan dan dicatat di [frontend.md](frontend.md) §12: alur ditulis dengan `agent.act` + `agent.assert` + locator deterministik. Bila `extract` benar-benar dibutuhkan (mis. membaca angka dari tabel), ganti provider/model yang mendukung structured output — cukup mengubah `E2E_AI_BASE_URL`/`E2E_AI_MODEL` di `.env`, tanpa menyentuh `e2e.config.ts` |
+| **Yang masih bisa diperbaiki** | Menandai kemampuan model di konfigurasi (mis. komentar di `e2e.config.ts`) agar `extract` tidak dicoba pada model ini; atau menyediakan model kedua khusus `extract` lewat `agents.<name>` |
+| **Bukti** | `npx e2e run --grep login` 2026-10-31: 3 test lulus, 3 panggilan model, 10,9k token, dengan peringatan di atas di stderr; `e2e.config.ts` |
+| **Pelajaran** | "OpenAI-compatible" tidak berarti semua fitur OpenAI ada. Sebelum memakai model untuk harness yang butuh keluaran terstruktur, uji satu panggilan dengan `responseFormat`; untuk harness yang hanya butuh tool call, cukup pastikan tool calling bekerja — peringatan AI SDK adalah sinyal pertama, bukan kegagalan test |
+
 ## Pelajaran umum (ringkas)
 
 1. **Isolasi harus fisik.** Pemfilteran data di sisi klien bukan keamanan.
@@ -446,3 +460,7 @@
 11. **Nilai contoh adalah kode.** `.env.example`, contoh perintah di README, dan nama grup di
     dokumen akan dijalankan apa adanya; nilai yang tidak ada di akun nyata lebih berbahaya daripada
     nilai kosong.
+12. **Verifikasi UI bukan pekerjaan unit test.** 161 test unit tidak melihat satu pun layar; alur
+    yang benar-benar dipakai kasir harus dijalankan di browser. Harness yang dinilai model menambah
+    dependensi baru yang bisa gagal sendiri (kunci API, kuota, kemampuan tool call), jadi langkah
+    `agent.*` diperlakukan seperti layanan eksternal: beri timeout dan sediakan jalur deterministik.

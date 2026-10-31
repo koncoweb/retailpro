@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/backend.md` |
-| Terakhir diperbarui | **2026-10-28** |
+| Terakhir diperbarui | **2026-10-31** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
 | Versi skema tenant | **4** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
@@ -21,6 +21,9 @@ db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama 
 db/schema/control.sql     Skema control DB (Better Auth 4 tabel + registry)
 db/schema/seed.sql        Seed provisioning dengan placeholder {{TOKEN}}
 db/__tests__/             Test skema, seed, dan tenant demo (DB sementara per run)
+tests/*.e2e.ts            Spesifikasi end-to-end (tester.army) yang menjalankan SPA di Chromium
+e2e.config.ts             Target e2e (:8080) + model agent OpenAI-compatible
+.agents/skills/e2e/       Referensi runner e2e yang dibaca agen (hasil `npx e2e init`)
 
 server/env.ts             Akses env (server-only), MissingEnvError
 server/http.ts            HttpError, sendJson, readJsonBody, withErrors, methodNotAllowed
@@ -76,6 +79,8 @@ lokal tetap menemukan berkasnya. Lihat [deployment.md](deployment.md) §8 dan KS
 | `VITE_API_PROXY_TARGET` | vite dev | Tidak | default `http://localhost:3000` |
 | `DEMO_OWNER_EMAIL` / `DEMO_OWNER_NAME` / `DEMO_PASSWORD` | scripts | Tidak | Menimpa identitas owner demo di `setup-cloud-demo.ts` / `seed-demo-tenant.ts` |
 | `TURSO_TENANT_TOKEN` | script demo | Tidak | Token bila seed `--url` tanpa `--token` |
+| `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL` | e2e (dev) | Ya untuk `agent.*` | Endpoint OpenAI-compatible, kunci, dan model agent. Bawaan: `https://ai.sumopod.com/v1` + `deepseek-v4.1-flash:netra`. Tidak dibaca runtime produksi |
+| `APP_URL` | e2e (dev) | Tidak | Origin SPA yang diuji, default `http://localhost:8080`; boleh diarahkan ke deployment |
 
 Aturan: **hanya `VITE_*` yang publik**. `src/` tidak boleh mengimpor `server/` (berisi rahasia).
 Nilai untuk produksi tidak dibaca dari `.env`: diisi di dashboard Vercel per proyek — lihat
@@ -85,7 +90,8 @@ Nilai untuk produksi tidak dibaca dari `.env`: diisi di dashboard Vercel per pro
 `scripts/apply-schema-all.mjs`) memakai `import 'dotenv/config'`, yang **hanya membaca `.env`**.
 Vite membaca `.env` **dan** `.env.local`. Karena itu nilai bersama (Turso, control DB, Better Auth)
 diisi di `.env`; `.env.local` hanya untuk nilai sisi Vite. Ketidaksesuaian ini tercatat sebagai
-KS-22 di [kendala-solusi.md](kendala-solusi.md).
+KS-22 di [kendala-solusi.md](kendala-solusi.md). `e2e.config.ts` memakai `process.loadEnvFile()`,
+yang juga hanya membaca `.env` — kunci model e2e harus ada di sana, bukan di `.env.local`.
 
 ---
 
@@ -99,11 +105,16 @@ KS-22 di [kendala-solusi.md](kendala-solusi.md).
 | GET | `/api/tenant/bootstrap` | Sesi + registry | `{dbUrl, token, expiresAt, tenant{id,name,slug}, user{id,name,email,role,branchId}}` | 401 tanpa sesi, 404 tanpa tenant |
 | POST | `/api/tenant/token` | Sesi + registry | Mint token baru untuk database tenant pemanggil | 401, 404 |
 | POST | `/api/tenant/provision` | Sesi | Buat DB + skema + seed + registry. Body `{companyName, slug?, branchName?, branchAddress?}` | 400 `invalid_company_name`/`invalid_slug`, 401, 409 `tenant_exists`/`slug_taken`/`slug_reserved`, 429 `tenant_limit_reached`, 502 `turso_error`/`turso_no_hostname` |
-| POST | `/api/admin/users` | Sesi admin | Buat user Better Auth di tenant pemanggil; password acak bila tidak dikirim | 400 `invalid_email`/`invalid_name`/`invalid_role`, 401, 409 `email_taken` |
+| POST | `/api/admin/users` | Sesi admin | Buat user Better Auth di tenant pemanggil; `password` yang dikirim admin dipakai apa adanya (minimal 8 karakter) dan hanya diacak bila tidak dikirim | 400 `invalid_email`/`invalid_name`/`invalid_role`/`weak_password`, 401, 409 `email_taken` |
 | POST | `/api/admin/users/[id]/password` | Sesi admin | Reset password user; mengembalikan password sementara sekali | 401, 403, 404 |
 
 Semua handler dibungkus `withErrors()` (memetakan `HttpError` → JSON `{error, message}`, sisanya
 500) dan menolak method yang salah dengan `methodNotAllowed`.
+
+Batas 8 karakter untuk password karyawan didefinisikan sekali di `src/lib/password.ts`
+(`MIN_PASSWORD_LENGTH`, `passwordProblem()`), dipakai dialog Employees untuk menjelaskan masalah di
+samping field dan diimpor `api/admin/users.ts` lewat jalur relatif berekstensi `.js` sebagai
+penjaga terakhir bila endpoint dipanggil tanpa melewati form.
 
 **Routing di Vercel.** Fungsi standalone tidak mengenal nama berkas bracket, sehingga
 `api/auth/[...all].ts` dan `api/admin/users/[id]/password.ts` diakses lewat `rewrites` di
@@ -443,7 +454,8 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: 10 berkas, 120 test (translate, skema, seed, demo tenant, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor) |
+| `npm test` | Vitest: 13 berkas, 161 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt) |
+| `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---
 

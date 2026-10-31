@@ -16,6 +16,13 @@ baris = satu kemampuan operator yang berubah, dengan tanggal dan jam.
 
 ## 1. Log perubahan kemampuan platform
 
+### 2026-10-31 — penamaan database tenant (belum di-commit)
+
+| Waktu | Ref | Area | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-10-31 | — (working tree) | Penamaan | Database tenant baru memakai awalan **`retailpro-tenant-<slug>`** (mis. `retailpro-tenant-acme`), menggantikan `rp-<slug>-<5 acak>`. Database yang sudah ada — `retailpro-control` dan `rp-thalia` — dipertahankan tanpa rename | Ubah |
+| 2026-10-31 | — (working tree) | Batas organisasi | Database lain di organisasi Turso (`tokomasmurni`) milik proyek yang tidak berhubungan: RetailPro tidak membuat, tidak menyentuh, dan tidak memigrasikannya — `schema:apply-all` hanya menyentuh database yang terdaftar di `tenant_databases` | Baru |
+
 ### 2026-10-28 — data plane cloud & rilis produksi (belum di-commit)
 
 | Waktu | Ref | Area | Perubahan | Status |

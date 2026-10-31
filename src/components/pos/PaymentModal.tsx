@@ -21,6 +21,7 @@ import {
   CreditCard,
   Wallet,
   Check,
+  Loader2,
   QrCode,
   Smartphone,
 } from "lucide-react";
@@ -39,7 +40,11 @@ interface PaymentModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   total: number;
-  onPaymentComplete: (paymentMethod: string, paymentDetails: PaymentDetails) => void;
+  /** Resolves once the sale is committed; `false` means it was refused. */
+  onPaymentComplete: (
+    paymentMethod: string,
+    paymentDetails: PaymentDetails
+  ) => Promise<boolean | void> | boolean | void;
   banks: { id: string; name: string; type: string }[];
 }
 
@@ -71,11 +76,12 @@ export function PaymentModal({
   const [selectedBank, setSelectedBank] = useState("");
   const [cardType, setCardType] = useState<"debit" | "credit">("debit");
   const [selectedEWallet, setSelectedEWallet] = useState("qris");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const cashReceived = parseFloat(cashAmount) || 0;
   const change = cashReceived - total;
 
-  const handlePayment = () => {
+  const handlePayment = async () => {
     let paymentDetails: PaymentDetails = { method: paymentMethod };
 
     if (paymentMethod === "cash") {
@@ -105,10 +111,18 @@ export function PaymentModal({
       };
     }
 
-    toast.success("Pembayaran berhasil!");
-    onPaymentComplete(paymentMethod, paymentDetails);
-    onOpenChange(false);
-    resetForm();
+    setIsSubmitting(true);
+    try {
+      // The sale only happened once the caller's write has committed. Announcing
+      // success before that reported sales that were never stored.
+      const outcome = await onPaymentComplete(paymentMethod, paymentDetails);
+      if (outcome === false) return; // the caller has already said why
+      toast.success("Pembayaran berhasil!");
+      onOpenChange(false);
+      resetForm();
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const resetForm = () => {
@@ -263,12 +277,21 @@ export function PaymentModal({
         </Tabs>
 
         <div className="flex gap-2 pt-4">
-          <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+          <Button
+            variant="outline"
+            className="flex-1"
+            onClick={() => onOpenChange(false)}
+            disabled={isSubmitting}
+          >
             Batal
           </Button>
-          <Button className="flex-1 gap-2" onClick={handlePayment}>
-            <Check className="w-4 h-4" />
-            Bayar
+          <Button className="flex-1 gap-2" onClick={handlePayment} disabled={isSubmitting}>
+            {isSubmitting ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Check className="w-4 h-4" />
+            )}
+            {isSubmitting ? "Memproses…" : "Bayar"}
           </Button>
         </div>
       </DialogContent>

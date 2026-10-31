@@ -32,6 +32,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 import { useAuth } from "@/hooks/use-auth";
+import { useSignOut } from "@/hooks/use-sign-out";
 import { ROLES } from "@/config/roles";
 import { query } from "@/lib/db";
 import type { UserRole } from "@/types";
@@ -162,6 +163,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
   const { user } = useAuth();
+  const signOut = useSignOut();
 
   // The sidebar is the only place the signed-in person sees their own name.
   const roleLabel = ROLES.find((role) => role.value === user?.role)?.label ?? "Staff";
@@ -350,12 +352,25 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
           )}
         </div>
         {!collapsed && (
-          <Link to="/mode-select">
-            <Button variant="outline" size="sm" className="w-full gap-2">
+          <div className="space-y-2">
+            <Link to="/mode-select">
+              <Button variant="outline" size="sm" className="w-full gap-2">
+                <ArrowLeftRight className="w-4 h-4" />
+                Ganti Mode
+              </Button>
+            </Link>
+            {/* Ganti Mode only picks another screen for the same person; this
+                is the way out of the session itself. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="w-full gap-2 text-muted-foreground hover:text-destructive"
+              onClick={() => void signOut()}
+            >
               <LogOut className="w-4 h-4" />
-              Ganti Mode
+              Keluar
             </Button>
-          </Link>
+          </div>
         )}
       </div>
     </div>
@@ -401,6 +416,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
         <SidebarContent />
         <button
           onClick={() => setCollapsed(!collapsed)}
+          aria-label={collapsed ? "Rentangkan sidebar" : "Ciutkan sidebar"}
           className="absolute -right-3 top-20 w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-md hover:scale-110 transition-transform"
         >
           <ChevronRight

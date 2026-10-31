@@ -1,3 +1,5 @@
+import type { UserRole } from "@/types";
+
 export const ROLES = [
   { value: "platform_owner", label: "Platform Owner", description: "Akses penuh ke seluruh sistem" },
   { value: "tenant_owner", label: "Owner", description: "Pemilik usaha, akses penuh ke tenant" },
@@ -10,6 +12,66 @@ export const ROLES = [
 ] as const;
 
 export type RoleValue = typeof ROLES[number]["value"];
+
+/**
+ * Route guards, in one place.
+ *
+ * `App.tsx` hands these lists to `RoleBasedRoute`, and every screen that offers
+ * a link to a guarded page must use the same list. Two copies of "who may open
+ * the vendor directory" is how the mode chooser ended up sending gudang staff
+ * to a page that bounced them straight back.
+ */
+export const ALL_ROLE_VALUES: UserRole[] = [
+  "platform_owner",
+  "tenant_owner",
+  "tenant_admin",
+  "store_manager",
+  "cashier",
+  "warehouse",
+  "purchasing",
+  "staff",
+  "admin",
+];
+
+export const MANAGER_ROLES: UserRole[] = [
+  "platform_owner",
+  "tenant_owner",
+  "tenant_admin",
+  "store_manager",
+  "admin",
+];
+
+/** The till: cashiers and whoever else rings up a sale. */
+export const FRONT_OFFICE_ROLES: UserRole[] = [
+  "platform_owner",
+  "tenant_owner",
+  "tenant_admin",
+  "store_manager",
+  "cashier",
+  "admin",
+];
+
+export const BACK_OFFICE_ROLES: UserRole[] = MANAGER_ROLES;
+
+/**
+ * Stock documents only: the manager roles plus warehouse staff.
+ *
+ * The `warehouse` role runs the gudang side of a replenishment order (approve,
+ * ship) and counts stock, so it needs a narrow slice of the back office and
+ * nothing else — no finance, no HR, no settings. `BACK_OFFICE_ROLES` stays
+ * untouched so no other screen widens with it.
+ */
+export const STOCK_DOC_ROLES: UserRole[] = [...MANAGER_ROLES, "warehouse"];
+
+/**
+ * Procurement screens: the managers, the gudang that receives the delivery,
+ * and the purchasing desk that raises the order. Approval itself is gated by
+ * the `approve_po` permission, not by this list — a store manager may open the
+ * screen and still must not sign off their own order.
+ */
+export const PROCUREMENT_ROLES: UserRole[] = [...MANAGER_ROLES, "warehouse", "purchasing"];
+
+export const HR_ROLES: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "admin"];
 
 export const PERMISSION_GROUPS = {
   dashboard: ["view_dashboard", "view_analytics"],

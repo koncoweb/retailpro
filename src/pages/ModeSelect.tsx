@@ -3,10 +3,20 @@ import { ShoppingCart, Briefcase, Store, Truck, Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 import { useAuth } from "@/hooks/use-auth";
+import { BACK_OFFICE_ROLES, FRONT_OFFICE_ROLES } from "@/config/roles";
 
 export default function ModeSelect() {
   const { theme, setTheme } = useTheme();
   const { role } = useAuth();
+
+  /**
+   * A card that opens a screen its guard refuses is a trap: the click lands back
+   * here with no explanation. Visibility is decided by the same lists `App.tsx`
+   * guards the routes with.
+   */
+  const canUsePos = !!role && FRONT_OFFICE_ROLES.includes(role);
+  const canUseBackOffice = !!role && (BACK_OFFICE_ROLES.includes(role) || role === "warehouse");
+  const canUseVendors = !!role && BACK_OFFICE_ROLES.includes(role);
 
   /**
    * Gudang staff get a narrow slice of the back office, and `/backoffice`
@@ -53,7 +63,8 @@ export default function ModeSelect() {
 
           <div className="grid md:grid-cols-3 gap-6">
             {/* POS Mode */}
-            <Link to="/pos" className="block group">
+            {canUsePos && (
+              <Link to="/pos" className="block group">
               <div className="p-6 rounded-2xl border-2 border-transparent bg-card hover:border-primary transition-all duration-300 hover:shadow-xl hover:shadow-primary/10">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-info flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                   <ShoppingCart className="w-8 h-8 text-primary-foreground" />
@@ -81,9 +92,11 @@ export default function ModeSelect() {
                 </Button>
               </div>
             </Link>
+            )}
 
             {/* Back Office Mode */}
-            <Link to={backOfficePath} className="block group">
+            {canUseBackOffice && (
+              <Link to={backOfficePath} className="block group">
               <div className="p-6 rounded-2xl border-2 border-transparent bg-card hover:border-primary transition-all duration-300 hover:shadow-xl hover:shadow-primary/10">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-info to-success flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                   <Briefcase className="w-8 h-8 text-primary-foreground" />
@@ -107,9 +120,11 @@ export default function ModeSelect() {
                 </Button>
               </div>
             </Link>
+            )}
 
             {/* Vendor Mode */}
-            <Link to="/backoffice/vendors" className="block group">
+            {canUseVendors && (
+              <Link to="/backoffice/vendors" className="block group">
               <div className="p-6 rounded-2xl border-2 border-transparent bg-card hover:border-primary transition-all duration-300 hover:shadow-xl hover:shadow-primary/10">
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-warning to-success flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                   <Truck className="w-8 h-8 text-primary-foreground" />
@@ -141,6 +156,7 @@ export default function ModeSelect() {
                 </Button>
               </div>
             </Link>
+            )}
           </div>
 
           <p className="text-center text-xs text-muted-foreground mt-8">

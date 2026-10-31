@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { getSession } from "@/lib/auth-client";
 import { UserRole } from "@/types";
@@ -39,26 +40,32 @@ export function useAuth() {
    * still read the old Postgres column names; with database-per-tenant the tenant
    * id is no longer a column, it is the session scope.
    */
-  const user: AppUser | undefined = sessionUser
-    ? {
-        id: sessionUser.id,
-        email: sessionUser.email,
-        name: sessionUser.name,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        role: ((sessionUser as any).role as UserRole) ?? "staff",
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        tenantId: ((sessionUser as any).tenantId as string | null) ?? null,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        branchId: ((sessionUser as any).branchId as string | null) ?? null,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        status: ((sessionUser as any).status as string | null) ?? null,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        assigned_branch_id: ((sessionUser as any).branchId as string | null) ?? null,
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        tenant_id: ((sessionUser as any).tenantId as string | null) ?? null,
-        image: sessionUser.image ?? null,
-      }
-    : undefined;
+  // Memoised: pages fetch in `useEffect(..., [user])`, so a fresh object every
+  // render would re-run the fetch on every render and never settle.
+  const user: AppUser | undefined = useMemo(
+    () =>
+      sessionUser
+        ? {
+            id: sessionUser.id,
+            email: sessionUser.email,
+            name: sessionUser.name,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            role: ((sessionUser as any).role as UserRole) ?? "staff",
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            tenantId: ((sessionUser as any).tenantId as string | null) ?? null,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            branchId: ((sessionUser as any).branchId as string | null) ?? null,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            status: ((sessionUser as any).status as string | null) ?? null,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            assigned_branch_id: ((sessionUser as any).branchId as string | null) ?? null,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            tenant_id: ((sessionUser as any).tenantId as string | null) ?? null,
+            image: sessionUser.image ?? null,
+          }
+        : undefined,
+    [sessionUser],
+  );
 
   return {
     session,
