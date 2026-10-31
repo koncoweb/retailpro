@@ -22,12 +22,12 @@ const FEATURED = 8;
 const SLIDES: HeroSlide[] = [
   {
     id: "marketplace",
-    src: "/slider/banner-marketplace.png",
+    src: "/slider/banner-marketplace.webp",
     alt: "TokoBahanKue.com — pusat kebutuhan industri roti dan kue Indonesia. Aneka tepung, mentega, telur, dan gula di atas meja marmer.",
   },
   {
     id: "bahan-kue",
-    src: "/slider/banner-bahan-kue.png",
+    src: "/slider/banner-bahan-kue.webp",
     alt: "TokoBahanKue.com — pusat kebutuhan industri roti dan kue Indonesia. Tepung, mentega, telur, dan gula di atas meja kayu.",
   },
 ];
