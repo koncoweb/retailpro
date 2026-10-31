@@ -51,7 +51,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(5);
+    expect(rows[0].version).toBe(6);
   });
 
   it('exposes every table the application queries', async () => {
@@ -68,6 +68,7 @@ describe('tenant.sql', () => {
       'payables',
       'product_batches',
       'product_units',
+      'product_variants',
       'products',
       'purchase_order_items',
       'purchase_orders',
@@ -82,6 +83,7 @@ describe('tenant.sql', () => {
       'transfer_items',
       'users',
       'vendor_payments',
+      'vendor_price_list',
       'vendor_products',
       'warehouses',
     ];

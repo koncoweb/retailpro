@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 5);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 6);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
 -- receipt/tax/bank settings as JSON text.
@@ -154,24 +154,60 @@ CREATE TABLE IF NOT EXISTS customers (
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+-- A product is the MODEL ("Kopi Sachet ABC"); `product_variants` holds the SKUs
+-- that are actually sold and stocked ("Susu", "Hitam"). Legacy single-variant
+-- products keep one variant row whose SKU equals `products.sku`.
 CREATE TABLE IF NOT EXISTS products (
-  id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
-  sku             TEXT NOT NULL,
-  name            TEXT NOT NULL,
-  description     TEXT,
-  category        TEXT,
-  cost_price      INTEGER NOT NULL DEFAULT 0,
-  min_stock_level INTEGER NOT NULL DEFAULT 5,
-  is_tracked      INTEGER NOT NULL DEFAULT 1,
-  supplier_id     TEXT,
-  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  id                 TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  sku                TEXT NOT NULL,
+  name               TEXT NOT NULL,
+  description        TEXT,
+  category           TEXT,
+  -- Ringkasan varian default (satuan dasar). Sumber kebenaran tetap
+  -- `product_units`; kolom ini hanya mempercepat daftar produk.
+  cost_price         INTEGER NOT NULL DEFAULT 0,
+  min_stock_level    INTEGER NOT NULL DEFAULT 5,
+  is_tracked         INTEGER NOT NULL DEFAULT 1,
+  supplier_id        TEXT,
+  -- Grup atribut berurutan: [{"name":"Rasa","values":["Susu","Hitam"]}].
+  -- Array kosong = produk tanpa varian.
+  variant_attributes TEXT NOT NULL DEFAULT '[]',
+  created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS product_variants (
+  id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  product_id  TEXT NOT NULL,
+  -- The SKU that is sold and stocked.
+  sku         TEXT NOT NULL,
+  barcode     TEXT,
+  -- Human label: "Susu 250ml". Derived from `attributes`, stored so list screens
+  -- do not have to parse JSON on every render.
+  name        TEXT NOT NULL,
+  -- {"Rasa":"Susu","Ukuran":"250ml"}. An object, not an array, so display order
+  -- comes from `products.variant_attributes` rather than JSON write order.
+  attributes  TEXT NOT NULL DEFAULT '{}',
+  cost_price  INTEGER NOT NULL DEFAULT 0,
+  price       INTEGER NOT NULL DEFAULT 0,
+  status      TEXT NOT NULL DEFAULT 'active',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- A pack of a VARIANT: "Pcs", "Renceng", "Karton". `conversion_factor` is how
+-- many base units one pack holds, so every factor-1 row is the base unit.
+-- `cost` is the buy price PER PACK (rupiah per `name`), independent of `price`:
+-- a carton may cost less than factor x the piece price (supplier discount).
 CREATE TABLE IF NOT EXISTS product_units (
   id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   product_id        TEXT NOT NULL,
+  -- Nullable because SQLite cannot add a NOT NULL column to a populated table;
+  -- every writer must set it. See docs/spec-varian-harga-vendor.md §3.5.
+  variant_id        TEXT,
   name              TEXT NOT NULL,
   conversion_factor REAL NOT NULL DEFAULT 1,
+  -- Buy price per pack (IDR per `name`). 0 = not agreed yet.
+  cost              INTEGER NOT NULL DEFAULT 0,
+  -- Sell price per pack.
   price             INTEGER NOT NULL DEFAULT 0,
   barcode           TEXT,
   created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -192,6 +228,9 @@ CREATE TABLE IF NOT EXISTS product_batches (
   cost_price       INTEGER NOT NULL DEFAULT 0,
   received_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
   supplier_id      TEXT,
+  -- Which sellable variant this stock belongs to. Every stock writer sets it;
+  -- legacy rows are backfilled by migration 006.
+  variant_id        TEXT,
   -- Set when the batch arrived on a purchase, so PO -> batch is a join rather
   -- than a `batch_number = po_number` string match. The receipt line points
   -- back through `goods_receipt_items.batch_id`, so no third pointer is needed.
@@ -213,6 +252,29 @@ CREATE TABLE IF NOT EXISTS vendor_products (
   min_order_qty   REAL NOT NULL DEFAULT 1,
   is_preferred    INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- The vendor's price list: the agreed BUY price per variant per pack. This is
+-- what a purchase order defaults to, and the only place a carton price can be
+-- recorded as the supplier quoted it. Sell prices never live here.
+CREATE TABLE IF NOT EXISTS vendor_price_list (
+  id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  vendor_id         TEXT NOT NULL,
+  variant_id        TEXT NOT NULL,
+  -- Copied from product_units at save time, so the row still reads correctly
+  -- if the pack is later renamed.
+  unit_name         TEXT NOT NULL,
+  conversion_factor REAL    NOT NULL DEFAULT 1,
+  -- Agreed buy price per `unit_name` (IDR), never per base unit.
+  buy_price         INTEGER NOT NULL DEFAULT 0,
+  min_qty           REAL    NOT NULL DEFAULT 1,
+  -- 'active' | 'inactive'. Rows are deactivated, never deleted, so old purchase
+  -- orders stay traceable to the agreement that applied.
+  status            TEXT    NOT NULL DEFAULT 'active',
+  notes             TEXT,
+  updated_by        TEXT,
+  updated_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  created_at        TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS shifts (
@@ -250,6 +312,7 @@ CREATE TABLE IF NOT EXISTS transaction_items (
   id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   transaction_id    TEXT NOT NULL,
   product_id        TEXT NOT NULL,
+  variant_id        TEXT,
   batch_id          TEXT,
   quantity          REAL NOT NULL DEFAULT 0,
   unit_name         TEXT,
@@ -281,6 +344,7 @@ CREATE TABLE IF NOT EXISTS transfer_items (
   id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   transfer_id       TEXT NOT NULL,
   product_id        TEXT NOT NULL,
+  variant_id        TEXT,
   source_batch_id   TEXT,
   quantity_sent     REAL NOT NULL DEFAULT 0,
   quantity_received REAL,
@@ -323,6 +387,7 @@ CREATE TABLE IF NOT EXISTS stock_request_items (
   id                  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   request_id          TEXT NOT NULL,
   product_id          TEXT NOT NULL,
+  variant_id          TEXT,
   unit_name           TEXT,
   conversion_factor   REAL NOT NULL DEFAULT 1,
   quantity_requested  REAL NOT NULL DEFAULT 0,
@@ -369,6 +434,7 @@ CREATE TABLE IF NOT EXISTS purchase_order_items (
   id                TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   purchase_order_id TEXT NOT NULL,
   product_id        TEXT NOT NULL,
+  variant_id        TEXT,
   quantity          REAL NOT NULL DEFAULT 0,
   -- Running total across every goods receipt for this line, in `unit_name`.
   quantity_received REAL NOT NULL DEFAULT 0,
@@ -405,6 +471,7 @@ CREATE TABLE IF NOT EXISTS goods_receipt_items (
   goods_receipt_id       TEXT NOT NULL,
   purchase_order_item_id TEXT NOT NULL,
   product_id             TEXT NOT NULL,
+  variant_id             TEXT,
   -- In `unit_name`, the same unit the PO line was ordered in.
   quantity               REAL NOT NULL DEFAULT 0,
   unit_name              TEXT,
@@ -544,10 +611,17 @@ CREATE INDEX        IF NOT EXISTS idx_customers_phone      ON customers(phone);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_products_sku         ON products(sku);
 CREATE INDEX        IF NOT EXISTS idx_products_category    ON products(category);
 CREATE INDEX        IF NOT EXISTS idx_products_supplier    ON products(supplier_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_units_prod_factor    ON product_units(product_id, conversion_factor);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_variants_sku         ON product_variants(sku);
+CREATE INDEX        IF NOT EXISTS idx_variants_product     ON product_variants(product_id, status);
+CREATE INDEX        IF NOT EXISTS idx_variants_barcode     ON product_variants(barcode);
+-- One pack per conversion factor PER VARIANT: two variants of the same product
+-- may each have a "Pcs" row, which the old (product_id, factor) index forbade.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_units_variant_factor ON product_units(variant_id, conversion_factor);
+CREATE INDEX        IF NOT EXISTS idx_units_variant        ON product_units(variant_id);
 CREATE INDEX        IF NOT EXISTS idx_units_product        ON product_units(product_id);
 CREATE INDEX        IF NOT EXISTS idx_units_barcode        ON product_units(barcode);
 CREATE INDEX        IF NOT EXISTS idx_batches_prod_wh      ON product_batches(product_id, warehouse_id, received_at);
+CREATE INDEX        IF NOT EXISTS idx_batches_variant      ON product_batches(variant_id, warehouse_id);
 CREATE INDEX        IF NOT EXISTS idx_batches_wh           ON product_batches(warehouse_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tx_invoice           ON transactions(invoice_number);
@@ -587,6 +661,9 @@ CREATE INDEX        IF NOT EXISTS idx_payables_supplier    ON payables(supplier_
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_products_pair ON vendor_products(vendor_id, product_id);
 CREATE INDEX        IF NOT EXISTS idx_vendor_products_prod ON vendor_products(product_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vprice_pair          ON vendor_price_list(vendor_id, variant_id, unit_name);
+CREATE INDEX        IF NOT EXISTS idx_vprice_variant       ON vendor_price_list(variant_id);
+CREATE INDEX        IF NOT EXISTS idx_vprice_vendor_active ON vendor_price_list(vendor_id, status);
 CREATE INDEX        IF NOT EXISTS idx_vendor_payments_vnd  ON vendor_payments(vendor_id, payment_date);
 CREATE INDEX        IF NOT EXISTS idx_vendor_payments_exp  ON vendor_payments(expense_id);
 

@@ -62,6 +62,10 @@ export interface PurchaseOrderLine {
   conversion_factor: number;
   unit_cost: number;
   subtotal: number;
+  /** `product_variants.id`; null for a line written before migration 006. */
+  variant_id?: string | null;
+  /** Human label of the variant, e.g. "Susu 250ml". */
+  variant_name?: string;
 }
 
 export interface PurchaseOrderReceipt {

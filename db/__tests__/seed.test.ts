@@ -66,7 +66,7 @@ afterAll(() => {
 describe('tenant provisioning payload', () => {
   it('applies tenant.sql + seed.sql inside one transaction', async () => {
     const version = await one<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(Number(version?.version)).toBe(5);
+    expect(Number(version?.version)).toBe(6);
   });
 
   it('seeds the company profile with parseable settings JSON', async () => {

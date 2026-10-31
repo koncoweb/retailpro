@@ -48,10 +48,27 @@ import {
   Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { query } from "@/lib/db";
+import { formatCurrency } from "@/lib/formatters";
 import { isRackWarehouse, warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 import { isoToday, validatePurchaseOrder } from "@/lib/procurement";
 
 import { ProductUnit } from "@/components/inventory/AddProductModal";
+import { variantLabel, type VariantAttributes } from "@/lib/variants";
+
+/**
+ * One sellable variant of a product. A product with a flavour group has one of
+ * these per flavour, each with its own SKU and its own packs.
+ */
+export interface ProductVariantOption {
+  id: string;
+  sku: string;
+  attributes: VariantAttributes;
+  /** Buy price of the base pack. */
+  cost: number;
+  price: number;
+  units: ProductUnit[];
+}
 
 interface Product {
   id: string;
@@ -71,6 +88,8 @@ interface Product {
   vendorCosts?: Record<string, number>;
   warehouses: Record<string, number>;
   units: ProductUnit[];
+  /** Empty or missing means the product has a single Default variant. */
+  variants?: ProductVariantOption[];
 }
 
 /** The panel hands over the same product rows the inventory table already holds. */
@@ -89,6 +108,10 @@ export interface PurchaseOrderDraftLine {
   productId: string;
   productName: string;
   sku: string;
+  /** `product_variants.id`; null for a product that has no variants. */
+  variantId: string | null;
+  /** "Susu 250ml", stored so the line still reads after a variant renames. */
+  variantName?: string;
   quantity: number;
   unitName: string;
   conversionFactor: number;
@@ -129,9 +152,15 @@ interface PurchaseOrderModalProps {
 
 const BASE_UNIT_FALLBACK = "Pcs";
 
-/** The unit a product is stocked in, used as the default line unit. */
-function baseUnitOf(product: Product): { name: string; conversionFactor: number } {
-  const base = product.units?.find((unit) => Number(unit.conversion_factor) === 1);
+/** The packs being ordered: the chosen variant's own, or the product's own. */
+function packsOf(product: Product, variant: ProductVariantOption | null): ProductUnit[] {
+  if (variant) return variant.units ?? [];
+  return product.units ?? [];
+}
+
+/** The pack a variant is stocked in, used as the default line unit. */
+function baseUnitOf(packs: ProductUnit[]): { name: string; conversionFactor: number } {
+  const base = packs.find((unit) => Number(unit.conversion_factor) === 1);
   return { name: base?.name ?? BASE_UNIT_FALLBACK, conversionFactor: 1 };
 }
 
@@ -142,6 +171,20 @@ function parseNumber(value: string): number {
 
 function hasTooManyDecimals(value: number): boolean {
   return Math.round(value * 1000) !== value * 1000;
+}
+
+/** One agreed buy price, flattened for lookup while the buyer types. */
+interface AgreedPrice {
+  buyPrice: number;
+  minQty: number;
+}
+
+/**
+ * Price list rows are keyed by (variant, pack), not by product: a carton and a
+ * piece of the same variant carry two separate agreements.
+ */
+function priceKey(variantId: string | null | undefined, unitName: string): string {
+  return `${variantId ?? ""}|${unitName}`;
 }
 
 export function PurchaseOrderModal({
@@ -156,6 +199,7 @@ export function PurchaseOrderModal({
 }: PurchaseOrderModalProps) {
   const [destinationWarehouse, setDestinationWarehouse] = useState("");
   const [selectedProduct, setSelectedProduct] = useState("");
+  const [selectedVariant, setSelectedVariant] = useState("");
   const [selectedUnit, setSelectedUnit] = useState("");
   const [quantity, setQuantity] = useState("");
   const [costPrice, setCostPrice] = useState("");
@@ -165,6 +209,7 @@ export function PurchaseOrderModal({
   const [selectedVendor, setSelectedVendor] = useState("");
   const [openCombobox, setOpenCombobox] = useState(false);
   const [saving, setSaving] = useState<"draft" | "submit" | null>(null);
+  const [agreedPrices, setAgreedPrices] = useState<Record<string, AgreedPrice>>({});
 
   const lowStockProducts = products.filter((product) => product.stock <= product.minStock);
 
@@ -187,12 +232,87 @@ export function PurchaseOrderModal({
     return Number(lastCost ?? product.cost ?? 0);
   };
 
-  /** Unit price for the chosen unit: the base cost times its conversion. */
-  const unitCostOf = (product: Product, unitName: string): number => {
-    const unit = product.units?.find((candidate) => candidate.name === unitName);
+  /** The variants the picker offers; a product without any is a single line. */
+  const variantOptions: ProductVariantOption[] = selectedProductObj?.variants ?? [];
+  const selectedVariantObj =
+    variantOptions.find((variant) => variant.id === selectedVariant) ?? null;
+
+  /**
+   * Unit price for the chosen pack.
+   *
+   * Precedence is the agreed price list, then the pack's own buy price, then
+   * the vendor's last base cost x factor. The pricelist wins because that is
+   * the whole point of it: the owner negotiated it in the vendor module, so a
+   * buyer must not silently re-derive a different number from the product form.
+   * The intermediate step also matters: a carton is NOT automatically factor x
+   * the piece price, and assuming it would throw the volume discount away.
+   */
+  const unitCostOf = (
+    product: Product,
+    variant: ProductVariantOption | null,
+    unitName: string
+  ): number => {
+    const agreed = agreedPrices[priceKey(variant?.id, unitName)];
+    if (agreed && agreed.buyPrice > 0) return Math.round(agreed.buyPrice);
+    const unit = packsOf(product, variant).find((candidate) => candidate.name === unitName);
     const factor = Number(unit?.conversion_factor ?? 1) || 1;
+    const packCost = Number(unit?.cost ?? 0);
+    if (packCost > 0) return Math.round(packCost);
     return Math.round(baseCostOf(product) * factor);
   };
+
+  /**
+   * The price this vendor agreed for the selection, so the buyer can see when
+   * what they are typing departs from it. Loaded here rather than passed in:
+   * the price list belongs to the vendor module and changes independently of
+   * any product row the caller happens to hold.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    if (!open || !selectedVendor) {
+      setAgreedPrices({});
+      return;
+    }
+
+    query<{ variant_id: string; unit_name: string; buy_price: number; min_qty: number }>(
+      `SELECT variant_id, unit_name, buy_price, min_qty
+         FROM vendor_price_list
+        WHERE vendor_id = $1 AND status = 'active'`,
+      [selectedVendor]
+    )
+      .then((res) => {
+        if (cancelled) return;
+        const next: Record<string, AgreedPrice> = {};
+        for (const row of res.rows) {
+          next[priceKey(row.variant_id, row.unit_name)] = {
+            buyPrice: Number(row.buy_price ?? 0),
+            minQty: Number(row.min_qty ?? 1) || 1,
+          };
+        }
+        setAgreedPrices(next);
+      })
+      .catch((error) => {
+        // A missing price list must not block ordering: fall back to the
+        // product's own cost, which is what every screen did before it existed.
+        console.error("Failed to load vendor price list:", error);
+        if (!cancelled) setAgreedPrices({});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, selectedVendor]);
+
+  const agreedForSelection = agreedPrices[priceKey(selectedVariantObj?.id, selectedUnit)];
+
+  // The list arrives after the product picker already filled in a cost, so
+  // re-apply it once known; otherwise the buyer starts from a stale number.
+  useEffect(() => {
+    if (!selectedProductObj || !selectedUnit) return;
+    if (!agreedPrices[priceKey(selectedVariantObj?.id, selectedUnit)]) return;
+    setCostPrice(String(unitCostOf(selectedProductObj, selectedVariantObj, selectedUnit)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agreedPrices]);
 
   // Re-seed on every open: a dialog that keeps the previous order's lines is how
   // duplicate purchase orders get created by accident.
@@ -212,6 +332,7 @@ export function PurchaseOrderModal({
       setItems([]);
     }
     setSelectedProduct("");
+    setSelectedVariant("");
     setSelectedUnit("");
     setQuantity("");
     setCostPrice("");
@@ -224,22 +345,38 @@ export function PurchaseOrderModal({
   );
 
   const unitOptions = useMemo(() => {
-    const names = (selectedProductObj?.units ?? []).map((unit) => unit.name);
-    const base = baseUnitOf(selectedProductObj ?? ({ units: [] } as unknown as Product)).name;
+    const packs = selectedProductObj ? packsOf(selectedProductObj, selectedVariantObj) : [];
+    const names = packs.map((unit) => unit.name);
+    const base = baseUnitOf(packs).name;
     return Array.from(new Set([base, ...names]));
-  }, [selectedProductObj]);
+  }, [selectedProductObj, selectedVariantObj]);
 
   const handleSelectProduct = (product: Product) => {
     setSelectedProduct(product.id);
-    const base = baseUnitOf(product);
+    // A product with variants cannot be ordered without saying which one.
+    const variants = product.variants ?? [];
+    const firstVariant = variants.length > 0 ? variants[0] : null;
+    setSelectedVariant(firstVariant?.id ?? "");
+    const base = baseUnitOf(packsOf(product, firstVariant));
     setSelectedUnit(base.name);
-    setCostPrice(String(baseCostOf(product)));
+    setCostPrice(String(unitCostOf(product, firstVariant, base.name)));
     setOpenCombobox(false);
+  };
+
+  const handleSelectVariant = (variantId: string) => {
+    setSelectedVariant(variantId);
+    if (!selectedProductObj) return;
+    const variant = variantOptions.find((candidate) => candidate.id === variantId) ?? null;
+    const base = baseUnitOf(packsOf(selectedProductObj, variant));
+    setSelectedUnit(base.name);
+    setCostPrice(String(unitCostOf(selectedProductObj, variant, base.name)));
   };
 
   const handleSelectUnit = (unitName: string) => {
     setSelectedUnit(unitName);
-    if (selectedProductObj) setCostPrice(String(unitCostOf(selectedProductObj, unitName)));
+    if (selectedProductObj) {
+      setCostPrice(String(unitCostOf(selectedProductObj, selectedVariantObj, unitName)));
+    }
   };
 
   const handleAddItem = () => {
@@ -258,17 +395,25 @@ export function PurchaseOrderModal({
       return;
     }
 
-    const unitName = selectedUnit || baseUnitOf(selectedProductObj).name;
-    const unit = selectedProductObj.units?.find((candidate) => candidate.name === unitName);
+    const unitName = selectedUnit || baseUnitOf(packsOf(selectedProductObj, selectedVariantObj)).name;
+    const unit = packsOf(selectedProductObj, selectedVariantObj).find(
+      (candidate) => candidate.name === unitName
+    );
     const conversionFactor = Number(unit?.conversion_factor ?? 1) || 1;
-    const cost = costPrice.trim() ? parseNumber(costPrice) : unitCostOf(selectedProductObj, unitName);
+    const cost = costPrice.trim()
+      ? parseNumber(costPrice)
+      : unitCostOf(selectedProductObj, selectedVariantObj, unitName);
     if (!Number.isFinite(cost) || cost < 0) {
       toast.error("Harga satuan tidak valid");
       return;
     }
 
+    const variantId = selectedVariantObj?.id ?? null;
     const existing = items.findIndex(
-      (item) => item.productId === selectedProductObj.id && item.unitName === unitName
+      (item) =>
+        item.productId === selectedProductObj.id &&
+        (item.variantId ?? null) === variantId &&
+        item.unitName === unitName
     );
     if (existing >= 0) {
       const next = [...items];
@@ -286,7 +431,9 @@ export function PurchaseOrderModal({
         {
           productId: selectedProductObj.id,
           productName: selectedProductObj.name,
-          sku: selectedProductObj.sku,
+          sku: selectedVariantObj?.sku ?? selectedProductObj.sku,
+          variantId,
+          variantName: selectedVariantObj ? variantLabel(selectedVariantObj.attributes) : undefined,
           quantity: qty,
           unitName,
           conversionFactor,
@@ -297,14 +444,22 @@ export function PurchaseOrderModal({
     }
 
     setSelectedProduct("");
+    setSelectedVariant("");
     setSelectedUnit("");
     setQuantity("");
     setCostPrice("");
   };
 
-  const handleRemoveItem = (productId: string, unitName: string) => {
+  const handleRemoveItem = (productId: string, variantId: string | null, unitName: string) => {
     setItems((current) =>
-      current.filter((item) => !(item.productId === productId && item.unitName === unitName))
+      current.filter(
+        (item) =>
+          !(
+            item.productId === productId &&
+            (item.variantId ?? null) === variantId &&
+            item.unitName === unitName
+          )
+      )
     );
   };
 
@@ -327,13 +482,16 @@ export function PurchaseOrderModal({
       if (needed <= 0) continue;
       if (items.some((item) => item.productId === product.id)) continue;
 
-      const base = baseUnitOf(product);
-      const unitCost = unitCostOf(product, base.name);
+      const base = baseUnitOf(packsOf(product, null));
+      const unitCost = unitCostOf(product, null, base.name);
       const ordered = Math.max(needed, product.minStock);
       additions.push({
         productId: product.id,
         productName: product.name,
         sku: product.sku,
+        // Prefill always orders the default variant; a flavoured product needs
+        // its variant chosen by hand, so skip every other combination.
+        variantId: product.variants?.[0]?.id ?? null,
         quantity: ordered,
         unitName: base.name,
         conversionFactor: base.conversionFactor,
@@ -559,6 +717,25 @@ export function PurchaseOrderModal({
                 </PopoverContent>
               </Popover>
 
+              {variantOptions.length > 0 && (
+                <Select
+                  value={selectedVariant}
+                  onValueChange={handleSelectVariant}
+                  disabled={!selectedProduct}
+                >
+                  <SelectTrigger className="w-[150px]">
+                    <SelectValue placeholder="Varian" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {variantOptions.map((variant) => (
+                      <SelectItem key={variant.id} value={variant.id}>
+                        {variantLabel(variant.attributes)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
               <Select value={selectedUnit} onValueChange={handleSelectUnit} disabled={!selectedProduct}>
                 <SelectTrigger className="w-[120px]">
                   <SelectValue placeholder="Satuan" />
@@ -594,6 +771,24 @@ export function PurchaseOrderModal({
                 <Plus className="w-4 h-4" />
               </Button>
             </div>
+            {agreedForSelection && (
+              <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
+                {costPrice.trim() &&
+                Math.round(parseNumber(costPrice)) !== agreedForSelection.buyPrice ? (
+                  <>
+                    <AlertTriangle className="h-3 w-3 text-warning" />
+                    Harga kesepakatan {formatCurrency(agreedForSelection.buyPrice)} — angka di atas
+                    berbeda.
+                  </>
+                ) : (
+                  <>
+                    <Info className="h-3 w-3" />
+                    Harga kesepakatan vendor: {formatCurrency(agreedForSelection.buyPrice)} (min.{" "}
+                    {agreedForSelection.minQty})
+                  </>
+                )}
+              </p>
+            )}
           </div>
 
           {items.length > 0 && (
@@ -611,13 +806,16 @@ export function PurchaseOrderModal({
                 </TableHeader>
                 <TableBody>
                   {items.map((item) => (
-                    <TableRow key={`${item.productId}-${item.unitName}`}>
+                    <TableRow key={`${item.productId}-${item.variantId ?? ""}-${item.unitName}`}>
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Package className="w-4 h-4 text-muted-foreground" />
                           <div>
                             <p className="font-medium">{item.productName}</p>
-                            <p className="text-xs text-muted-foreground">{item.sku}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {item.sku}
+                              {item.variantName ? ` · ${item.variantName}` : ""}
+                            </p>
                           </div>
                         </div>
                       </TableCell>
@@ -637,7 +835,7 @@ export function PurchaseOrderModal({
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleRemoveItem(item.productId, item.unitName)}
+                          onClick={() => handleRemoveItem(item.productId, item.variantId ?? null, item.unitName)}
                         >
                           <Trash2 className="w-4 h-4 text-destructive" />
                         </Button>

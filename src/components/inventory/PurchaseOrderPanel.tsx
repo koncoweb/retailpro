@@ -125,9 +125,11 @@ const PO_LINES_SQL = `
   SELECT poi.id, poi.product_id, COALESCE(p.name, poi.product_id) AS product_name,
          COALESCE(p.sku, '') AS sku, poi.quantity,
          COALESCE(poi.quantity_received, 0) AS quantity_received,
-         poi.unit_name, poi.conversion_factor, poi.unit_cost, poi.subtotal
+         poi.unit_name, poi.conversion_factor, poi.unit_cost, poi.subtotal,
+         poi.variant_id, COALESCE(v.name, '') AS variant_name
     FROM purchase_order_items poi
     LEFT JOIN products p ON p.id = poi.product_id
+    LEFT JOIN product_variants v ON v.id = poi.variant_id
    WHERE poi.purchase_order_id = $1
    ORDER BY p.name ASC
 `;
@@ -483,12 +485,13 @@ export function PurchaseOrderPanel({
       for (const line of draft.items) {
         await tx.query(
           `INSERT INTO purchase_order_items
-             (purchase_order_id, product_id, quantity, unit_name, conversion_factor,
-              unit_cost, subtotal)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+             (purchase_order_id, product_id, variant_id, quantity, unit_name,
+              conversion_factor, unit_cost, subtotal)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
           [
             targetId,
             line.productId,
+            line.variantId ?? null,
             line.quantity,
             line.unitName,
             line.conversionFactor,
@@ -714,6 +717,8 @@ export function PurchaseOrderPanel({
           productId: line.product_id,
           productName: line.product_name,
           sku: line.sku,
+          variantId: line.variant_id ?? null,
+          variantName: line.variant_name || undefined,
           quantity: line.quantity,
           unitName: line.unit_name ?? "Pcs",
           conversionFactor: Number(line.conversion_factor) || 1,
@@ -743,6 +748,8 @@ export function PurchaseOrderPanel({
           productId: line.product_id,
           productName: line.product_name,
           sku: line.sku,
+          variantId: line.variant_id ?? null,
+          variantName: line.variant_name || undefined,
           quantity: line.quantity,
           unitName: line.unit_name ?? "Pcs",
           conversionFactor: Number(line.conversion_factor) || 1,

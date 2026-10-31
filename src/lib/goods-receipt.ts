@@ -100,6 +100,8 @@ interface PurchaseOrderRow {
 interface PurchaseOrderItemRow {
   id: string;
   product_id: string;
+  /** Set by migration 006; null only for a line written before it. */
+  variant_id: string | null;
   quantity: number;
   quantity_received: number | null;
   unit_name: string | null;
@@ -159,7 +161,8 @@ export async function receivePurchaseOrder(
   }
 
   const itemRes = await tx.query<PurchaseOrderItemRow>(
-    `SELECT id, product_id, quantity, quantity_received, unit_name, conversion_factor, unit_cost
+    `SELECT id, product_id, variant_id, quantity, quantity_received, unit_name,
+            conversion_factor, unit_cost
        FROM purchase_order_items
       WHERE purchase_order_id = $1`,
     [header.id]
@@ -246,15 +249,16 @@ export async function receivePurchaseOrder(
 
     const batchRes = await tx.query<{ id: string }>(
       `INSERT INTO product_batches
-         (warehouse_id, product_id, batch_number, expiry_date, quantity_initial,
+         (warehouse_id, product_id, variant_id, batch_number, expiry_date, quantity_initial,
           quantity_current, cost_price, received_at, supplier_id, purchase_order_id,
           goods_receipt_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7,
-               strftime('%Y-%m-%dT%H:%M:%fZ','now'), $8, $9, $10)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+               strftime('%Y-%m-%dT%H:%M:%fZ','now'), $9, $10, $11)
        RETURNING id`,
       [
         header.warehouse_id,
         line.row.product_id,
+        line.row.variant_id ?? null,
         batchNumber,
         line.expiryDate,
         baseQty,
@@ -268,13 +272,15 @@ export async function receivePurchaseOrder(
 
     await tx.query(
       `INSERT INTO goods_receipt_items
-         (goods_receipt_id, purchase_order_item_id, product_id, quantity, unit_name,
-          conversion_factor, unit_cost, subtotal, batch_id, batch_number, expiry_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         (goods_receipt_id, purchase_order_item_id, product_id, variant_id, quantity,
+          unit_name, conversion_factor, unit_cost, subtotal, batch_id, batch_number,
+          expiry_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         receiptId,
         line.row.id,
         line.row.product_id,
+        line.row.variant_id ?? null,
         line.quantity,
         line.row.unit_name ?? null,
         factor,
@@ -303,6 +309,27 @@ export async function receivePurchaseOrder(
          ON CONFLICT (vendor_id, product_id) DO UPDATE SET last_cost = excluded.last_cost`,
         [header.supplier_id, line.row.product_id, baseCost]
       );
+
+      // Fill a price-list gap with what was actually invoiced. Deliberately
+      // DO NOTHING when a row exists: an overwrite here would replace the
+      // agreed template with one delivery, and the next order would silently
+      // default to the wrong price. Drift is surfaced as a variance instead.
+      if (line.row.variant_id && line.row.unit_name) {
+        await tx.query(
+          `INSERT INTO vendor_price_list
+             (vendor_id, variant_id, unit_name, conversion_factor, buy_price, min_qty, updated_by)
+           VALUES ($1, $2, $3, $4, $5, 1, $6)
+           ON CONFLICT (vendor_id, variant_id, unit_name) DO NOTHING`,
+          [
+            header.supplier_id,
+            line.row.variant_id,
+            line.row.unit_name,
+            factor,
+            money(line.unitCost),
+            params.userId ?? null,
+          ]
+        );
+      }
     }
   }
 

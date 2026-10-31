@@ -34,20 +34,25 @@ import {
   Building2,
   CreditCard,
   Edit,
+  History,
   Link2,
   Loader2,
   Mail,
   MapPin,
   Package,
+  Pencil,
   Phone,
   Plus,
   Star,
+  Tag,
   Trash2,
   Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { batchQuery, query, runTransaction } from "@/lib/db";
+import { parseJson } from "@/lib/db/json";
 import { logAudit, logAuditTx } from "@/lib/audit";
 import { formatCurrency } from "@/lib/formatters";
 import {
@@ -137,6 +142,56 @@ interface ProductOption {
   cost_price: number;
 }
 
+/**
+ * One agreed buy price: this vendor, this variant, this pack. The row is the
+ * "PO template" the owner maintains — the PO screen reads it through
+ * `vendor_price_list`, never from `products.cost_price`.
+ */
+interface VendorPriceRow {
+  id: string;
+  variant_id: string;
+  unit_name: string;
+  conversion_factor: number;
+  buy_price: number;
+  min_qty: number;
+  status: string;
+  notes: string | null;
+  updated_at: string;
+  product_id: string;
+  product_name: string;
+  product_sku: string;
+  variant_name: string;
+  /** Per-pack price actually invoiced on the newest receipt, if any. */
+  last_paid: number | null;
+}
+
+/** A variant this vendor supplies, plus the packs it is sold in. */
+interface VendorVariantOption {
+  id: string;
+  product_id: string;
+  product_name: string;
+  sku: string;
+  variant_name: string;
+  cost_price: number;
+  price: number;
+  packs: { name: string; conversion_factor: number; cost: number }[];
+}
+
+/** One invoiced delivery line, used to show how the buy price moved. */
+interface PriceHistoryRow {
+  id: string;
+  received_at: string;
+  po_number: string | null;
+  product_name: string;
+  product_sku: string;
+  variant_name: string;
+  unit_name: string | null;
+  conversion_factor: number;
+  quantity: number;
+  unit_cost: number;
+  base_cost: number;
+}
+
 const VENDOR_SQL = `SELECT * FROM suppliers WHERE id = $1`;
 
 /**
@@ -222,10 +277,77 @@ const UNLINKED_PRODUCTS_SQL = `
   ORDER BY p.name ASC
 `;
 
+/**
+ * The agreed price list, newest receipt price alongside it so the owner can see
+ * at a glance whether the delivery matched the agreement. `last_paid` is looked
+ * up per (variant, pack) rather than per product: an invoice for a carton must
+ * not be compared against the piece price.
+ */
+const VENDOR_PRICE_LIST_SQL = `
+  SELECT
+    vpl.id, vpl.variant_id, vpl.unit_name, vpl.conversion_factor, vpl.buy_price,
+    vpl.min_qty, vpl.status, vpl.notes, vpl.updated_at,
+    p.id AS product_id, p.name AS product_name, p.sku AS product_sku,
+    v.name AS variant_name,
+    (SELECT gri.unit_cost
+       FROM goods_receipt_items gri
+       JOIN goods_receipts gr ON gr.id = gri.goods_receipt_id
+       JOIN purchase_orders po ON po.id = gr.purchase_order_id
+      WHERE po.supplier_id = $1
+        AND gri.variant_id = vpl.variant_id
+        AND gri.unit_name = vpl.unit_name
+      ORDER BY gr.received_at DESC, gri.id DESC
+      LIMIT 1) AS last_paid
+  FROM vendor_price_list vpl
+  JOIN product_variants v ON v.id = vpl.variant_id
+  JOIN products p ON p.id = v.product_id
+  WHERE vpl.vendor_id = $1
+  ORDER BY p.name ASC, v.name ASC, vpl.conversion_factor ASC
+`;
+
+const VENDOR_PRICE_HISTORY_SQL = `
+  SELECT
+    gri.id, gr.received_at, po.po_number,
+    p.name AS product_name, p.sku AS product_sku,
+    COALESCE(v.name, '') AS variant_name,
+    gri.unit_name, gri.conversion_factor, gri.quantity, gri.unit_cost,
+    gri.unit_cost / CASE WHEN gri.conversion_factor > 0 THEN gri.conversion_factor ELSE 1 END AS base_cost
+  FROM goods_receipt_items gri
+  JOIN goods_receipts gr ON gr.id = gri.goods_receipt_id
+  LEFT JOIN purchase_orders po ON po.id = gr.purchase_order_id
+  JOIN products p ON p.id = gri.product_id
+  LEFT JOIN product_variants v ON v.id = gri.variant_id
+  WHERE po.supplier_id = $1
+  ORDER BY gr.received_at DESC, p.name ASC
+  LIMIT 100
+`;
+
+/** Every variant this vendor supplies, with its packs already inlined. */
+const VENDOR_VARIANTS_SQL = `
+  SELECT
+    v.id, v.product_id, p.name AS product_name, v.sku, v.name AS variant_name,
+    v.cost_price, v.price,
+    (SELECT json_group_array(json_object(
+              'name', pu.name,
+              'conversion_factor', pu.conversion_factor,
+              'cost', pu.cost))
+       FROM product_units pu
+      WHERE pu.variant_id = v.id) AS packs
+  FROM product_variants v
+  JOIN products p ON p.id = v.product_id
+  WHERE p.supplier_id = $1
+     OR EXISTS (SELECT 1 FROM vendor_products vp
+                 WHERE vp.product_id = p.id AND vp.vendor_id = $1)
+  ORDER BY p.name ASC, v.name ASC
+`;
+
 export default function VendorDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { can } = usePermissions();
+  // Buy prices are the owner's negotiation, not something a clerk may edit.
+  const canEditPrices = can("manage_vendor_prices");
 
   const [vendor, setVendor] = useState<VendorRecord | null>(null);
   const [summary, setSummary] = useState<VendorSummary | null>(null);
@@ -233,6 +355,9 @@ export default function VendorDetail() {
   const [orders, setOrders] = useState<PurchaseOrderRow[]>([]);
   const [bills, setBills] = useState<ExpenseRow[]>([]);
   const [payments, setPayments] = useState<VendorPaymentRow[]>([]);
+  const [priceRows, setPriceRows] = useState<VendorPriceRow[]>([]);
+  const [priceHistory, setPriceHistory] = useState<PriceHistoryRow[]>([]);
+  const [variantOptions, setVariantOptions] = useState<VendorVariantOption[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -267,19 +392,42 @@ export default function VendorDetail() {
   });
   const [isSavingDebt, setIsSavingDebt] = useState(false);
 
+  const [priceOpen, setPriceOpen] = useState(false);
+  const [priceForm, setPriceForm] = useState({
+    variantId: "",
+    unitName: "",
+    conversionFactor: "1",
+    buyPrice: "",
+    minQty: "1",
+    notes: "",
+  });
+  const [isSavingPrice, setIsSavingPrice] = useState(false);
+
   const loadVendor = async () => {
     if (!id) return;
     try {
       setIsLoading(true);
-      const [vendorRes, summaryRes, productsRes, ordersRes, billsRes, paymentsRes] =
-        await batchQuery([
-          { sql: VENDOR_SQL, params: [id] },
-          { sql: VENDOR_SUMMARY_SQL, params: [id] },
-          { sql: VENDOR_PRODUCTS_SQL, params: [id] },
-          { sql: VENDOR_ORDERS_SQL, params: [id] },
-          { sql: VENDOR_BILLS_SQL, params: [id] },
-          { sql: VENDOR_PAYMENTS_SQL, params: [id] },
-        ]);
+      const [
+        vendorRes,
+        summaryRes,
+        productsRes,
+        ordersRes,
+        billsRes,
+        paymentsRes,
+        priceRes,
+        historyRes,
+        variantsRes,
+      ] = await batchQuery([
+        { sql: VENDOR_SQL, params: [id] },
+        { sql: VENDOR_SUMMARY_SQL, params: [id] },
+        { sql: VENDOR_PRODUCTS_SQL, params: [id] },
+        { sql: VENDOR_ORDERS_SQL, params: [id] },
+        { sql: VENDOR_BILLS_SQL, params: [id] },
+        { sql: VENDOR_PAYMENTS_SQL, params: [id] },
+        { sql: VENDOR_PRICE_LIST_SQL, params: [id] },
+        { sql: VENDOR_PRICE_HISTORY_SQL, params: [id] },
+        { sql: VENDOR_VARIANTS_SQL, params: [id] },
+      ]);
 
       if (vendorRes.rows.length === 0) {
         setNotFound(true);
@@ -327,6 +475,42 @@ export default function VendorDetail() {
           ...row,
           amount: Number(row.amount ?? 0),
         }))
+      );
+      setPriceRows(
+        (priceRes.rows as unknown as VendorPriceRow[]).map((row) => ({
+          ...row,
+          conversion_factor: Number(row.conversion_factor ?? 1) || 1,
+          buy_price: Number(row.buy_price ?? 0),
+          min_qty: Number(row.min_qty ?? 1) || 1,
+          last_paid: row.last_paid === null ? null : Number(row.last_paid),
+        }))
+      );
+      setPriceHistory(
+        (historyRes.rows as unknown as PriceHistoryRow[]).map((row) => ({
+          ...row,
+          conversion_factor: Number(row.conversion_factor ?? 1) || 1,
+          quantity: Number(row.quantity ?? 0),
+          unit_cost: Number(row.unit_cost ?? 0),
+          base_cost: Math.round(Number(row.base_cost ?? 0)),
+        }))
+      );
+      setVariantOptions(
+        (variantsRes.rows as unknown as (Omit<VendorVariantOption, "packs"> & { packs: string })[]).map(
+          (row) => ({
+            ...row,
+            cost_price: Number(row.cost_price ?? 0),
+            price: Number(row.price ?? 0),
+            packs: parseJson<{ name: string; conversion_factor: number; cost: number }[]>(
+              row.packs,
+              []
+            ).map((pack) => ({
+                name: pack.name,
+                conversion_factor: Number(pack.conversion_factor ?? 1) || 1,
+                cost: Number(pack.cost ?? 0),
+              })
+            ),
+          })
+        )
       );
       setNotFound(false);
     } catch (error) {
@@ -457,6 +641,151 @@ export default function VendorDetail() {
     } catch (error) {
       console.error("Failed to toggle preferred vendor product:", error);
       toast.error("Gagal mengubah preferensi produk");
+    }
+  };
+
+  const priceVariant = useMemo(
+    () => variantOptions.find((option) => option.id === priceForm.variantId) ?? null,
+    [variantOptions, priceForm.variantId]
+  );
+
+  const openPriceDialog = (row?: VendorPriceRow) => {
+    if (row) {
+      setPriceForm({
+        variantId: row.variant_id,
+        unitName: row.unit_name,
+        conversionFactor: String(row.conversion_factor),
+        buyPrice: String(row.buy_price),
+        minQty: String(row.min_qty),
+        notes: row.notes ?? "",
+      });
+    } else {
+      const first = variantOptions[0];
+      const basePack =
+        first?.packs.find((pack) => pack.conversion_factor === 1) ?? first?.packs[0];
+      setPriceForm({
+        variantId: first?.id ?? "",
+        unitName: basePack?.name ?? "",
+        conversionFactor: String(basePack?.conversion_factor ?? 1),
+        buyPrice: String(basePack?.cost ?? 0),
+        minQty: "1",
+        notes: "",
+      });
+    }
+    setPriceOpen(true);
+  };
+
+  /**
+   * Picking a pack pre-fills its own buy price from the product form, so the
+   * owner negotiates a delta instead of retyping a number they already set.
+   */
+  const handlePickPricePack = (packName: string) => {
+    const pack = priceVariant?.packs.find((row) => row.name === packName);
+    if (!pack) {
+      setPriceForm((prev) => ({ ...prev, unitName: packName }));
+      return;
+    }
+    setPriceForm((prev) => ({
+      ...prev,
+      unitName: pack.name,
+      conversionFactor: String(pack.conversion_factor),
+      buyPrice: String(pack.cost),
+    }));
+  };
+
+  /**
+   * Writes the agreement only. `product_units.cost` is deliberately untouched:
+   * it is the default buy price for ANY vendor, and this row is what this one
+   * vendor agreed, so letting it overwrite the product would make the last
+   * vendor to open this dialog win.
+   */
+  const handleSavePrice = async () => {
+    if (!id) return;
+    const variantId = priceForm.variantId;
+    const unitName = priceForm.unitName.trim();
+    const buyPrice = Number(priceForm.buyPrice);
+    const factor = Number(priceForm.conversionFactor) || 1;
+
+    if (!variantId) {
+      toast.error("Pilih varian dulu");
+      return;
+    }
+    if (!unitName) {
+      toast.error("Nama pecahan wajib diisi");
+      return;
+    }
+    if (!Number.isFinite(buyPrice) || buyPrice < 0) {
+      toast.error("Harga beli tidak valid");
+      return;
+    }
+    if (factor <= 0) {
+      toast.error("Isi pecahan harus lebih dari 0");
+      return;
+    }
+
+    setIsSavingPrice(true);
+    try {
+      await runTransaction(async (tx) => {
+        await tx.query(
+          `INSERT INTO vendor_price_list
+             (vendor_id, variant_id, unit_name, conversion_factor, buy_price,
+              min_qty, notes, updated_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (vendor_id, variant_id, unit_name) DO UPDATE SET
+             conversion_factor = excluded.conversion_factor,
+             buy_price = excluded.buy_price,
+             min_qty = excluded.min_qty,
+             notes = excluded.notes,
+             status = 'active',
+             updated_by = excluded.updated_by,
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+          [
+            id,
+            variantId,
+            unitName,
+            factor,
+            Math.round(buyPrice),
+            Number(priceForm.minQty) || 1,
+            priceForm.notes.trim() || null,
+            user?.id ?? null,
+          ]
+        );
+        await logAuditTx(tx, {
+          action: "update",
+          entity: "vendor_price_list",
+          entityId: variantId,
+          details: { vendorId: id, variantId, unitName, conversionFactor: factor, buyPrice },
+          userId: user?.id,
+        });
+      });
+      toast.success("Harga beli vendor disimpan");
+      setPriceOpen(false);
+      loadVendor();
+    } catch (error) {
+      console.error("Failed to save vendor price:", error);
+      toast.error("Gagal menyimpan harga beli");
+    } finally {
+      setIsSavingPrice(false);
+    }
+  };
+
+  /** Rows are deactivated rather than deleted so old POs stay traceable. */
+  const handleDeactivatePrice = async (row: VendorPriceRow) => {
+    if (!confirm(`Nonaktifkan harga ${row.product_name} · ${row.unit_name}?`)) return;
+    try {
+      await query(
+        `UPDATE vendor_price_list
+            SET status = 'inactive',
+                updated_by = $1,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE id = $2`,
+        [user?.id ?? null, row.id]
+      );
+      toast.success("Harga dinonaktifkan");
+      loadVendor();
+    } catch (error) {
+      console.error("Failed to deactivate vendor price:", error);
+      toast.error("Gagal menonaktifkan harga");
     }
   };
 
@@ -765,6 +1094,13 @@ export default function VendorDetail() {
             <TabsTrigger value="products" className="gap-2">
               <Package className="h-4 w-4" /> Produk ({products.length})
             </TabsTrigger>
+            <TabsTrigger value="prices" className="gap-2">
+              <Tag className="h-4 w-4" /> Harga Beli (
+              {priceRows.filter((row) => row.status === "active").length})
+            </TabsTrigger>
+            <TabsTrigger value="history" className="gap-2">
+              <History className="h-4 w-4" /> Riwayat Harga ({priceHistory.length})
+            </TabsTrigger>
             <TabsTrigger value="orders" className="gap-2">
               <Building2 className="h-4 w-4" /> Purchase Order ({orders.length})
             </TabsTrigger>
@@ -852,6 +1188,193 @@ export default function VendorDetail() {
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="prices" className="space-y-4">
+            <div className="rounded-xl border bg-card">
+              <div className="flex items-center justify-between border-b px-4 py-3">
+                <div>
+                  <h2 className="font-semibold">Harga Beli per Varian &amp; Pecahan</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Harga yang disepakati vendor ini, dipakai sebagai template saat menyusun PO.
+                    Harga jual tidak diatur di sini — itu keputusan margin pemilik produk.
+                  </p>
+                </div>
+                {canEditPrices && (
+                  <Button size="sm" onClick={() => openPriceDialog()}>
+                    <Plus className="mr-2 h-4 w-4" /> Tambah Harga
+                  </Button>
+                )}
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Produk / Varian</TableHead>
+                    <TableHead>Pecahan</TableHead>
+                    <TableHead className="text-right">Harga Disepakati</TableHead>
+                    <TableHead className="text-right">Per Satuan</TableHead>
+                    <TableHead className="text-right">Terakhir Dibayar</TableHead>
+                    <TableHead className="text-center">Status</TableHead>
+                    <TableHead>Diperbarui</TableHead>
+                    <TableHead className="text-right">Aksi</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {priceRows.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+                        Belum ada harga yang disepakati. Tambahkan harga per pecahan supaya PO
+                        terisi otomatis.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    priceRows.map((row) => {
+                      const drift = row.last_paid !== null && row.last_paid !== row.buy_price;
+                      return (
+                        <TableRow key={row.id}>
+                          <TableCell>
+                            <p className="font-medium">{row.variant_name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {row.product_name} · {row.product_sku}
+                            </p>
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            {row.unit_name}
+                            <span className="text-xs text-muted-foreground">
+                              {" "}
+                              (isi {row.conversion_factor})
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right text-sm font-medium">
+                            {formatCurrency(row.buy_price)}
+                          </TableCell>
+                          <TableCell className="text-right text-sm text-muted-foreground">
+                            {formatCurrency(Math.round(row.buy_price / row.conversion_factor))}
+                          </TableCell>
+                          <TableCell className="text-right text-sm">
+                            {row.last_paid === null ? (
+                              <span className="text-muted-foreground">belum pernah</span>
+                            ) : (
+                              <span className={drift ? "font-medium text-warning" : undefined}>
+                                {formatCurrency(row.last_paid)}
+                              </span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Badge variant={row.status === "active" ? "default" : "secondary"}>
+                              {row.status === "active" ? "Aktif" : "Nonaktif"}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">
+                            {row.updated_at
+                              ? new Date(row.updated_at).toLocaleDateString("id-ID", {
+                                  day: "2-digit",
+                                  month: "short",
+                                  year: "numeric",
+                                })
+                              : "-"}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {canEditPrices && (
+                              <div className="flex justify-end gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  title="Ubah harga"
+                                  onClick={() => openPriceDialog(row)}
+                                >
+                                  <Pencil className="h-4 w-4" />
+                                </Button>
+                                {row.status === "active" && (
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    title="Nonaktifkan harga"
+                                    className="text-destructive hover:text-destructive"
+                                    onClick={() => handleDeactivatePrice(row)}
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="history">
+            <div className="rounded-xl border bg-card">
+              <div className="border-b px-4 py-3">
+                <h2 className="font-semibold">Riwayat Harga Beli</h2>
+                <p className="text-sm text-muted-foreground">
+                  Harga yang benar-benar ditagihkan pada setiap penerimaan barang. Bandingkan dengan
+                  tab Harga Beli untuk melihat selisih dari kesepakatan.
+                </p>
+              </div>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Tanggal</TableHead>
+                    <TableHead>PO</TableHead>
+                    <TableHead>Produk / Varian</TableHead>
+                    <TableHead>Pecahan</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Harga / Pecahan</TableHead>
+                    <TableHead className="text-right">Harga / Satuan</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {priceHistory.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                        Belum ada penerimaan barang dari vendor ini.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    priceHistory.map((row) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="text-sm">
+                          {row.received_at
+                            ? new Date(row.received_at).toLocaleDateString("id-ID", {
+                                day: "2-digit",
+                                month: "short",
+                                year: "numeric",
+                              })
+                            : "-"}
+                        </TableCell>
+                        <TableCell className="text-sm">{row.po_number || "-"}</TableCell>
+                        <TableCell>
+                          <p className="font-medium">{row.variant_name || row.product_name}</p>
+                          <p className="text-xs text-muted-foreground">{row.product_sku}</p>
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          {row.unit_name || "-"}
+                          <span className="text-xs text-muted-foreground">
+                            {" "}
+                            (isi {row.conversion_factor})
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right text-sm">
+                          {row.quantity.toLocaleString("id-ID")}
+                        </TableCell>
+                        <TableCell className="text-right text-sm">
+                          {formatCurrency(row.unit_cost)}
+                        </TableCell>
+                        <TableCell className="text-right text-sm text-muted-foreground">
+                          {formatCurrency(row.base_cost)}
                         </TableCell>
                       </TableRow>
                     ))
@@ -1154,6 +1677,142 @@ export default function VendorDetail() {
             </Button>
             <Button onClick={handleLinkProduct} disabled={isSavingLink}>
               {isSavingLink && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Simpan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={priceOpen} onOpenChange={setPriceOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Harga Beli Vendor</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-4 py-2">
+            <div className="grid gap-2">
+              <Label>Varian</Label>
+              <Select
+                value={priceForm.variantId}
+                onValueChange={(value) =>
+                  setPriceForm((prev) => ({ ...prev, variantId: value }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Pilih varian" />
+                </SelectTrigger>
+                <SelectContent>
+                  {variantOptions.map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.product_name} · {option.variant_name} ({option.sku})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {variantOptions.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  Vendor ini belum memasok produk apa pun. Hubungkan produk dulu di tab Produk.
+                </p>
+              )}
+            </div>
+
+            {priceVariant && priceVariant.packs.length > 0 && (
+              <div className="grid gap-2">
+                <Label>Pecahan yang sudah ada</Label>
+                <div className="flex flex-wrap gap-2">
+                  {priceVariant.packs.map((pack) => (
+                    <Button
+                      key={pack.name}
+                      type="button"
+                      size="sm"
+                      variant={priceForm.unitName === pack.name ? "default" : "outline"}
+                      onClick={() => handlePickPricePack(pack.name)}
+                    >
+                      {pack.name} · isi {pack.conversion_factor}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-2">
+                <Label htmlFor="price-unit">Pecahan</Label>
+                <Input
+                  id="price-unit"
+                  value={priceForm.unitName}
+                  placeholder="Karton"
+                  onChange={(e) =>
+                    setPriceForm((prev) => ({ ...prev, unitName: e.target.value }))
+                  }
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="price-factor">Isi per Pecahan</Label>
+                <Input
+                  id="price-factor"
+                  type="number"
+                  min={1}
+                  value={priceForm.conversionFactor}
+                  onChange={(e) =>
+                    setPriceForm((prev) => ({ ...prev, conversionFactor: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-2">
+                <Label htmlFor="price-buy">Harga Beli / Pecahan</Label>
+                <Input
+                  id="price-buy"
+                  type="number"
+                  min={0}
+                  value={priceForm.buyPrice}
+                  onChange={(e) =>
+                    setPriceForm((prev) => ({ ...prev, buyPrice: e.target.value }))
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  {Number(priceForm.buyPrice) > 0 && Number(priceForm.conversionFactor) > 0
+                    ? `${formatCurrency(
+                        Math.round(
+                          Number(priceForm.buyPrice) /
+                            (Number(priceForm.conversionFactor) || 1)
+                        )
+                      )} per satuan dasar`
+                    : "Harga per satuan dasar dihitung otomatis."}
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="price-moq">Minimum Qty</Label>
+                <Input
+                  id="price-moq"
+                  type="number"
+                  min={1}
+                  value={priceForm.minQty}
+                  onChange={(e) =>
+                    setPriceForm((prev) => ({ ...prev, minQty: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="price-notes">Catatan</Label>
+              <Input
+                id="price-notes"
+                value={priceForm.notes}
+                placeholder="Termin, bonus, atau syarat lain"
+                onChange={(e) => setPriceForm((prev) => ({ ...prev, notes: e.target.value }))}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPriceOpen(false)}>
+              Batal
+            </Button>
+            <Button onClick={handleSavePrice} disabled={isSavingPrice}>
+              {isSavingPrice && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Simpan
             </Button>
           </DialogFooter>

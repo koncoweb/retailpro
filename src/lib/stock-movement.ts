@@ -40,6 +40,12 @@ export function transferStatusLabel(status: string): string {
 
 export interface TransferItemInput {
   productId: string;
+  /**
+   * Which sellable variant moves. Omitted for legacy lines written before
+   * migration 006 — those fall back to the whole product, which is what the
+   * backfill does to old batches too.
+   */
+  variantId?: string | null;
   /** Quantity in the chosen selling unit, not base units. */
   quantity: number;
   unitName?: string;
@@ -63,17 +69,24 @@ export interface DispatchResult {
   itemCount: number;
 }
 
-/** Stock physically on hand in one warehouse, in base units. */
+/**
+ * Stock physically on hand in one warehouse, in base units.
+ *
+ * Passing `variantId` narrows the sum to one variant. Passing nothing keeps the
+ * older product-wide behaviour, which legacy (pre-migration) callers rely on.
+ */
 export async function stockOnHand(
   tx: Transaction,
   warehouseId: string,
-  productId: string
+  productId: string,
+  variantId?: string | null
 ): Promise<number> {
   const res = await tx.query<{ available: number }>(
     `SELECT COALESCE(SUM(quantity_current), 0) AS available
        FROM product_batches
-      WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0`,
-    [productId, warehouseId]
+      WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0
+        AND ($3 IS NULL OR variant_id = $3)`,
+    [productId, warehouseId, variantId ?? null]
   );
   return Number(res.rows[0]?.available ?? 0);
 }
@@ -117,7 +130,12 @@ export async function createTransfer(
       throw new StockMovementError("Jumlah transfer harus lebih dari nol");
     }
 
-    const available = await stockOnHand(tx, params.sourceWarehouseId, item.productId);
+    const available = await stockOnHand(
+      tx,
+      params.sourceWarehouseId,
+      item.productId,
+      item.variantId ?? null
+    );
     if (baseQty > available + 1e-9) {
       throw new StockMovementError(
         `Stok gudang asal tidak mencukupi (tersedia ${available}, diminta ${baseQty})`
@@ -127,11 +145,13 @@ export async function createTransfer(
     // `cost_price` stays 0 here and is stamped at dispatch with the real
     // per-batch cost of whatever legs actually left the shelf.
     await tx.query(
-      `INSERT INTO transfer_items (transfer_id, product_id, quantity_sent, notes, unit_name, conversion_factor)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+      `INSERT INTO transfer_items
+         (transfer_id, product_id, variant_id, quantity_sent, notes, unit_name, conversion_factor)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [
         transferId,
         item.productId,
+        item.variantId ?? null,
         item.quantity,
         item.notes ?? null,
         item.unitName || "Pcs",
@@ -166,11 +186,14 @@ async function drainBatches(
   {
     warehouseId,
     productId,
+    variantId,
     quantity,
     issueMethod,
   }: {
     warehouseId: string;
     productId: string;
+    /** Narrows the deduction to one variant; null keeps the product-wide path. */
+    variantId?: string | null;
     quantity: number;
     issueMethod: StockIssueMethod;
   }
@@ -189,8 +212,9 @@ async function drainBatches(
   }>(
     `SELECT id, quantity_current, cost_price, expiry_date, received_at, supplier_id
        FROM product_batches
-      WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0`,
-    [productId, warehouseId]
+      WHERE product_id = $1 AND warehouse_id = $2 AND quantity_current > 0
+        AND ($3 IS NULL OR variant_id = $3)`,
+    [productId, warehouseId, variantId ?? null]
   );
 
   const available = batchesRes.rows.reduce((sum, batch) => sum + Number(batch.quantity_current), 0);
@@ -269,17 +293,21 @@ export async function dispatchTransfer(
   const itemsRes = await tx.query<{
     id: string;
     product_id: string;
+    variant_id: string | null;
     quantity_sent: number;
     conversion_factor: number;
-  }>(`SELECT id, product_id, quantity_sent, conversion_factor FROM transfer_items WHERE transfer_id = $1`, [
-    transferId,
-  ]);
+  }>(
+    `SELECT id, product_id, variant_id, quantity_sent, conversion_factor
+       FROM transfer_items WHERE transfer_id = $1`,
+    [transferId]
+  );
 
   for (const item of itemsRes.rows) {
     const conversionFactor = Number(item.conversion_factor || 1);
     const legs = await drainBatches(tx, {
       warehouseId: transfer.source_warehouse_id,
       productId: item.product_id,
+      variantId: item.variant_id,
       quantity: Number(item.quantity_sent) * conversionFactor,
       issueMethod,
     });
@@ -289,12 +317,13 @@ export async function dispatchTransfer(
       leg += 1;
       await tx.query(
         `INSERT INTO product_batches
-           (warehouse_id, product_id, batch_number, expiry_date,
+           (warehouse_id, product_id, variant_id, batch_number, expiry_date,
             quantity_initial, quantity_current, cost_price, supplier_id)
-         VALUES ($1, $2, $3, $4, $5, $5, $6, $7)`,
+         VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8)`,
         [
           transfer.destination_warehouse_id,
           item.product_id,
+          item.variant_id,
           `TRF-${transfer.reference_number}-${leg}`,
           consumed.expiryDate,
           consumed.take,
@@ -334,6 +363,8 @@ export async function dispatchTransfer(
 
 export interface ShipOutLine {
   productId: string;
+  /** Narrows the pick to one variant; null keeps the product-wide path. */
+  variantId?: string | null;
   /** Base units. */
   quantity: number;
 }
@@ -362,6 +393,7 @@ export async function shipOutOfStock(
     const legs = await drainBatches(tx, {
       warehouseId,
       productId: item.productId,
+      variantId: item.variantId ?? null,
       quantity: Number(item.quantity),
       issueMethod,
     });
