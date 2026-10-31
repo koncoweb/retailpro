@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import type { LucideIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 
 export interface HeroSlide {
   id: string;
-  /** Small line above the title, e.g. "Toko Bahan Kue". */
-  kicker: string;
-  title: string;
-  body: string;
-  icon: LucideIcon;
+  /** Path under `public/`. The art carries the words, so there is no text layer. */
+  src: string;
+  /**
+   * The words baked into the banner, transcribed. It is what a screen reader
+   * announces and what a visitor sees if the image fails to load.
+   */
+  alt: string;
 }
 
 const AUTOPLAY_MS = 5200;
@@ -23,6 +25,9 @@ const AUTOPLAY_MS = 5200;
  *
  * Autoplay stops for good on the first touch/drag and never starts when the
  * visitor asked for reduced motion, so the banner cannot fight the reader.
+ *
+ * Every banner is a doorway into the catalogue: the picture is the message, the
+ * tap has to lead somewhere.
  */
 export function HeroSlider({ slides, className }: { slides: HeroSlide[]; className?: string }) {
   const scroller = useRef<HTMLDivElement>(null);
@@ -82,34 +87,24 @@ export function HeroSlider({ slides, className }: { slides: HeroSlide[]; classNa
         onTouchStart={() => setAutoplay(false)}
         className="relative flex snap-x snap-mandatory gap-2.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        {slides.map((slide) => {
-          const Icon = slide.icon;
-          return (
-            <article
-              key={slide.id}
-              className="relative flex h-[132px] w-full shrink-0 snap-center flex-col justify-end overflow-hidden rounded-xl bg-surface px-4 py-3.5 shadow-[var(--shadow-border)]"
-            >
-              <Icon
-                aria-hidden
-                className="absolute -top-3 -right-3 size-28 text-fg/5"
-                strokeWidth={0.9}
-              />
-              <div
-                aria-hidden
-                className="absolute inset-y-0 left-0 w-1 bg-primary/70"
-              />
-              <p className="text-[10px] font-medium tracking-[0.18em] text-muted uppercase">
-                {slide.kicker}
-              </p>
-              <h2 className="font-display mt-1 text-[22px] leading-[1.1] font-medium text-fg">
-                {slide.title}
-              </h2>
-              <p className="mt-1 line-clamp-2 max-w-[26ch] text-[12px] leading-relaxed text-muted">
-                {slide.body}
-              </p>
-            </article>
-          );
-        })}
+        {slides.map((slide, index) => (
+          <Link
+            key={slide.id}
+            to="/katalog"
+            className="relative aspect-[16/9] w-full shrink-0 snap-center overflow-hidden rounded-xl bg-surface shadow-[var(--shadow-border)]"
+          >
+            <img
+              src={slide.src}
+              alt={slide.alt}
+              // The first banner is the largest paint on the page; the rest can
+              // arrive while the reader is still on slide one.
+              loading={index === 0 ? "eager" : "lazy"}
+              fetchPriority={index === 0 ? "high" : "auto"}
+              decoding="async"
+              className="size-full object-cover"
+            />
+          </Link>
+        ))}
       </div>
 
       {slides.length > 1 && (

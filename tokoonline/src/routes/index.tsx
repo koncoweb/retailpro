@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { Boxes, ChevronRight, ShoppingBasket, Store, Truck } from "lucide-react";
+import { ChevronRight, Store } from "lucide-react";
 import { CatalogError, CatalogSkeleton } from "@/components/catalog-state";
 import { CategoryGrid } from "@/components/category-grid";
 import { HeroSlider, type HeroSlide } from "@/components/hero-slider";
@@ -13,6 +13,24 @@ export const Route = createFileRoute("/")({ component: Home });
 
 /** How many tiles the home page shows before handing over to the catalogue. */
 const FEATURED = 8;
+
+/**
+ * The banner row is artwork, not data: the two TokoBahanKue banners drawn for
+ * the marketplace, kept as files in `public/slider/` so the copy can change
+ * without touching this component.
+ */
+const SLIDES: HeroSlide[] = [
+  {
+    id: "marketplace",
+    src: "/slider/banner-marketplace.png",
+    alt: "TokoBahanKue.com — pusat kebutuhan industri roti dan kue Indonesia. Aneka tepung, mentega, telur, dan gula di atas meja marmer.",
+  },
+  {
+    id: "bahan-kue",
+    src: "/slider/banner-bahan-kue.png",
+    alt: "TokoBahanKue.com — pusat kebutuhan industri roti dan kue Indonesia. Tepung, mentega, telur, dan gula di atas meja kayu.",
+  },
+];
 
 function Home() {
   const { state, reload } = useMarketplace();
@@ -28,7 +46,7 @@ function Home() {
     return (
       <div className="flex flex-col gap-3 px-4 pt-3 pb-6">
         <div className="h-10 animate-pulse rounded-full bg-surface" />
-        <div className="h-[132px] animate-pulse rounded-xl bg-surface" />
+        <div className="aspect-[16/9] animate-pulse rounded-xl bg-surface" />
         <div className="h-28 animate-pulse rounded-xl bg-surface" />
         <CatalogSkeleton />
       </div>
@@ -44,39 +62,12 @@ function Home() {
   }
 
   const { marketplace } = state;
-  const warehouses = [...new Set(marketplace.shops.map((shop) => shop.warehouse))];
   const featured = marketplace.products.slice(0, FEATURED);
-
-  // Every banner is drawn from the live catalogue, so the front page cannot
-  // promise a shop or a stock figure that the data no longer has.
-  const slides: HeroSlide[] = [
-    {
-      id: "sellers",
-      kicker: "Marketplace",
-      title: "Semua toko, satu aplikasi",
-      body: `Belanja dari ${marketplace.shops.length} toko tanpa pindah aplikasi.`,
-      icon: ShoppingBasket,
-    },
-    {
-      id: "stock",
-      kicker: "Stok nyata",
-      title: `${marketplace.products.length} produk siap kirim`,
-      body: "Harga dan stok dibaca langsung dari sistem tiap toko, bukan salinan.",
-      icon: Boxes,
-    },
-    {
-      id: "shipping",
-      kicker: "Pengiriman",
-      title: "Dikirim dari gudang",
-      body: `Pesanan disiapkan dari ${warehouses.join(", ") || "gudang pusat"} dan bisa juga diambil di toko.`,
-      icon: Truck,
-    },
-  ];
 
   return (
     <div className="flex flex-col gap-3 px-4 pt-3 pb-6">
       <SearchField value={query} onChange={setQuery} onSubmit={search} />
-      <HeroSlider slides={slides} />
+      <HeroSlider slides={SLIDES} />
       <CategoryGrid categories={marketplace.categories} />
 
       {marketplace.shops.length > 0 && (
