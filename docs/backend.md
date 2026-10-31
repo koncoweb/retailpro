@@ -5,7 +5,7 @@
 | Dokumen | `docs/backend.md` |
 | Terakhir diperbarui | **2026-10-31** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
-| Versi skema tenant | **4** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
+| Versi skema tenant | **6** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
 
 > Dokumen ini menggantikan `Backend.md` lama (arsitektur Neon/Postgres dengan RLS) yang sudah
@@ -16,8 +16,8 @@
 ## 1. Peta kode
 
 ```
-db/schema/tenant.sql      Skema DB tenant (29 tabel + indeks), idempoten, schema_version = 4
-db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002, 003, 004)
+db/schema/tenant.sql      Skema DB tenant (33 tabel + indeks), idempoten, schema_version = 6
+db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 006)
 db/schema/control.sql     Skema control DB (Better Auth 4 tabel + registry)
 db/schema/seed.sql        Seed provisioning dengan placeholder {{TOKEN}}
 db/__tests__/             Test skema, seed, dan tenant demo (DB sementara per run)
@@ -33,6 +33,7 @@ server/access.ts          Access control Better Auth: statement + 7 role
 server/auth-helpers.ts    getSession, requireTenantSession, requireAdminSession
 server/turso-platform.ts  Klien Turso Platform API (create/delete/list DB & grup, createToken, getUsage)
 server/provision.ts       Provisioning tenant, render seed, mint token, registry access
+server/storefront-catalog.ts  Pembaca katalog per tenant (dipakai catalog & marketplace)
 server/demo/*             Dataset contoh "Thalia Toko Bahan Kue"
 server/dev-api.ts         Server API lokal (port 3000) untuk dev tanpa Vercel
 
@@ -43,7 +44,8 @@ api/tenant/token.ts       POST  /api/tenant/token
 api/tenant/provision.ts   POST  /api/tenant/provision
 api/admin/users.ts        POST  /api/admin/users
 api/admin/users/[id]/password.ts  POST reset password
-api/storefront/catalog.ts GET   /api/storefront/catalog  (publik, dipakai tokoonline/)
+api/storefront/catalog.ts GET   /api/storefront/catalog  (publik, satu tenant; kontrak lama)
+api/storefront/marketplace.ts GET /api/storefront/marketplace  (publik, gabungan semua tenant — dipakai tokoonline/)
 
 scripts/bootstrap-control.mjs   Membuat/menyiapkan control DB
 scripts/apply-schema-all.mjs    Terapkan migrasi tertunda + tenant.sql (cek schema_version)
@@ -100,7 +102,8 @@ yang juga hanya membaca `.env` — kunci model e2e harus ada di sana, bukan di `
 | Method | Path | Auth | Fungsi | Status error |
 |---|---|---|---|---|
 | GET | `/api/health` | – | Smoke check; `{ok, service, time, tursoOrg, group, controlDbConfigured}` | – |
-| GET | `/api/storefront/catalog` | – (publik) | Katalog cabang online untuk aplikasi `tokoonline`. Query `?slug=` (default `STOREFRONT_TENANT_SLUG`, lalu `thalia`) | 404 `tenant_not_found`, 409 `tenant_inactive`/`tenant_not_seeded` |
+| GET | `/api/storefront/catalog` | – (publik) | Katalog cabang online **satu** tenant. Query `?slug=` (default `STOREFRONT_TENANT_SLUG`, lalu `thalia`). Tidak dipakai etalase lagi — etalase memakai `/marketplace` — tetapi dipertahankan sebagai kontrak untuk klien yang memang satu toko | 404 `tenant_not_found`, 409 `tenant_inactive`/`tenant_not_seeded` |
+| GET | `/api/storefront/marketplace` | – (publik) | Gabungan katalog **semua** tenant `active`: `{shops, categories, products, tenants:{total,live}, skipped, syncedAt}`. Produk membawa `tenant`/`seller`/`branch` dan `id` berprefiks slug tenant supaya tidak bertabrakan. Tenant yang gagal dibaca masuk `skipped[]` (`{slug, reason:"unavailable"}`) tanpa menggagalkan permintaan; **pesan error asli hanya ke log server** (`[storefront] tenant … skipped:`) karena respons ini publik — lihat KS-33 | 200 selalu bila control DB terbaca |
 | ANY | `/api/auth/*` | – | Handler Better Auth (login, logout, session, admin) | Sesuai Better Auth |
 | GET | `/api/tenant/bootstrap` | Sesi + registry | `{dbUrl, token, expiresAt, tenant{id,name,slug}, user{id,name,email,role,branchId}}` | 401 tanpa sesi, 404 tanpa tenant |
 | POST | `/api/tenant/token` | Sesi + registry | Mint token baru untuk database tenant pemanggil | 401, 404 |
@@ -193,7 +196,7 @@ dengan yang bisa dibaca pengunjung mana pun.
 
 | Tabel | Kolom |
 |---|---|
-| `schema_version` | `id` (selalu 1), `version` (**4**), `applied_at` |
+| `schema_version` | `id` (selalu 1), `version` (**6**), `applied_at` |
 | `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `payroll_config`, `receipt`, `tax`, `bank`, `inventory` → `{stock_issue_method}`), `created_at` |
 | `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `created_at` |
 | `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `created_at` |
@@ -207,12 +210,18 @@ dengan yang bisa dibaca pengunjung mana pun.
 | `categories` | `id`, `name`, `created_at` |
 | `suppliers` | Master vendor. `id`, `code` (unik, `VND-0001`), `name` (unik), `legal_name`, `category` (`supplier`/`distributor`/`trader`/`manufacturer`/`service`/`other`), `tax_id`, `website`, `contact_person`, `phone`, `email`, `address`, `city`, `province`, `postal_code`, `payment_terms_days`, `credit_limit`, `currency`, `bank_name`, `bank_account_number`, `bank_account_name`, `lead_time_days`, `rating` (0–5), `status` (`active`/`inactive`/`blacklisted`), `notes`, `settings`, `created_at`, `updated_at` |
 | `customers` | `id`, `name`, `phone`, `email`, `address`, `notes`, `preferences`, `total_spent`, `points`, `created_at` |
-| `products` | `id`, `sku`, `name`, `description`, `category`, `cost_price`, `min_stock_level`, `is_tracked`, `supplier_id`, `created_at` |
-| `product_units` | `id`, `product_id`, `name`, `conversion_factor`, `price`, `barcode`, `created_at` |
-| `product_batches` | `id`, `warehouse_id`, `product_id`, `batch_number`, `expiry_date`, `quantity_initial`, `quantity_current`, `cost_price`, `received_at`, `supplier_id` |
+| `products` | **Model**, bukan SKU: `id`, `sku`, `name`, `description`, `category`, `cost_price` (ringkasan varian default, satuan dasar), `min_stock_level`, `is_tracked`, `supplier_id`, `variant_attributes` (JSON grup atribut berurutan, mis. `[{"name":"Rasa","values":["Putih","Cokelat"]}]`), `created_at` |
+| `product_variants` | **SKU yang dijual dan diistok**: `id`, `product_id`, `sku` (unik), `barcode`, `name` (label manusia, mis. `"Susu 250ml"`), `attributes` (JSON `{"Rasa":"Cokelat"}`), `cost_price`, `price`, `status`, `created_at` |
+| `product_units` | Pecahan **per varian**: `id`, `product_id`, `variant_id`, `name`, `conversion_factor`, `cost` (**harga beli per pecahan**), `price`, `barcode`, `created_at`. Unik pada `(variant_id, conversion_factor)` |
+| `product_batches` | `id`, `warehouse_id`, `product_id`, `variant_id`, `batch_number`, `expiry_date`, `quantity_initial`, `quantity_current`, `cost_price`, `received_at`, `supplier_id`, `purchase_order_id`, `goods_receipt_id` |
 
-Harga jual **tidak** ada di `products`; harga ada di `product_units.price` per satuan jual.
-`conversion_factor` = jumlah satuan dasar dalam satu satuan jual.
+Produk adalah **model**, varian adalah **SKU**: setiap produk wajib punya ≥ 1 baris
+`product_variants` (migrasi 006 membuat varian `Default` untuk produk lama), dan setiap baris
+stok atau uang menunjuk `variant_id`. `product_units.cost` menyimpan harga beli per pecahan
+apa adanya — Rp 260.000 per karton tidak lagi dipaksa menjadi `harga_pcs × 200`.
+Harga jual ada di `product_units.price` / `product_variants.price`, **tidak** di `products`.
+`conversion_factor` = jumlah satuan dasar dalam satu satuan jual. Uraian lengkap:
+[spec-varian-harga-vendor.md](spec-varian-harga-vendor.md).
 
 ### 5.4 Penjualan
 
@@ -220,19 +229,22 @@ Harga jual **tidak** ada di `products`; harga ada di `product_units.price` per s
 |---|---|
 | `shifts` | `id`, `branch_id`, `user_id`, `start_time`, `end_time`, `initial_cash`, `final_cash`, `expected_cash`, `difference`, `notes`, `status` (`open`/`closed`), `created_at` |
 | `transactions` | `id`, `branch_id`, `cashier_id`, `customer_id`, `shift_id`, `invoice_number`, `total_amount`, `amount_paid`, `due_date`, `payment_method` (`cash`/`card`/`ewallet`/`credit`), `notes`, `status`, `created_at` |
-| `transaction_items` | `id`, `transaction_id`, `product_id`, `batch_id`, `quantity` (**satuan jual**), `unit_name`, `conversion_factor`, `unit_price`, `cost_price` (per satuan jual), `subtotal` |
+| `transaction_items` | `id`, `transaction_id`, `product_id`, `variant_id`, `batch_id`, `quantity` (**satuan jual**), `unit_name`, `conversion_factor`, `unit_price`, `cost_price` (per satuan jual), `subtotal` |
 
 ### 5.5 Persediaan bergerak & pengadaan
 
 | Tabel | Kolom |
 |---|---|
 | `stock_requests` | Dokumen **permintaan** cabang ke gudang: `id`, `request_number` (unik, `REQ/YYYYMMDD-<KODE>-####`), `branch_id`, `warehouse_id` (gudang pemasok), `status` (`draft`/`submitted`/`approved`/`rejected`/`in_transit`/`received`/`cancelled`), `priority` (`normal`/`urgent`), `source` (`branch`, dicadangkan `online`), `needed_date`, `notes`, `rejection_reason`, `requested_by`, `approved_by`, `approved_at`, `dispatched_by`, `dispatched_at`, `received_by`, `received_at`, `transfer_id`, `created_at`, `updated_at` |
-| `stock_request_items` | `id`, `request_id`, `product_id`, `unit_name`, `conversion_factor`, `quantity_requested`, `quantity_approved`, `quantity_dispatched`, `quantity_received`, `notes` — semua kuantitas dalam **satuan dasar** |
+| `stock_request_items` | `id`, `request_id`, `product_id`, `variant_id`, `unit_name`, `conversion_factor`, `quantity_requested`, `quantity_approved`, `quantity_dispatched`, `quantity_received`, `notes` — semua kuantitas dalam **satuan dasar** |
 | `stock_transfers` | Dokumen **eksekusi**: `id`, `reference_number`, `source_warehouse_id`, `destination_warehouse_id`, `status` (`pending`/`in_transit`/`completed`/`cancelled`), `notes`, `requested_by`, `approved_by`, `received_by`, `sent_at`, `received_at`, `request_id` (tautan ke permintaan), `created_at` |
-| `transfer_items` | `id`, `transfer_id`, `product_id`, `source_batch_id`, `quantity_sent`, `quantity_received`, `unit_name`, `conversion_factor`, `cost_price`, `notes` |
+| `transfer_items` | `id`, `transfer_id`, `product_id`, `variant_id`, `source_batch_id`, `quantity_sent`, `quantity_received`, `unit_name`, `conversion_factor`, `cost_price`, `notes` |
 | `purchase_orders` | `id`, `po_number`, `supplier_id`, `supplier_name`, `branch_id`, `warehouse_id`, `status` (`draft`/`ordered`/`received`), `total_amount`, `notes`, `expected_date`, `received_at`, `created_by`, `created_at` |
-| `purchase_order_items` | `id`, `purchase_order_id`, `product_id`, `quantity`, `unit_name`, `conversion_factor`, `unit_cost`, `subtotal` |
+| `purchase_order_items` | `id`, `purchase_order_id`, `product_id`, `variant_id`, `quantity`, `quantity_received`, `unit_name`, `conversion_factor`, `unit_cost`, `subtotal`, `notes` |
+| `goods_receipts` | Dokumen **penerimaan** (satu PO boleh beberapa kali datang): `id`, `grn_number`, `purchase_order_id`, `warehouse_id`, `branch_id`, `supplier_id`, `supplier_name`, `supplier_document`, `total_amount`, `notes`, `received_by`, `received_at`, `created_at` |
+| `goods_receipt_items` | `id`, `goods_receipt_id`, `purchase_order_item_id`, `product_id`, `variant_id`, `quantity` (dalam `unit_name` PO), `unit_name`, `conversion_factor`, `unit_cost` (harga yang benar-benar dibayar), `subtotal`, `batch_id`, `batch_number`, `expiry_date` |
 | `vendor_products` | Katalog per vendor: `id`, `vendor_id`, `product_id`, `vendor_sku`, `last_cost`, `lead_time_days`, `min_order_qty`, `is_preferred`, `created_at`. `UNIQUE(vendor_id, product_id)` |
+| `vendor_price_list` | **Pricelist kesepakatan**: `id`, `vendor_id`, `variant_id`, `unit_name` (disalin saat simpan), `conversion_factor`, `buy_price` (**per pecahan**, bukan per satuan dasar), `min_qty`, `status` (`active`/`inactive`), `notes`, `updated_by`, `updated_at`, `created_at`. `UNIQUE(vendor_id, variant_id, unit_name)` |
 | `vendor_payments` | Buku pembayaran vendor: `id`, `vendor_id`, `expense_id`, `purchase_order_id`, `amount`, `payment_date`, `method` (`cash`/`transfer`/`check`/`other`), `reference_number`, `notes`, `created_by`, `created_at` |
 
 **Permintaan ≠ perpindahan.** `stock_requests` mencatat *apa yang diminta* cabang dan siapa yang
@@ -454,7 +466,7 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: 13 berkas, 161 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt) |
+| `npm test` | Vitest: 16 berkas, 207 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt, pricing, variants, password) |
 | `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---
@@ -473,6 +485,8 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | 2026-10-27 | Indeks baru/berganti: `idx_branches_hq` (partial), `idx_warehouses_branch`, `idx_wh_branches_wh`, `idx_batches_prod_wh`, `idx_batches_wh`, `idx_po_warehouse`; indeks transfer pindah ke kolom gudang | Idempoten; diterapkan migrasi lalu `tenant.sql` |
 | 2026-10-27 | **Skema v3** (`db/migrations/003_vendors.sql`): `suppliers` menjadi master vendor (kode, badan usaha, kategori, NPWP, alamat terurai, termin, limit kredit, bank, lead time, rating, status), tabel baru `vendor_products` + `vendor_payments` | Tenant v2: kolom `ALTER TABLE` dengan default konstan, `code` di-backfill `VND-0001…` berurutan, dan relasi produk→vendor yang sudah ada di-backfill ke `vendor_products`. Tabel baru memakai default UUID yang sama dengan `tenant.sql` |
 | 2026-10-28 | **Skema v4** (`db/migrations/004_branch_orders.sql`): tabel baru `stock_requests` + `stock_request_items`, `stock_transfers.request_id`, status transfer menerima `in_transit` (mesin status di kode, tanpa CHECK constraint) | Tenant v3: `ALTER TABLE stock_transfers ADD COLUMN request_id`; tabel baru memakai `CREATE TABLE IF NOT EXISTS` sehingga aman dijalankan berulang. Tidak ada data lama yang perlu di-backfill. Lihat KS-25 |
+| 2026-10-30 | **Skema v5** (`db/migrations/005_procurement_lifecycle.sql`): siklus PO (`submitted`/`approved`/`partially_received`/`rejected`/`cancelled`, `payment_terms_days` sebagai snapshot), tabel `goods_receipts` + `goods_receipt_items`, `purchase_order_items.quantity_received`, `product_batches.purchase_order_id`/`goods_receipt_id` | Tenant v4: kolom `ALTER TABLE` dengan default konstan; tabel baru idempoten. Belum ada perpindahan stok sebelum PO `approved`. Lihat [spec-purchase-order.md](spec-purchase-order.md) |
+| 2026-10-31 | **Skema v6** (`db/migrations/006_variants_pricing.sql`): tabel `product_variants` + `vendor_price_list`, `products.variant_attributes`, `product_units.cost`, `variant_id` di 7 tabel yang memindahkan stok atau mencatat uang, indeks `idx_units_prod_factor` diganti `idx_units_variant_factor` | Tenant v5: setiap produk memperoleh satu varian `Default` (SKU = SKU produk), lalu `product_units` / `product_batches` / `transaction_items` / item PO / item penerimaan / item permintaan / item transfer di-backfill ke varian pertama; `product_units.cost` diisi dari `products.cost_price`; `vendor_price_list` diisi dari `vendor_products.last_cost` untuk pecahan faktor 1. Lihat [spec-varian-harga-vendor.md](spec-varian-harga-vendor.md) |
 
 Cara mengubah skema ke depan:
 

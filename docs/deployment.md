@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/deployment.md` |
-| Terakhir diperbarui | **2026-10-31** |
+| Terakhir diperbarui | **2026-11-01** |
 | Cakupan | Cara aplikasi berjalan di produksi: dua proyek Vercel, dua database Turso cloud, variabel lingkungan, langkah deploy & verifikasi, serta aturan platform yang tidak boleh dilanggar |
-| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-30 |
+| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-34 |
 
 > Dokumen ini adalah **runbook**, bukan rencana. Setiap nilai di bawah diambil dari proyek yang
 > benar-benar sudah ter-deploy dan sudah diverifikasi lewat HTTP serta browser pada 2026-10-28.
@@ -23,7 +23,7 @@ Dua proyek Vercel, satu organisasi Turso.
                     | + /api/* serverless functions  |          | tanpa kredensial database      |
                     +---------------+----------------+          +---------------+----------------+
                                     |                                          |
-                    sesi (cookie)   |  token tenant 60m                        | GET /api/storefront/catalog
+                    sesi (cookie)   |  token tenant 60m                        | GET /api/storefront/marketplace
                                     v                                          |
                     +-------------------------------+  <-----------------------+
                     | Control DB (Turso)            |
@@ -33,7 +33,7 @@ Dua proyek Vercel, satu organisasi Turso.
                                     v
                     +-------------------------------+
                     | DB tenant Thalia (Turso)      |  <--- browser SPA: @libsql/client/web + JWT
-                    | 29 tabel, tanpa tenant_id     |
+                    | 33 tabel, tanpa tenant_id     |
                     +-------------------------------+
 ```
 
@@ -170,12 +170,24 @@ Urutan `rewrites` penting: catch-all harus **terakhir**, kalau tidak `/api/*` ak
 
 ## 6. Deploy toko online
 
+**Urutan wajib: API dulu, toko kemudian.** Bundle toko memanggil `/api/storefront/marketplace`
+dan alamat API-nya dipanggang saat build (`VITE_CATALOG_API_URL`). Bila toko naik lebih dulu,
+beranda menampilkan "Katalog tidak bisa dimuat (HTTP 404)" sampai fungsi barunya ter-deploy.
+
 ```sh
+# 1. back office + API (menambah fungsi /api/storefront/marketplace)
+vercel --prod
+
+# 2. toko online memakai endpoint itu
 cd tokoonline
 vercel link --yes --project thalia-storefront
 vercel env add VITE_CATALOG_API_URL production    # https://retailpro-thalia.vercel.app
 vercel --prod
 ```
+
+CLI di mesin ini sudah terhubung (`vercel whoami` → `koncoweb`) dan kedua proyek sudah punya
+`.vercel/project.json`, jadi `vercel link` biasanya dilewati. Deploy hanya dari root ini; `.vercelignore`
+mengecualikan `tokoonline/` supaya proyek back office tidak ikut mengunggah aplikasi kedua.
 
 Catatan yang sudah terbukti di lapangan:
 
@@ -188,6 +200,8 @@ Catatan yang sudah terbukti di lapangan:
 - Vercel menolak deploy bila `@tanstack/react-start` < 1.168.60 (CVE-2026-102989). Paket di
   `package.json` harus ≥ 1.168.60 (sekarang 1.168.61); jangan memakai flag
   `DANGEROUSLY_DEPLOY_VULNERABLE_TANSTACK_START_XSS`.
+- `VITE_CATALOG_API_URL` hanya origin, bukan URL endpoint; nilainya berubah berarti **build ulang**
+  toko, bukan sekadar ganti environment.
 
 ---
 
@@ -201,17 +215,22 @@ curl -s https://retailpro-thalia.vercel.app/api/health
 # {"ok":true,"service":"retailpro-api","tursoOrg":"koncowebliberation",
 #  "group":"ap-southeast-2","controlDbConfigured":true,...}
 
-# 2. Control DB + token terbaca (katalog publik)
+# 2. Control DB + token terbaca (katalog marketplace yang dipakai toko)
+curl -s https://retailpro-thalia.vercel.app/api/storefront/marketplace
+# shops:[{slug:"thalia",name:"Thalia Toko Bahan Kue",warehouse:"Gudang Pusat Depok",...}],
+# products 28, tenants {total:1,live:1}, skipped []
+
+# 3. Katalog satu tenant (kontrak lama, masih harus hidup)
 curl -s "https://retailpro-thalia.vercel.app/api/storefront/catalog?slug=thalia"
 # shop "Thalia Toko Bahan Kue", 7 kategori, 28 produk, gudang pemenuh "Gudang Pusat Depok"
 
-# 3. Better Auth (bukti rewrite catch-all)
+# 4. Better Auth (bukti rewrite catch-all)
 curl -s -X POST https://retailpro-thalia.vercel.app/api/auth/sign-in/email \
   -H 'content-type: application/json' \
   -d '{"email":"owner@tokobahankue.com","password":"<demo>"}'
 # 200 + user.role "tenant_owner"; cookie sesi
 
-# 4. Token tenant (bukti registry + Turso Platform API). Butuh cookie dari langkah 3.
+# 5. Token tenant (bukti registry + Turso Platform API). Butuh cookie dari langkah 4.
 curl -s -X POST https://retailpro-thalia.vercel.app/api/tenant/token -b cookies.txt
 # {dbUrl: "https://rp-thalia-…turso.io", token: "<±371 char JWT>", expiresAt: …}
 ```
@@ -273,11 +292,14 @@ CI (KS-21), jadi keempatnya dijalankan manual sebelum `vercel --prod`.
 
 1. `npm run typecheck && npm test && npm run audit:sql` lulus di root. Bila perubahan menyentuh UI,
    jalankan juga `npm run test:e2e` dengan `npm run dev` (`:8080`) dan `npm run dev:api` (`:3000`) hidup.
-2. `cd tokoonline && npm run typecheck` lulus.
+2. `cd tokoonline && npm run typecheck` lulus (dan `npm test` untuk helper katalog).
 3. Variabel produksi lengkap (§4) dan `BETTER_AUTH_URL` menunjuk domain final.
 4. `npm run demo:cloud` hanya dijalankan bila memang ingin me-reset data demo.
-5. `vercel --prod` dari root, lalu dari `tokoonline/` bila katalog berubah.
-6. Empat pemeriksaan §7 lulus, plus dashboard & toko dibuka di browser.
+5. `vercel --prod` dari root **lebih dulu** (fungsi `/api/storefront/marketplace` harus hidup),
+   baru `cd tokoonline && vercel --prod` — lihat §6. Toko wajib di-deploy ulang bila
+   `VITE_CATALOG_API_URL` berubah atau katalog/tema berubah.
+6. Kelima pemeriksaan §7 lulus, plus dashboard & toko dibuka di browser (beranda marketplace,
+   `/product/<tenant>/<slug>`, keranjang lintas penjual).
 7. Catat perubahan di [fitur-tenant.md](fitur-tenant.md) / [fitur-platform.md](fitur-platform.md),
    dan tambahkan entri bila ada masalah baru di [kendala-solusi.md](kendala-solusi.md).
 

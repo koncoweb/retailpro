@@ -145,6 +145,43 @@ sendiri (`docs/spec-purchase-order.md`).
 | 2026-10-30 | — (working tree) | Skema | Versi skema **5**: migrasi `005_procurement_lifecycle` menambah kolom siklus PO, tabel penerimaan, dan tautan PO/GRN pada batch serta biaya | Baru |
 | 2026-10-30 | — (working tree) | Inventori | Kolom **Diterima** pada daftar PO memakai total PO untuk pesanan yang sudah `received` tetapi tidak punya dokumen penerimaan (sisa kode satu-langkah lama), sehingga tidak lagi tampil Rp 0 untuk barang yang sudah ada di rak | Perbaikan |
 
+### 2026-10-31 — varian produk, harga beli per pecahan, dan pricelist vendor (belum di-commit)
+
+Rancangan, alasan, dan yang sengaja ditolak: `docs/spec-varian-harga-vendor.md`.
+
+**Menggantikan** baris "Harga jual tidak ada di `products`; harga ada di `product_units.price`"
+di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), varian (SKU), pecahan
+(varian × satuan jual) — dan harga beli per pecahan disimpan apa adanya.
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-10-31 | — (working tree) | Skema | Versi skema **6**: migrasi `006_variants_pricing` menambah `product_variants` (SKU, barcode, atribut, harga beli/jual), `vendor_price_list`, `products.variant_attributes`, `product_units.cost`/`variant_id`, dan `variant_id` di enam tabel stok/uang. Setiap produk lama memperoleh satu varian `Default` | Baru |
+| 2026-10-31 | — (working tree) | Inventori | Produk kini **model**, bukan SKU: editor produk menyusun grup atribut (Rasa, Warna, Ukuran…), membangkitkan matriks varian × pecahan, dan menyimpan harga beli **dan** harga jual per pecahan. Dua rasa punya stok, barcode, dan harga sendiri; menghapus varian yang masih berstok ditolak | Ubah |
+| 2026-10-31 | — (working tree) | Inventori | Harga beli karton tidak lagi dipaksa `harga_pcs × faktor`: kolom `product_units.cost` menyimpan angka yang disepakati vendor (Rp 260.000 per karton tetap Rp 260.000), dan satuan dasar hanya diturunkan untuk laporan | Ubah |
+| 2026-10-31 | — (working tree) | Vendor | Dua tab baru di detail vendor: **Harga Beli** (pricelist per varian × pecahan, harga terakhir dibayar, aktif/nonaktif) dan **Riwayat Harga** (harga yang benar-benar ditagihkan per penerimaan). Harga jual **tidak** ada di sini — itu milik produk | Baru |
+| 2026-10-31 | — (working tree) | Inventori | Editor PO memilih varian per baris dan mengambil harga dengan urutan **pricelist vendor → `product_units.cost` → harga dasar × faktor**. Mengubah pecahan tidak lagi mengubah harga satuan secara diam-diam, dan baris tanpa kesepakatan ditandai *harga belum disepakati* tetapi tetap bisa disimpan | Ubah |
+| 2026-10-31 | — (working tree) | Inventori | Penerimaan barang menulis `variant_id` ke batch dan dokumennya; bila harga tagihan berbeda dari pricelist, selisihnya dicatat di `audit_logs` dan pecahan yang belum punya kesepakatan diisi dari harga yang benar-benar dibayar (tanpa pernah menimpa harga yang sudah disepakati) | Ubah |
+| 2026-10-31 | — (working tree) | Kasir | Layar kasir memilih **varian lalu pecahan**: stok yang ditekan, pra-cek sebelum bayar, dan pemotongan batch (FIFO/LIFO/FEFO) semuanya per varian, sehingga menjual Cokelat tidak mengurangi stok Putih. `transaction_items.variant_id` terisi sejak transaksi pertama | Ubah |
+| 2026-10-31 | — (working tree) | Gudang | Transfer dan stok opname menghitung per varian: satu baris opname per varian dengan stok sistemnya sendiri, dan transfer memindahkan paket milik varian yang dipilih. Selisih satu rasa tidak lagi tertutup oleh rasa lain | Ubah |
+| 2026-10-31 | — (working tree) | Pengaturan | Izin baru `manage_variants`, `manage_vendor_prices`, `manage_sell_prices`, ketiganya **tertutup** untuk `store_manager`, `warehouse`, dan `purchasing` secara bawaan; owner/admin mendapatkannya lewat daftar izin penuh | Baru |
+| 2026-10-31 | — (working tree) | Demo | Thalia punya dua produk bervarian: **Susu Kental Manis** (Rasa Putih/Cokelat) dan **Pewarna Makanan** (Warna Merah/Kuning/Hijau/Biru), masing-masing dengan harga beli, harga jual pecahan, pricelist vendor, dan stok sendiri di gudang maupun rak | Ubah |
+| 2026-10-31 | — (working tree) | Toko Online | `GET /api/storefront/catalog` menambah `variants[]` (SKU, label, atribut, stok gudang pemenuh, pecahan + harga). Bentuk lama `units`/`stock` per produk tetap dikirim supaya etalase yang sudah berjalan tidak perlu berubah | Ubah |
+
+### 2026-11-01 — toko online menjadi marketplace lintas tenant (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-01 | — (working tree) | Toko Online | Etalase menjadi **marketplace semua tenant**, bukan etalase Thalia saja: `GET /api/storefront/marketplace` membaca control DB, memilih setiap tenant `active`, meminjam token pendek per tenant, lalu menggabungkan katalognya. Thalia turun menjadi salah satu penjual di dalamnya | Baru |
+| 2026-11-01 | — (working tree) | Toko Online | Beranda disusun ulang mengikuti pola marketplace: kolom pencarian, **slider** yang bisa digeser di ponsel (scroll-snap, autoplay 5,2 detik, berhenti begitu disentuh), **baris ikon kategori satu warna**, strip penjual, lalu grid "Untuk kamu" | Ubah |
+| 2026-11-01 | — (working tree) | Toko Online | Ikon kategori dipetakan dari nama kategori (`src/lib/category-icons.ts`): kategori baru buatan tenant langsung mendapat ikon tanpa ubah kode, dan semua ikon memakai satu warna teks badan agar tetap tenang | Baru |
+| 2026-11-01 | — (working tree) | Toko Online | Produk, halaman produk, dan baris keranjang kini **membawa penjualnya**: route menjadi `/product/$tenant/$slug`, kartu produk menampilkan nama toko, dan kunci baris keranjang menyertakan tenant sehingga dua tenant dengan SKU sama tidak saling menimpa | Ubah |
+| 2026-11-01 | — (working tree) | Toko Online | Filter beranda dan katalog bisa dibagikan sebagai tautan (`/katalog?q=&kategori=&toko=`); chip kategori dan filter penjual menulis ke URL, bukan state lokal | Ubah |
+| 2026-11-01 | — (working tree) | Toko Online | Merek etalase menjadi **Toko Bahan Kue** dengan sub-baris **Marketplace** (wordmark header `TOKO BAHAN KUE / MARKETPLACE`, monogram `T`, judul tab, deskripsi meta, halaman info, tagline, pemilik rekening, teks CS/WhatsApp). Kata "RetailPro" hanya tersisa sebagai nama back office di dalam kode, bukan di layar pembeli | Ubah |
+| 2026-11-01 | — (working tree) | Toko Online | Aksen etalase menjadi **rose**: `styles.css` memakai `#9d3455` untuk isi tombol/chip aktif/gelembung chat dan `#b04a68` untuk teks penekanan, netralnya diberi rona pink tipis, dan mode gelap memakai rose terang `#eaa4ba`. Harga produk di kartu dan halaman produk ikut rose supaya warna aksen terbaca di tempat yang paling penting | Ubah |
+| 2026-11-01 | — (working tree) | Toko Online | Membersihkan sisa cara pikir satu-toko setelah marketplace jadi: checkout & halaman pesanan **mengelompokkan barang per penjual** (subtotal per toko bila lebih dari satu), ongkir dan pembayaran tetap satu untuk seluruh pesanan (platform sebagai merchant of record), dan teks "ambil sendiri" tidak lagi menunjuk satu alamat | Ubah |
+| 2026-11-01 | — (working tree) | Toko Online | Tautan produk lama `/product/<slug>` dialihkan ke `/product/<tenant>/<slug>` (atau `/katalog?q=<slug>` bila sudah tidak ada), jadi tautan yang sudah beredar di chat/WhatsApp tetap hidup — lihat KS-34 | Baru |
+| 2026-11-01 | — (working tree) | API | `GET /api/storefront/marketplace` tidak lagi mengirim pesan error database ke pengunjung: tenant yang gagal masuk `skipped[]` sebagai `{slug, reason:"unavailable"}` dan detailnya hanya ke log server — lihat KS-33 | Ubah |
+
 ### Riwayat commit (aplikasi sebelum migrasi)
 
 | Waktu | Ref | Modul | Perubahan | Status |
@@ -307,15 +344,16 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 
 ### 2.10 Toko online (`tokoonline/`)
 
-Aplikasi terpisah untuk cabang online; dibuka pengunjung, bukan staf. Data berasal dari back office.
+Aplikasi terpisah berperan sebagai **marketplace lintas tenant**; dibuka pengunjung, bukan staf.
+Data berasal dari back office setiap tenant yang berstatus `active`.
 
 | Fitur | Status | Catatan |
 |---|---|---|
-| Katalog dari database tenant | Ada | `GET /api/storefront/catalog?slug=thalia`; 7 kategori, 28 produk, teks "dikirim dari Gudang Pusat Depok" |
-| Harga & satuan jual per produk | Ada | Mengikuti `product_units`; satuan dasar bisa pecahan (mis. 0,5 kg) |
-| Stok yang bisa dikirim | Ada | `SUM(product_batches)` di gudang pemenuh; diperbarui setiap permintaan, tanpa cache |
-| Pencarian & filter kategori | Ada | Di `/katalog` |
-| Keranjang, checkout, riwayat pesanan | Ada | Disimpan di perangkat pengunjung (kunci `thalia-storefront`), bukan di DB tenant |
+| Katalog marketplace | Ada | `GET /api/storefront/marketplace` (semua tenant aktif, produk membawa `tenant`/`seller`); `GET /api/storefront/catalog?slug=` tetap ada untuk klien satu toko |
+| Harga & satuan jual per produk | Ada | Mengikuti `product_units` per varian; satuan dasar bisa pecahan (mis. 0,5 kg) |
+| Stok yang bisa dikirim | Ada | `SUM(product_batches)` di gudang pemenuh tiap tenant; dibaca setiap permintaan, tanpa cache |
+| Pencarian & filter kategori/penjual | Ada | Di `/katalog`, state di URL (`?q=&kategori=&toko=`) |
+| Keranjang, checkout, riwayat pesanan | Ada | Disimpan di perangkat pengunjung (kunci `thalia-storefront`), bukan di DB tenant. Satu pesanan boleh berisi beberapa penjual; ringkasan dikelompokkan per toko |
 | Pesanan masuk ke back office | Belum | Prototype; menulis ke DB tenant harus lewat `src/lib/stock-movement.ts` |
 | Akun pelanggan / login pembeli | Belum | Checkout tanpa akun; autentikasi toko dimatikan (`VITE_AUTH_ENABLED=false`) |
 | Pembayaran online | Belum | Metode bayar dipilih di checkout, belum ada integrasi gateway |

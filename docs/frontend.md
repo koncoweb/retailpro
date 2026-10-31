@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/frontend.md` |
-| Terakhir diperbarui | **2026-10-31** |
+| Terakhir diperbarui | **2026-11-01** |
 | Stack | React 18 + Vite 5 + TypeScript, shadcn/ui, Tailwind, React Router 6 |
 | Bahasa UI | Indonesia (label, pesan, format Rupiah) |
 
@@ -24,7 +24,7 @@
 | Build | `vite build` → `dist/` (satu bundle ±2 MB, ada peringatan ukuran chunk) |
 | Typecheck | `npx tsc --noEmit -p tsconfig.app.json` (terpisah dari build) |
 | Lint | `npm run lint` (ESLint 9, config datar) |
-| Test | `npm run test` (Vitest; **13 file, 161 test**) |
+| Test | `npm run test` (Vitest; **16 file, 207 test**) |
 | Test E2E | `npm run test:e2e` (tester.army; `tests/**/*.e2e.ts`, butuh dev server `:8080` dan kunci model di `.env` — lihat §12) |
 | Toko online | `cd tokoonline && npm run dev` → port **8082**, `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) |
 
@@ -197,6 +197,8 @@ Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 ba
 | Perpindahan stok | `lib/stock-movement.ts` | Satu modul untuk transfer & pengiriman; halaman inventori, transfer, dan pesanan cabang memanggilnya di dalam `runTransaction` |
 | Pemotongan stok | `lib/stock-issue.ts` | Kelima jalur stok keluar: `getStockIssueMethod()` → `sortBatchesForIssue()` |
 | Pengaturan | `settings/*` | Tulis ke `tenants.settings` lewat `mergeTenantSettings()` dengan indikator simpan; tidak ada tombol simpan global |
+| Varian & pecahan | `inventory/AddProductModal.tsx`, `POS.tsx`, `inventory/StockTransferModal.tsx`, `inventory/StockOpnameModal.tsx` | Produk = model, varian = SKU. Pemilih dua langkah (**varian lalu pecahan**) di kasir dan transfer, tetapi hanya untuk produk yang benar-benar punya >1 SKU; varian `Default` hasil migrasi dipilih otomatis sehingga kasir tidak ditanya "Default" untuk setiap produk. Label varian dirakit `lib/variants.ts` (`parseVariantAttributes` + `parseVariantGroups` → `variantLabel`). Stok yang ditekan selalu stok varian yang sedang dipilih |
+| Harga beli per pecahan | `lib/pricing.ts`, `AddProductModal`, `inventory/PurchaseOrderModal.tsx`, `vendors/VendorDetail.tsx` | Tabel varian × pecahan dengan harga beli **dan** harga jual; `resolveBuyPrice` mengambil pricelist vendor dulu; `packEconomics`/`priceIssues` memberi margin dan peringatan (hanya `cost_above_price` yang memblokir simpan) |
 | Audit | `lib/audit.ts` | `logAudit` (best effort) dan `logAuditTx` (ikut rollback) |
 | Notifikasi | `ui/toast`, `ui/sonner` | Dua jalur toast; pesan sukses/gagal berbahasa Indonesia |
 
@@ -213,6 +215,9 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 5. **Belum ada layar audit log** — data ada, penjelajahnya belum.
 6. **Data bisnis belum lewat TanStack Query** — tidak ada cache/invalidasi otomatis.
 7. Bundle tunggal ±2 MB; pemecahan per route belum dilakukan.
+8. **Toko online belum punya spec E2E** — `tokoonline/` (marketplace, varian, pengalihan tautan
+   lama) hanya diuji di level helper (`tokoonline/src/lib/products.test.ts`, 39 test) dan lewat
+   pemeriksaan browser manual; belum ada spec E2E storefront.
 
 ---
 
@@ -220,6 +225,17 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-11-01 | — (working tree) | Penyisiran ulang setelah etalase menjadi marketplace: pesanan yang berisi barang beberapa toko kini dikelompokkan per penjual (`sellerGroups()` di `lib/store.ts`) di summary checkout dan halaman pesanan, dengan subtotal per toko bila tokonya lebih dari satu. Kalimat yang masih mengandaikan satu toko diperbaiki: ambil sendiri lewat `SHOP.pickupNote` (bukan alamat satu toko), `deliveryArea` menjadi `Jabodetabek`, halaman info menyebut ongkir per pesanan & pengiriman dari gudang masing-masing toko, dan jawaban CS tidak lagi mengklaim "Gudang Pusat Depok" untuk semua barang. Tautan `/product/<slug>` lama dialihkan ke URL berpenjual (KS-34). Baris bertanggal sama yang menyebut "merek etalase pindah ke RetailPro" sudah digantikan: nama akhirnya **Toko Bahan Kue** dengan sub-baris **Marketplace** |
+| 2026-11-01 | — (working tree) | Tema toko online memakai aksen **rose**: `styles.css` mengganti token `--thalia-*` (primary `#9d3455`, accent `#b04a68` di terang; `#eaa4ba` di gelap) dan netralnya diberi rona pink tipis. Harga produk di kartu dan halaman produk ikut memakai `text-primary`, `theme-color` dan `public/favicon.svg` disesuaikan |
+| 2026-11-01 | — (working tree) | Nama etalase menjadi **Toko Bahan Kue** dengan **Marketplace** sebagai sub-baris: wordmark header `TOKO BAHAN KUE / MARKETPLACE`, monogram `T`, judul tab, deskripsi meta, halaman info, tagline `SHOP`, pemilik rekening, dan teks CS/WhatsApp. Kata "RetailPro" tidak lagi muncul di permukaan etalase |
+| 2026-11-01 | — (working tree) | Toko online menjadi **marketplace lintas tenant**: beranda disusun ulang mengikuti pola marketplace — pencarian, slider `hero-slider.tsx`, grid ikon kategori satu warna, strip penjual, lalu grid "Untuk kamu". Data dari `GET /api/storefront/marketplace`; route produk menjadi `/product/$tenant/$slug` dan keranjang menyimpan `tenant`/`seller` (`persist` versi 3) |
+| 2026-11-01 | — (working tree) | Merek etalase pindah ke **RetailPro**; Thalia dan tenant lain tampil sebagai **penjual** di dalamnya (strip penjual + baris penjual di halaman produk & keranjang) |
+| 2026-10-31 | — (working tree) | Toko online merender varian: `lib/products.ts` memakai abstraksi **Shelf** (satu SKU = satu rak), halaman produk menampilkan pemilih rasa, keranjang menyimpan `variantId`/`variantLabel` dengan `lineKey` produk+varian+pecahan, dan `api/storefront/catalog.ts` merangkum `units` lama jadi satu harga terendah per (nama, faktor) |
+| 2026-10-31 | — (working tree) | E2E mengikuti varian: `kasir.e2e.ts` memilih rasa lalu pecahan dan memastikan harga diambil dari rasa itu, `owner.e2e.ts` membuka tab **Harga Beli** dan **Riwayat Harga** di detail vendor. Keduanya telah **dijalankan** pada tenant demo `rp-thalia` dan lulus |
+| 2026-10-31 | — (working tree) | Dialog pilih satuan ditutup tanpa mengosongkan varian terpilih: animasi keluar Radix masih me-mount isi dialog, jadi mengosongkan varian di detik yang sama membuat dialog sempat berkedip kembali ke daftar rasa (dan `getByText('Cokelat')` jadi ambigu di E2E). Seleksi dibersihkan di `onOpenChange` saat kasir sendiri yang menutup |
+| 2026-10-31 | — (working tree) | Kasir memilih **varian lalu pecahan**; keranjang berkunci `produk + varian + pecahan`, dan pra-cek stok sebelum bayar menghitung per varian |
+| 2026-10-31 | — (working tree) | Transfer stok dan stok opname per varian: pemilih varian di modal transfer, satu baris hitung per varian di opname |
+| 2026-10-31 | — (working tree) | Editor produk menampilkan grup atribut + matriks varian × pecahan dengan harga beli/jual per pecahan; tab **Harga Beli** dan **Riwayat Harga** di detail vendor |
 | 2026-10-31 | — (working tree) | Harness uji end-to-end `e2e` (tester.army) + `e2e.config.ts` dan smoke test layar login `tests/login.e2e.ts` — lihat §12 |
 | 2026-10-28 | — (working tree) | Halaman `/backoffice/branches/orders` (pesanan cabang): kartu statistik, tab status, filter cabang terkunci untuk manajer toko, form pesanan, modal detail dengan linimasa & aksi per peran |
 | 2026-10-28 | — (working tree) | `lib/stock-movement.ts` + `lib/branch-orders.ts` menggantikan logika yang sebelumnya disalin di dalam halaman (`Inventory.tsx`, `BranchTransfers.tsx`) |
@@ -251,13 +267,24 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 Bukan bagian dari SPA ini: aplikasi terpisah (TanStack Start → React 19, Tailwind v4, zustand +
 `localStorage`), punya `package.json`, `node_modules`, dan port sendiri (**8082**).
 
+Etalase ini adalah **marketplace lintas tenant**: satu aplikasi menampilkan produk dari semua
+tenant RetailPro yang berstatus `active`, dan setiap produk membawa penjualnya sendiri.
+
 | Aspek | Nilai |
 |---|---|
-| Route file | `/`, `/katalog`, `/product/$slug`, `/cart`, `/checkout`, `/orders`, `/order/$id`, `/chat`, `/info` |
-| Sumber data | `src/lib/catalog.ts` (`useCatalog`, `useProduct`) → `GET /api/storefront/catalog?slug=` |
+| Route file | `/`, `/katalog`, `/product/$tenant/$slug` (+ `/product/$slug` pengalih tautan lama), `/cart`, `/checkout`, `/orders`, `/order/$id`, `/chat`, `/info` |
+| Sumber data | `src/lib/catalog.ts` (`useMarketplace`, `useProduct`) → `GET /api/storefront/marketplace` — agregasi semua tenant aktif |
+| Layout beranda | Kolom pencarian → `hero-slider.tsx` (scroll-snap, digeser dengan swiping di ponsel, autoplay 5,2 detik, berhenti saat disentuh) → `category-grid.tsx` (ikon Lucide **satu warna**) → strip penjual → grid "Untuk kamu" |
+| Ikon kategori | `src/lib/category-icons.ts` — kata kunci nama kategori → ikon Lucide, jatuh ke `Tag`; kategori baru dari back office langsung tampil tanpa ubah kode |
+| Url state | `/katalog?q=&kategori=&toko=` (`validateSearch`), jadi chip kategori, filter penjual, dan pencarian bisa dibagikan sebagai tautan |
+| Tautan lama | `routes/product.$slug.tsx` mencari slug di seluruh marketplace lalu `navigate(replace)` ke `/product/<tenant>/<slug>`; slug yang sudah hilang mendarat di `/katalog?q=<slug>` (KS-34) |
+| Varian | `src/lib/products.ts` — `shelves(product)` mengubah `variants[]` jadi daftar rak `{ id, label, stock, units }`; produk satu SKU tetap satu rak, jadi halaman produk tidak bercabang |
+| Keranjang | `src/lib/store.ts` — `CartItem.tenant`/`seller` + `variantId`/`variantLabel`, kunci baris `tenant + slug + variantId + unitName`, `persist` versi 3 + `migrate` untuk keranjang lama |
+| Pesanan lintas toko | Satu keranjang, satu ongkir, satu pembayaran (platform sebagai merchant of record), tetapi `sellerGroups()` membagi baris per penjual: summary checkout dan halaman pesanan menampilkan "Dikirim oleh <toko>" + subtotal per toko (hanya bila lebih dari satu). Ambil sendiri tidak menunjuk satu alamat — `SHOP.pickupNote` menyuruh konfirmasi lewat chat |
 | Base URL API | `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) — **dipanggang saat build** |
 | Penyimpanan | Keranjang & pesanan di `localStorage` (kunci `thalia-storefront`); tidak menulis ke DB tenant |
-| Branding | Thalia — Toko Bahan Kue; kode pesanan `THL-…` |
+| Branding | **Toko Bahan Kue** dengan sub-baris **Marketplace** (wordmark `TOKO BAHAN KUE / MARKETPLACE`, monogram `T`, judul tab `Toko Bahan Kue`); tiap penjual tampil sebagai kartu/strip di dalam etalase, kode pesanan tetap `THL-…` |
+| Warna | Aksen **rose**: `--thalia-primary` `#9d3455` (isi tombol, chip aktif, gelembung chat, badge keranjang) dan `--thalia-accent` `#b04a68` (teks penekanan, titik notifikasi). Netral tetap hangat dengan sedikit rona pink (`bg #f6ecea`, `surface #fff9f8`, `fg #2b2124`); mode gelap membalik arahnya (`primary` `#eaa4ba` di atas `bg #0b0809`) supaya kontrasnya tetap sama |
 | Build | Nitro preset Vercel → `.vercel/output`; `db:migrate` melewati migrasi tanpa `DATABASE_URL` |
 | Hosting | Proyek Vercel terpisah `thalia-storefront` — lihat [deployment.md](deployment.md) §6 |
 
@@ -276,7 +303,7 @@ sungguhan; langkah yang butuh ketepatan selector ditulis deterministik, langkah 
 
 | Aspek | Nilai |
 |---|---|
-| Berkas uji | `tests/**/*.e2e.ts` — 7 berkas, 37 test: `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac` |
+| Berkas uji | `tests/**/*.e2e.ts` — 7 berkas, 40 test (36 `test` + 4 `test.setup`): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac` |
 | Konfigurasi | `e2e.config.ts` |
 | Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `kasir`, `gudang`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts` |
 | Target | `APP_URL`, default `http://localhost:8080` (`npm run dev`) |

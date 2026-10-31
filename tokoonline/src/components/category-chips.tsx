@@ -24,7 +24,7 @@ export function CategoryChips({
 
   return (
     <div className="sticky top-14 z-20 -mx-4 bg-bg/88 px-4 py-2 backdrop-blur-md">
-      <div className="flex gap-1.5 overflow-x-auto">
+      <div className="flex gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {chips.map((chip) => (
           <button
             key={chip.name}

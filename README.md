@@ -169,14 +169,20 @@ drift from the data without a test failing.
 
 ## Storefront online (`tokoonline/`)
 
-`tokoonline/` is the customer-facing shop for the tenant's online channel —
-Thalia Online, the third branch. It is a separate TanStack Start app that holds
-no database credential: it renders whatever `GET /api/storefront/catalog`
-returns (branch, selling units, prices, and the stock of the gudang that ships
-web orders), so the shop cannot drift from the back office.
+`tokoonline/` is the customer-facing **marketplace**: one app showing the goods of
+every `active` tenant side by side, with each product carrying its seller. It is a
+separate TanStack Start app that holds no database credential — it renders
+whatever `GET /api/storefront/marketplace` returns (sellers, branches, selling
+units, prices, and the stock of the gudang that ships web orders), so the shop
+cannot drift from any tenant's back office. `GET /api/storefront/catalog?slug=`
+still exists for clients that only want one shop's window.
+
+The storefront is branded **Toko Bahan Kue** with *Marketplace* underneath and a
+rose accent; product URLs are `/product/<tenant>/<slug>`, and the old
+`/product/<slug>` links redirect to them.
 
 ```sh
-# terminal 1 — API (health, auth, provisioning, storefront catalogue)
+# terminal 1 — API (health, auth, provisioning, marketplace catalogue)
 npm run dev:api          # :3000
 
 # terminal 2 — the shop
@@ -192,19 +198,24 @@ the back office keeps 8080.
 
 ## Deployment (Vercel)
 
-Two production projects on the same Turso organization (control database +
-tenant database, group `ap-southeast-2`):
+Two production projects on the same Turso organization (control database + one
+database per tenant, group `ap-southeast-2`):
 
 | Project | URL | Root directory |
 | --- | --- | --- |
 | Back office + `/api/*` | https://retailpro-thalia.vercel.app | repository root |
-| Storefront (online branch) | https://thalia-storefront.vercel.app | `tokoonline/` |
+| Storefront / marketplace | https://thalia-storefront.vercel.app | `tokoonline/` |
 
 ```sh
 npm run demo:cloud -- --write-env   # create/reseed the cloud databases, write .env
-vercel --prod                       # back office + API
-cd tokoonline && vercel --prod      # storefront
+vercel --prod                       # back office + API first (new endpoints live here)
+cd tokoonline && vercel --prod      # then the storefront, which calls them
 ```
+
+Deploy order is not cosmetic: the storefront's API origin is baked into the
+bundle at build time, so a storefront deployed ahead of a new `/api/storefront/*`
+endpoint shows "Katalog tidak bisa dimuat (HTTP 404)" until the API catches up.
+Full runbook: [docs/deployment.md](docs/deployment.md).
 
 Production variables live in Vercel → Project → Settings → Environment
 Variables: the nine Turso/auth values plus `STOREFRONT_TENANT_SLUG=thalia` on
@@ -233,10 +244,10 @@ db/migrations/           stepwise migrations for databases already on an older
                          schema version, applied by `npm run schema:apply-all`
 db/schema/seed.sql       provisioning seed with {{TOKEN}} placeholders
 db/schema/control.sql    control database: Better Auth tables + tenant registry
-api/                     Vercel functions (health, auth, tenant, admin, catalogue)
-server/                  provisioning, auth, demo dataset generator
+api/                     Vercel functions (health, auth, tenant, admin, public catalogues)
+server/                  provisioning, auth, demo dataset generator, shared catalogue reader
 src/                     React app (pages, components, lib/db client)
-tokoonline/              customer-facing storefront for the online branch
+tokoonline/              customer-facing marketplace (all active tenants)
 scripts/                 CLI entry points
 docs/                    architecture, feature logs, problem register, deploy runbook
 ```
@@ -249,14 +260,14 @@ append-only logs, so read the newest rows first.
 
 | Document | Contents | Updated |
 | --- | --- | --- |
-| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows, isolation, decisions | 2026-10-28 |
-| [docs/deployment.md](docs/deployment.md) | Deployment runbook: Turso cloud setup, both Vercel projects, env per project, `vercel.json` contract, verification, rollback | 2026-10-28 |
-| [docs/backend.md](docs/backend.md) | Backend and database: API surface, server modules, full 29-table schema (v4), env vars, schema change history, deploy constraints on the code | 2026-10-28 |
-| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and allowed roles, data patterns, formatting, storefront app, limits | 2026-10-28 |
-| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-10-28 |
+| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows, isolation, decisions | 2026-11-01 |
+| [docs/deployment.md](docs/deployment.md) | Deployment runbook: Turso cloud setup, both Vercel projects, env per project, `vercel.json` contract, verification, rollback | 2026-11-01 |
+| [docs/backend.md](docs/backend.md) | Backend and database: API surface, server modules, full 33-table schema (v6), env vars, schema change history, deploy constraints on the code | 2026-11-01 |
+| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and allowed roles, data patterns, formatting, the marketplace app, limits | 2026-11-01 |
+| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-11-01 |
 | [docs/fitur-platform.md](docs/fitur-platform.md) | Platform owner capabilities, gaps and roadmap, same dated log format | 2026-10-28 |
-| [docs/kendala-solusi.md](docs/kendala-solusi.md) | Problems, bugs and mismatches actually hit (KS-01…KS-31), with cause, fix, evidence and lesson | 2026-10-28 |
-| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-10-28 |
+| [docs/kendala-solusi.md](docs/kendala-solusi.md) | Problems, bugs and mismatches actually hit (KS-01…KS-34), with cause, fix, evidence and lesson | 2026-11-01 |
+| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-11-01 |
 
 `Backend.md` and `TECHNICAL_DOCS.md` in the repository root are now dated
 pointers to these documents; `TECHNICAL_ISSUES.md` is kept as the archive of the

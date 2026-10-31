@@ -10,7 +10,7 @@ import { AppShell } from "@/components/app-shell";
 import { Toaster } from "sonner";
 import appCss from "../styles.css?url";
 
-const APP_NAME = "Thalia";
+const APP_NAME = "Toko Bahan Kue";
 
 const THEME_BOOT = `try{var t=localStorage.getItem('thalia-storefront');if(t){var p=JSON.parse(t);if(p&&p.state&&p.state.theme==='dark')document.documentElement.classList.add('dark')}}catch(e){}`;
 
@@ -27,9 +27,9 @@ export const Route = createRootRoute({
       {
         name: "description",
         content:
-          "Thalia — Toko Bahan Kue. Bahan kue, cokelat, kemasan, dan perlengkapan dapur, dikirim dari toko pusat Depok.",
+          "Toko Bahan Kue — marketplace bahan kue, kemasan, dan kebutuhan dapur dari semua toko dalam satu aplikasi. Harga dan stok dibaca langsung dari sistem tiap toko.",
       },
-      { name: "theme-color", content: "#F4EBE4" },
+      { name: "theme-color", content: "#F6ECEA" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },

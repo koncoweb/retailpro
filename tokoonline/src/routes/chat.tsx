@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
 import { QUICK, replyTo } from "@/lib/chat";
-import { useCatalog } from "@/lib/catalog";
+import { useMarketplace } from "@/lib/catalog";
 import { SHOP, waLink } from "@/lib/shop";
 import { useShop } from "@/lib/store";
 import { LogoMark } from "@/components/logo";
@@ -13,8 +13,8 @@ export const Route = createFileRoute("/chat")({ component: ChatPage });
 function ChatPage() {
   const chat = useShop((s) => s.chat);
   const pushChat = useShop((s) => s.pushChat);
-  const { state } = useCatalog();
-  const products = state.status === "ready" ? state.catalog.products : [];
+  const { state } = useMarketplace();
+  const products = state.status === "ready" ? state.marketplace.products : [];
   const [text, setText] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -35,7 +35,7 @@ function ChatPage() {
       <div className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-3">
         <LogoMark className="size-10" />
         <div>
-          <p className="text-[15px] font-medium">CS Thalia</p>
+          <p className="text-[15px] font-medium">CS Toko Bahan Kue</p>
           <p className="text-[12px] text-muted">Online · {SHOP.hours}</p>
         </div>
       </div>
@@ -96,7 +96,7 @@ function ChatPage() {
           </button>
         </form>
         <a
-          href={waLink("Halo Thalia, saya ingin tanya bahan kue.")}
+          href={waLink("Halo CS Toko Bahan Kue, saya ingin tanya produk.")}
           target="_blank"
           rel="noreferrer"
           className="mt-2 block text-center text-[12px] text-muted"

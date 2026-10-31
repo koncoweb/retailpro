@@ -12,9 +12,17 @@ import { orderCode } from "./format";
 export type CartItem = {
   key: string;
   productId: string;
+  /** Tenant slug of the seller — a slug is only unique inside one shop. */
+  tenant: string;
+  /** Seller name, snapshotted so the basket can name the shop that ships it. */
+  seller?: string;
   slug: string;
   name: string;
   category: string | null;
+  /** Which sellable SKU — null when the product has only one version. */
+  variantId?: string | null;
+  /** "Cokelat"; rendered beside the product name so the basket is unambiguous. */
+  variantLabel?: string | null;
   unitName: string;
   /** Rendered form of the unit: "kg" or "karung · 25 kg". */
   unitLabel: string;
@@ -78,6 +86,18 @@ type State = {
 /** Also read by the theme bootstrap in `routes/__root.tsx`. */
 const STORAGE_KEY = "thalia-storefront";
 
+/**
+ * Basket line identity: seller + product + variant + pack.
+ *
+ * Two shops may sell goods under the same SKU, so the seller is part of the
+ * key. A carton of Susu and a carton of Cokelat are different goods at
+ * different prices, so they must never collapse into one line — nor may a kilo
+ * and a sack of the same good.
+ */
+function lineKey(item: Pick<CartItem, "tenant" | "slug" | "variantId" | "unitName">) {
+  return `${item.tenant ?? ""}-${item.slug}-${item.variantId ?? ""}-${item.unitName}`;
+}
+
 function applyTheme(theme: Theme) {
   if (typeof document === "undefined") return;
   document.documentElement.classList.toggle("dark", theme === "dark");
@@ -93,7 +113,7 @@ export const useShop = create<State>()(
         {
           id: "welcome",
           from: "cs",
-          text: "Halo, Thalia Toko Bahan Kue di sini. Mau cari bahan apa hari ini?",
+          text: "Halo, CS Toko Bahan Kue di sini. Mau cari produk apa hari ini?",
           at: new Date().toISOString(),
         },
       ],
@@ -108,7 +128,7 @@ export const useShop = create<State>()(
       },
       addToCart: (item) => {
         const qty = item.qty ?? 1;
-        const key = `${item.slug}-${item.unitName}`;
+        const key = lineKey(item);
         const existing = get().cart.find((line) => line.key === key);
         if (existing) {
           set({
@@ -162,6 +182,21 @@ export const useShop = create<State>()(
     }),
     {
       name: STORAGE_KEY,
+      version: 3,
+      // v2 put the variant into the line key, v3 the seller. Baskets saved
+      // before that keep their goods, but their keys are rebuilt so the same
+      // product does not appear twice once the shopper adds it again.
+      migrate: (persisted, version) => {
+        const state = persisted as { cart?: CartItem[] };
+        if (version < 3 && Array.isArray(state.cart)) {
+          state.cart = state.cart.map((item) => ({
+            ...item,
+            tenant: item.tenant ?? "",
+            key: lineKey({ ...item, tenant: item.tenant ?? "" }),
+          }));
+        }
+        return state as unknown as State;
+      },
       partialize: (s) => ({
         theme: s.theme,
         cart: s.cart,
@@ -181,4 +216,25 @@ export function cartCount(cart: CartItem[]) {
 
 export function cartTotal(cart: CartItem[]) {
   return cart.reduce((sum, item) => sum + item.unitPrice * item.qty, 0);
+}
+
+/**
+ * Basket lines split by the shop that ships them.
+ *
+ * A marketplace basket is not one parcel: two sellers sit in it side by side.
+ * Both the checkout summary and the order page print these groups so the
+ * shopper can see which shop fulfils what, even though the platform charges a
+ * single total. Lines saved before sellers existed fall back to the storefront's
+ * own name instead of an empty heading.
+ */
+export function sellerGroups(cart: CartItem[]) {
+  const groups = new Map<string, { seller: string; lines: CartItem[]; subtotal: number }>();
+  for (const item of cart) {
+    const seller = item.seller ?? SHOP.name;
+    const group = groups.get(seller) ?? { seller, lines: [], subtotal: 0 };
+    group.lines.push(item);
+    group.subtotal += item.unitPrice * item.qty;
+    groups.set(seller, group);
+  }
+  return [...groups.values()].sort((a, b) => a.seller.localeCompare(b.seller, "id"));
 }

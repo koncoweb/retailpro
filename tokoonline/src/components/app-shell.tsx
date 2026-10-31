@@ -53,12 +53,17 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-dvh bg-frame">
-      <div className="relative mx-auto flex min-h-dvh w-full max-w-[430px] flex-col bg-bg md:shadow-[0_0_0_1px_rgba(42,33,28,0.08),0_24px_80px_-24px_rgba(42,33,28,0.35)]">
+      <div className="relative mx-auto flex min-h-dvh w-full max-w-[430px] flex-col bg-bg md:shadow-[0_0_0_1px_rgba(43,33,36,0.08),0_24px_80px_-24px_rgba(43,33,36,0.35)]">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 bg-bg/88 px-4 backdrop-blur-md">
           <Link to="/" className="flex min-w-0 items-center gap-2.5">
             <LogoMark className="size-9" />
-            <span className="font-display text-[17px] font-medium tracking-[0.18em] text-fg">
-              THALIA
+            <span className="flex flex-col leading-none">
+              <span className="font-display text-[14px] font-medium tracking-[0.14em] text-fg">
+                TOKO BAHAN KUE
+              </span>
+              <span className="mt-1 text-[9px] tracking-[0.16em] text-subtle uppercase">
+                Marketplace
+              </span>
             </span>
           </Link>
           <div className="ml-auto flex items-center gap-0.5">

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/input";
 import { formatIDR, todayPlus } from "@/lib/format";
 import { SHOP, type Fulfillment, type PaymentMethod } from "@/lib/shop";
-import { cartTotal, useShop } from "@/lib/store";
+import { cartTotal, sellerGroups, useShop } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/checkout")({ component: Checkout });
@@ -30,6 +30,8 @@ function Checkout() {
   const deliveryFee = fulfillment === "delivery" ? SHOP.deliveryFee : 0;
   const total = subtotal + deliveryFee;
   const minDate = todayPlus(SHOP.leadDays);
+  // One basket, one payment — but the goods leave from more than one shop.
+  const groups = sellerGroups(cart);
 
   if (cart.length === 0) {
     return (
@@ -134,7 +136,7 @@ function Checkout() {
           </Field>
         ) : (
           <p className="rounded-md bg-surface px-3.5 py-3 text-[13px] leading-relaxed text-muted shadow-[inset_0_0_0_1px_var(--color-line)]">
-            {SHOP.atelier}. Tunjukkan nomor pesanan saat mengambil di toko.
+            {SHOP.pickupNote}
           </p>
         )}
         <Field label="Tanggal">
@@ -219,18 +221,32 @@ function Checkout() {
       </Field>
 
       <div className="rounded-xl bg-surface px-4 py-4 shadow-[var(--shadow-border)]">
-        {cart.map((i) => (
-          <div
-            key={i.key}
-            className="flex justify-between py-1 text-[13px] text-muted"
-          >
-            <span>
-              {i.qty}× {i.name} · {i.unitLabel}
-            </span>
-            <span className="tabular-nums">{formatIDR(i.unitPrice * i.qty)}</span>
+        {groups.map((group) => (
+          <div key={group.seller} className="border-b border-line py-2 first:pt-0">
+            <p className="text-[11px] tracking-[0.12em] text-subtle uppercase">
+              Dikirim oleh {group.seller}
+            </p>
+            {group.lines.map((i) => (
+              <div
+                key={i.key}
+                className="flex justify-between pt-1 text-[13px] text-muted"
+              >
+                <span>
+                  {i.qty}× {i.name}
+                  {i.variantLabel && ` · ${i.variantLabel}`} · {i.unitLabel}
+                </span>
+                <span className="tabular-nums">{formatIDR(i.unitPrice * i.qty)}</span>
+              </div>
+            ))}
+            {groups.length > 1 && (
+              <div className="flex justify-between pt-1 text-[12px] text-subtle">
+                <span>Subtotal toko</span>
+                <span className="tabular-nums">{formatIDR(group.subtotal)}</span>
+              </div>
+            )}
           </div>
         ))}
-        <div className="mt-2 flex justify-between border-t border-line pt-2 text-[13px]">
+        <div className="mt-2 flex justify-between text-[13px]">
           <span className="text-muted">Ongkir</span>
           <span className="tabular-nums">
             {deliveryFee ? formatIDR(deliveryFee) : "—"}
@@ -242,6 +258,12 @@ function Checkout() {
             {formatIDR(total)}
           </span>
         </div>
+        {groups.length > 1 && (
+          <p className="mt-2 text-[12px] leading-relaxed text-subtle">
+            Barang dari {groups.length} toko dikirim dari gudang masing-masing,
+            dibayar sekali ke {SHOP.name}.
+          </p>
+        )}
       </div>
 
       <Button

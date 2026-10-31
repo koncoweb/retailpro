@@ -35,13 +35,21 @@ function CartPage() {
       <ul className="mt-5 flex flex-col gap-4">
         {cart.map((item) => (
           <li key={item.key} className="flex gap-3">
-            <Link
-              to="/product/$slug"
-              params={{ slug: item.slug }}
-              className="size-[88px] shrink-0 overflow-hidden rounded-[16px] bg-surface"
-            >
-              <Thumb name={item.name} className="size-full" />
-            </Link>
+            {item.tenant ? (
+              <Link
+                to="/product/$tenant/$slug"
+                params={{ tenant: item.tenant, slug: item.slug }}
+                className="size-[88px] shrink-0 overflow-hidden rounded-[16px] bg-surface"
+              >
+                <Thumb name={item.name} className="size-full" />
+              </Link>
+            ) : (
+              // A basket saved before sellers existed has no tenant to link to;
+              // the line still renders so the shopper can finish the order.
+              <div className="size-[88px] shrink-0 overflow-hidden rounded-[16px] bg-surface">
+                <Thumb name={item.name} className="size-full" />
+              </div>
+            )}
             <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-2">
                 <div>
@@ -49,8 +57,14 @@ function CartPage() {
                     {item.name}
                   </p>
                   <p className="mt-0.5 text-[12px] text-muted">
+                    {item.variantLabel && (
+                      <span className="text-fg">{item.variantLabel} · </span>
+                    )}
                     {item.unitLabel}
                   </p>
+                  {item.seller && (
+                    <p className="mt-0.5 truncate text-[11px] text-subtle">{item.seller}</p>
+                  )}
                 </div>
                 <button
                   type="button"

@@ -1,6 +1,6 @@
 import { SHOP } from "./shop";
 import { formatIDR } from "./format";
-import { fromPrice, isSoldOut, type Product } from "./products";
+import { fromPrice, isProductSoldOut, type Product } from "./products";
 
 export const QUICK = [
   "Jam buka",
@@ -23,19 +23,19 @@ export function replyTo(raw: string, products: Product[] = []): string {
   const q = raw.toLowerCase();
 
   if (has(q, ["halo", "hai", "hi", "hello", "pagi", "siang", "sore", "malam"])) {
-    return "Halo, terima kasih sudah menghubungi Thalia Toko Bahan Kue. Mau cari bahan, kemasan, atau perlengkapan?";
+    return "Halo, terima kasih sudah menghubungi CS Toko Bahan Kue. Mau cari bahan, kemasan, atau perlengkapan?";
   }
 
   if (has(q, ["jam", "buka", "tutup", "operasional"])) {
-    return `Kami buka ${SHOP.hours}, ${SHOP.closed.toLowerCase()}. Pesanan online diproses hari kerja dan dikirim dari Gudang Pusat Depok.`;
+    return `Kami buka ${SHOP.hours}, ${SHOP.closed.toLowerCase()}. Pesanan online diproses hari kerja dan dikirim dari gudang masing-masing toko.`;
   }
 
   if (has(q, ["stok", "tersedia", "kosong", "habis", "ready"])) {
     if (products.length === 0) {
       return "Katalog sedang dimuat. Coba buka lagi halaman katalog sebentar lagi.";
     }
-    const out = products.filter(isSoldOut);
-    const thin = products.filter((product) => product.lowStock && !isSoldOut(product));
+    const out = products.filter(isProductSoldOut);
+    const thin = products.filter((product) => product.lowStock && !isProductSoldOut(product));
     if (out.length > 0) {
       return `Saat ini kosong: ${out
         .slice(0, 4)
@@ -48,11 +48,11 @@ export function replyTo(raw: string, products: Product[] = []): string {
         .map((product) => product.name)
         .join(", ")}. Sisanya tersedia hari ini.`;
     }
-    return `Semua ${products.length} produk tersedia di Gudang Pusat Depok hari ini.`;
+    return `Semua ${products.length} produk tersedia di gudang tokonya masing-masing hari ini.`;
   }
 
   if (has(q, ["kirim", "antar", "delivery", "ongkir", "alamat", "pickup", "ambil"])) {
-    return `Pengantaran ${SHOP.deliveryArea}, ongkir ${formatIDR(SHOP.deliveryFee)}. Bisa juga ambil sendiri di ${SHOP.atelier}.`;
+    return `Pengantaran ${SHOP.deliveryArea}, ${formatIDR(SHOP.deliveryFee)} per pesanan berapa pun jumlah tokonya. Bisa juga ambil sendiri di toko penjual — alamatnya kami konfirmasi lewat chat.`;
   }
 
   if (has(q, ["bayar", "transfer", "qris", "rekening", "payment", "va", "tunai"])) {
@@ -74,12 +74,12 @@ export function replyTo(raw: string, products: Product[] = []): string {
   }
 
   if (has(q, ["lokasi", "mana", "maps", "toko", "gudang", "alamat"])) {
-    return `Toko kami di ${SHOP.atelier}. Gudang pusatnya di Depok, jadi pesanan online dikirim dari sana.`;
+    return `Kantor CS kami di ${SHOP.atelier}. Barangnya dikirim dari gudang toko yang menjual produk itu — nama tokonya tertera di halaman produk dan di pesanan.`;
   }
 
   if (has(q, ["terima kasih", "makasih", "thanks", "ok", "oke", "siap"])) {
     return "Sama-sama. Kalau sudah siap, pilih bahannya di katalog — kami siapkan dan kirim dari gudang.";
   }
 
-  return `Kami catat pesan Anda. Untuk jawaban lebih cepat, lanjutkan ke WhatsApp Thalia atau pilih salah satu topik di atas. Tim kami membalas pada ${SHOP.hours}.`;
+  return `Kami catat pesan Anda. Untuk jawaban lebih cepat, lanjutkan ke WhatsApp CS atau pilih salah satu topik di atas. Tim kami membalas pada ${SHOP.hours}.`;
 }

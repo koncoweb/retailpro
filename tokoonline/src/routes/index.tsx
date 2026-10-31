@@ -1,26 +1,36 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { CategoryChips } from "@/components/category-chips";
+import { Boxes, ChevronRight, ShoppingBasket, Store, Truck } from "lucide-react";
 import { CatalogError, CatalogSkeleton } from "@/components/catalog-state";
+import { CategoryGrid } from "@/components/category-grid";
+import { HeroSlider, type HeroSlide } from "@/components/hero-slider";
 import { ProductGrid } from "@/components/product-card";
-import { useCatalog } from "@/lib/catalog";
+import { SearchField } from "@/components/search-field";
+import { useMarketplace } from "@/lib/catalog";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({ component: Home });
 
+/** How many tiles the home page shows before handing over to the catalogue. */
+const FEATURED = 8;
+
 function Home() {
-  const { state, reload } = useCatalog();
-  const [category, setCategory] = useState("all");
+  const { state, reload } = useMarketplace();
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+
+  function search() {
+    const q = query.trim();
+    navigate({ to: "/katalog", search: q ? { q } : {} });
+  }
 
   if (state.status === "loading") {
     return (
-      <div className="flex flex-col px-4 pb-6">
-        <div className="pt-3 pb-1">
-          <h1 className="font-display text-2xl leading-none font-medium">Bahan kue</h1>
-          <p className="mt-1 text-xs text-muted">Memuat katalog dari toko…</p>
-        </div>
-        <div className="pt-4">
-          <CatalogSkeleton />
-        </div>
+      <div className="flex flex-col gap-3 px-4 pt-3 pb-6">
+        <div className="h-10 animate-pulse rounded-full bg-surface" />
+        <div className="h-[132px] animate-pulse rounded-xl bg-surface" />
+        <div className="h-28 animate-pulse rounded-xl bg-surface" />
+        <CatalogSkeleton />
       </div>
     );
   }
@@ -33,34 +43,110 @@ function Home() {
     );
   }
 
-  const { catalog } = state;
-  const products =
-    category === "all"
-      ? catalog.products
-      : catalog.products.filter((product) => product.category === category);
+  const { marketplace } = state;
+  const warehouses = [...new Set(marketplace.shops.map((shop) => shop.warehouse))];
+  const featured = marketplace.products.slice(0, FEATURED);
+
+  // Every banner is drawn from the live catalogue, so the front page cannot
+  // promise a shop or a stock figure that the data no longer has.
+  const slides: HeroSlide[] = [
+    {
+      id: "sellers",
+      kicker: "Marketplace",
+      title: "Semua toko, satu aplikasi",
+      body: `Belanja dari ${marketplace.shops.length} toko tanpa pindah aplikasi.`,
+      icon: ShoppingBasket,
+    },
+    {
+      id: "stock",
+      kicker: "Stok nyata",
+      title: `${marketplace.products.length} produk siap kirim`,
+      body: "Harga dan stok dibaca langsung dari sistem tiap toko, bukan salinan.",
+      icon: Boxes,
+    },
+    {
+      id: "shipping",
+      kicker: "Pengiriman",
+      title: "Dikirim dari gudang",
+      body: `Pesanan disiapkan dari ${warehouses.join(", ") || "gudang pusat"} dan bisa juga diambil di toko.`,
+      icon: Truck,
+    },
+  ];
 
   return (
-    <div className="flex flex-col px-4 pb-6">
-      <div className="pt-3 pb-1">
-        <h1 className="font-display text-2xl leading-none font-medium">Bahan kue</h1>
-        <p className="mt-1 text-xs text-muted">
-          {catalog.products.length} produk · dikirim dari {catalog.shop.warehouse}
-        </p>
-      </div>
-      <CategoryChips
-        categories={catalog.categories}
-        value={category}
-        onChange={setCategory}
-      />
-      <ProductGrid products={products} />
+    <div className="flex flex-col gap-3 px-4 pt-3 pb-6">
+      <SearchField value={query} onChange={setQuery} onSubmit={search} />
+      <HeroSlider slides={slides} />
+      <CategoryGrid categories={marketplace.categories} />
+
+      {marketplace.shops.length > 0 && (
+        <section aria-label="Toko di marketplace">
+          <header className="flex items-baseline justify-between px-0.5 pb-2">
+            <h2 className="font-display text-[15px] font-medium text-fg">Toko di marketplace</h2>
+            <span className="text-[11px] text-muted">
+              {marketplace.tenants.live} dari {marketplace.tenants.total} toko
+            </span>
+          </header>
+          <ul className="flex snap-x snap-mandatory gap-2.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {marketplace.shops.map((shop) => (
+              <li key={shop.slug} className="w-[236px] shrink-0 snap-start">
+                <Link
+                  to="/katalog"
+                  search={{ toko: shop.slug }}
+                  className="flex h-full items-center gap-2.5 rounded-lg bg-surface p-2.5 shadow-[var(--shadow-border)]"
+                >
+                  <span className="grid size-10 shrink-0 place-items-center rounded-full bg-bg text-fg">
+                    <Store className="size-[18px]" strokeWidth={1.5} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-medium text-fg">
+                      {shop.name}
+                    </span>
+                    <span className="block truncate text-[10px] leading-tight text-muted">
+                      {shop.productCount} produk · {shop.inStock} siap kirim
+                    </span>
+                    <span className="block truncate text-[10px] leading-tight text-subtle">
+                      {shop.warehouse}
+                    </span>
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section aria-label="Produk">
+        <header className="flex items-baseline justify-between px-0.5 pb-2">
+          <h2 className="font-display text-[15px] font-medium text-fg">Untuk kamu</h2>
+          <Link to="/katalog" className="flex items-center text-[11px] text-muted">
+            Lihat semua <ChevronRight className="size-3.5" strokeWidth={1.8} />
+          </Link>
+        </header>
+        <ProductGrid products={featured} />
+        {marketplace.products.length > featured.length && (
+          <Link
+            to="/katalog"
+            className="mt-3 grid h-10 place-items-center rounded-full bg-surface text-[12px] font-medium text-fg shadow-[var(--shadow-border)]"
+          >
+            Lihat {marketplace.products.length} produk
+          </Link>
+        )}
+      </section>
+
       <Link
         to="/chat"
-        className="mt-5 rounded-lg bg-surface px-4 py-3 shadow-[var(--shadow-border)]"
+        className={cn(
+          "mt-1 flex items-center justify-between rounded-lg bg-surface px-4 py-3 shadow-[var(--shadow-border)]",
+        )}
       >
-        <p className="font-display text-[17px] text-fg">Butuh jumlah banyak?</p>
-        <p className="mt-0.5 text-xs leading-relaxed text-muted">
-          Chat CS untuk harga karung, dus, atau kiriman rutin ke dapur Anda.
-        </p>
+        <span>
+          <span className="font-display block text-[15px] text-fg">Butuh jumlah banyak?</span>
+          <span className="mt-0.5 block text-[11px] leading-relaxed text-muted">
+            Chat CS untuk harga karung, dus, atau kiriman rutin ke dapur Anda.
+          </span>
+        </span>
+        <ChevronRight className="size-4 shrink-0 text-subtle" strokeWidth={1.8} />
       </Link>
     </div>
   );

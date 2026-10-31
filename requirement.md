@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `requirement.md` |
-| Terakhir diperbarui | **2026-10-28** |
+| Terakhir diperbarui | **2026-11-01** |
 | Sifat dokumen | Rencana + catatan implementasi. Bila isi dokumen berbeda dengan kode, **kode yang menang** |
 | Rujukan detail | [`docs/arsitektur.md`](docs/arsitektur.md), [`docs/backend.md`](docs/backend.md), [`docs/deployment.md`](docs/deployment.md), [`docs/fitur-tenant.md`](docs/fitur-tenant.md), [`docs/fitur-platform.md`](docs/fitur-platform.md), [`docs/frontend.md`](docs/frontend.md), [`docs/kendala-solusi.md`](docs/kendala-solusi.md) |
 
@@ -20,6 +20,8 @@
 | 2026-10-28 | Skema v4: pesanan cabang (`stock_requests`, `stock_request_items`) dipisah dari eksekusi (`stock_transfers`), rak toko per cabang |
 | 2026-10-28 | Aplikasi kedua **`tokoonline/`** menjadi kanal penjualan online tenant; katalog berasal dari `GET /api/storefront/catalog`, tanpa kredensial database di browser pengunjung |
 | 2026-10-28 | Deployment nyata: **dua proyek Vercel** + control DB dan DB tenant di **Turso cloud** (grup `ap-southeast-2`); runbook di `docs/deployment.md` |
+| 2026-11-01 | Aplikasi kedua naik dari etalase satu tenant menjadi **marketplace lintas tenant**: `GET /api/storefront/marketplace` menggabungkan katalog semua tenant `active`, produk membawa `tenant`/`seller`, dan `/api/storefront/catalog` turun menjadi kontrak untuk klien satu toko. Merek etalase **Toko Bahan Kue / Marketplace** dengan aksen rose |
+| 2026-11-01 | Satu pesanan boleh berisi barang beberapa penjual: satu keranjang, satu ongkir, satu pembayaran (platform sebagai merchant of record), dan ringkasan checkout/pesanan dikelompokkan per toko. Pesanan tetap tersimpan di perangkat |
 
 ---
 
@@ -43,7 +45,7 @@ Setiap tenant mendapat **database Turso/libSQL sendiri di cloud**.
 *   **Grup Turso**: setiap database wajib berada di grup yang sudah ada. Organisasi baru hanya punya grup lokasi otomatis, jadi `TURSO_GROUP` diisi `ap-southeast-2` (bukan `retailpro` seperti contoh lama). `listGroups()` tersedia sebagai pemeriksaan sebelum provisioning.
 *   **Akses browser**: aplikasi hanya memegang token berumur `TENANT_TOKEN_TTL` (bawaan 60 menit) yang berlaku untuk **satu** database tenant. Token organisasi Turso tidak pernah sampai ke browser.
 *   **Kuota**: `TURSO_MAX_TENANT_DATABASES` (bawaan 99, mengikuti 100 database paket gratis per organisasi) → HTTP 429 bila penuh. Slug: minimal 3 karakter, unik, daftar terlarang (`www`, `api`, `admin`, …).
-*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **4**, 29 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
+*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **6**, 33 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
 *   **Konsekuensi yang harus diingat**: tidak ada query lintas tenant; laporan lintas cabang tetap butuh filter `branch_id` eksplisit; setiap database adalah satu unit backup/restore dan satu unit biaya.
 
 **Ditolak — Shared Database, Shared Schema + RLS.** Rencana awal memakai satu database PostgreSQL (Neon) dengan kolom `tenant_id` di setiap tabel dan Row Level Security yang identitasnya diatur lewat session variable. Dibatalkan 2026-10-27 karena isolasinya bergantung pada klien yang mengaku sebagai tenant tertentu (`set_config` dijalankan aplikasi), kredensial database ikut ke bundle browser, dan setiap query harus ingat `WHERE tenant_id`. Pelajaran: isolasi yang ditentukan klien adalah janji, bukan batas. Lihat `docs/kendala-solusi.md` KS-01 dan `docs/arsitektur.md` ADR-1.
@@ -115,7 +117,7 @@ Nama `admin` masih diterima oleh guard lama sebagai alias; jangan dipakai untuk 
 
 ## 4. Struktur Database (Schema Design)
 
-Kanónik: `db/schema/tenant.sql` (versi **4**, **29 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
+Kanónik: `db/schema/tenant.sql` (versi **6**, **33 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
 
 ### A. Core / Identity & Settings
 
@@ -164,7 +166,7 @@ Runbook operasional lengkap — langkah deploy, isi `vercel.json`, verifikasi, r
 ### A. Hosting (Vercel) — dua proyek
 
 *   **`retailpro-thalia`** (root repository): SPA React statis dari `dist/` + fungsi serverless di `api/`. URL: https://retailpro-thalia.vercel.app
-*   **`thalia-storefront`** (root `tokoonline/`): TanStack Start dengan Nitro preset Vercel, keluaran `.vercel/output`. URL: https://thalia-storefront.vercel.app
+*   **`thalia-storefront`** (root `tokoonline/`): TanStack Start dengan Nitro preset Vercel, keluaran `.vercel/output`. URL: https://thalia-storefront.vercel.app. Ini **marketplace** semua tenant `active`, bukan etalase satu tenant. Urutan deploy wajib: back office + API dulu (endpoint `/api/storefront/*` lahir di sana), baru toko online — origin API dipanggang ke bundle saat build. Lihat `docs/deployment.md` §6.
 *   `vercel.json`: tiga `rewrites` berurutan — `/api/auth/(.*)` → `/api/auth/[...all]`, `/api/admin/users/([^/]+)/password` → `/api/admin/users/[id]/password`, baru catch-all SPA dengan *negative lookahead* agar `/api/*` tidak ditelan `index.html`. Header keamanan (CSP) ikut dipasang dan wajib mengizinkan `https://*.turso.io` + `wss://*.turso.io`.
 *   `functions["api/**/*.ts"].includeFiles` menyertakan `db/schema/**` karena `server/provision.ts` membaca `tenant.sql` & `seed.sql` saat runtime.
 *   Build: `npm run build` (Vite). Build tidak menjalankan typecheck — jalankan `npm run typecheck` terpisah. Vercel tidak menjalankan `npm test` maupun `npm run audit:sql`; belum ada CI (KS-21).
@@ -191,10 +193,10 @@ Runbook operasional lengkap — langkah deploy, isi `vercel.json`, verifikasi, r
 | `CONTROL_DB_URL` / `CONTROL_DB_TOKEN` | server/scripts | Ya |
 | `BETTER_AUTH_SECRET` / `BETTER_AUTH_URL` | server | Ya — `BETTER_AUTH_URL` harus origin publik di produksi |
 | `TENANT_TOKEN_TTL` | server | Tidak (bawaan `60m`) |
-| `STOREFRONT_TENANT_SLUG` | server | Tidak (bawaan `thalia`) — slug yang dipakai `/api/storefront/catalog` bila klien tidak mengirim `?slug=` |
+| `STOREFRONT_TENANT_SLUG` | server | Tidak (bawaan `thalia`) — slug bawaan `/api/storefront/catalog` bila klien tidak mengirim `?slug=`; `/api/storefront/marketplace` **tidak** memakainya (membaca semua tenant `active`) |
 | `VITE_API_BASE_URL` | browser | Tidak (hanya dev origin terpisah) |
 | `VITE_API_PROXY_TARGET` | vite dev | Tidak (bawaan `http://localhost:3000`) |
-| `VITE_CATALOG_API_URL` | `tokoonline/` | Ya untuk toko — dipanggang saat build, jadi ubah lalu deploy ulang |
+| `VITE_CATALOG_API_URL` | `tokoonline/` | Ya untuk toko — **origin** API (`https://retailpro-thalia.vercel.app`), bukan URL endpoint; dipanggang saat build, jadi ubah lalu deploy ulang |
 
 Hanya `VITE_*` yang publik; `src/` tidak boleh mengimpor `server/`, dan rahasia Turso tidak boleh berawalan `VITE_`.
 
@@ -243,7 +245,7 @@ Tidak ada `tenant_id`.
 ## 8. Checklist Implementasi (MVP Phase 1)
 
 - [x] Setup project (Vite + React + TS + Tailwind + shadcn/ui)
-- [x] Database Turso: satu database per tenant, skema v4 (29 tabel), provisioning otomatis
+- [x] Database Turso: satu database per tenant, skema v6 (33 tabel), provisioning otomatis
 - [x] Autentikasi Better Auth + 7 peran, guard route gagal-tertutup
 - [x] CRUD master data (karyawan, cabang, gudang, produk, vendor, pelanggan)
 - [x] Modul vendor: master vendor, katalog vendor↔produk, PO per vendor, hutang & buku pembayaran
@@ -256,8 +258,9 @@ Tidak ada `tenant_id`.
 - [x] Pesanan cabang: permintaan → persetujuan → pengiriman → penerimaan, terhubung ke transfer
 - [x] Keuangan: pengeluaran, hutang/piutang, cashflow, jurnal
 - [x] Laporan: penjualan, inventori, keuangan, karyawan + export Excel
-- [x] Katalog publik `GET /api/storefront/catalog` (tanpa sesi, data langsung dari DB tenant)
-- [x] Toko online `tokoonline/` — kanal penjualan branch `type = 'online'`, tanpa kredensial database
+- [x] Katalog publik `GET /api/storefront/catalog` (tanpa sesi, data langsung dari DB tenant) — sejak 2026-11-01 menjadi kontrak untuk klien **satu** toko
+- [x] Marketplace lintas tenant `GET /api/storefront/marketplace` — menggabungkan katalog semua tenant `active`; tenant yang gagal masuk `skipped[]` sebagai `{slug, reason:"unavailable"}`, detailnya hanya di log server
+- [x] Toko online `tokoonline/` — marketplace **Toko Bahan Kue** atas semua tenant, tanpa kredensial database; satu keranjang boleh berisi beberapa penjual, ringkasan checkout/pesanan dikelompokkan per toko
 - [x] Deploy produksi: dua proyek Vercel + control DB & DB tenant di Turso cloud, `GET /api/health` hijau
 - [ ] Keranjang toko online yang benar-benar memesan (saat ini pesanan tersimpan di perangkat)
 - [ ] Konsol platform (daftar tenant, suspend, tier) — lihat `docs/fitur-platform.md`

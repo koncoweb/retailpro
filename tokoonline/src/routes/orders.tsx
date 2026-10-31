@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { formatDateID, formatIDR } from "@/lib/format";
+import { SHOP } from "@/lib/shop";
 import { useShop, type OrderStatus } from "@/lib/store";
 import { buttonVariants } from "@/components/ui/button";
 
@@ -50,10 +51,15 @@ function OrdersPage() {
                 </span>
               </div>
               <p className="mt-1 text-[13px] text-muted">
-                {o.items.map((i) => i.name).join(", ")}
+                {o.items
+                  .map((i) => (i.variantLabel ? `${i.name} (${i.variantLabel})` : i.name))
+                  .join(", ")}
               </p>
               <div className="mt-2 flex justify-between text-[13px]">
-                <span className="text-subtle">{formatDateID(o.date)}</span>
+                <span className="text-subtle">
+                  {formatDateID(o.date)} ·{" "}
+                  {new Set(o.items.map((i) => i.seller ?? SHOP.name)).size} toko
+                </span>
                 <span className="tabular-nums">{formatIDR(o.total)}</span>
               </div>
             </Link>

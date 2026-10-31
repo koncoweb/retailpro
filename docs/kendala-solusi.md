@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/kendala-solusi.md` |
-| Terakhir diperbarui | **2026-10-31** |
+| Terakhir diperbarui | **2026-11-01** |
 | Isi | Masalah, bug, error, dan ketidaksesuaian yang benar-benar dihadapi — beserta cara mengatasi dan pelajarannya |
 
 ## Cara memakai log ini
@@ -49,6 +49,8 @@
 | KS-30 | 2026-10-28 | Deploy toko diblokir CVE TanStack Start, lalu error tipe setelah upgrade | Selesai |
 | KS-31 | 2026-10-28 | `demo:cloud` diulang: gagal sesaat lalu membuat owner baru | Sebagian (perilaku didokumentasikan) |
 | KS-32 | 2026-10-31 | Model e2e menolak `responseFormat` → `agent.extract` gagal | Terbuka (batasan model) |
+| KS-33 | 2026-11-01 | `/api/storefront/marketplace` (publik) mengirim pesan error database apa adanya | Selesai |
+| KS-34 | 2026-11-01 | Bentuk URL produk berubah jadi `/product/$tenant/$slug`, tautan lama 404 | Selesai |
 
 ---
 
@@ -438,6 +440,26 @@
 | **Bukti** | `npx e2e run --grep login` 2026-10-31: 3 test lulus, 3 panggilan model, 10,9k token, dengan peringatan di atas di stderr; `e2e.config.ts` |
 | **Pelajaran** | "OpenAI-compatible" tidak berarti semua fitur OpenAI ada. Sebelum memakai model untuk harness yang butuh keluaran terstruktur, uji satu panggilan dengan `responseFormat`; untuk harness yang hanya butuh tool call, cukup pastikan tool calling bekerja — peringatan AI SDK adalah sinyal pertama, bukan kegagalan test |
 
+## KS-33 · 2026-11-01 · Endpoint marketplace publik mengirim pesan error database apa adanya — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | `GET /api/storefront/marketplace` mengembalikan `skipped: [{ slug, reason: "SQLITE_ERROR: no such column: variant_attributes" }]` kepada siapa pun yang memanggilnya tanpa sesi |
+| **Akar masalah** | Handler agregasi butuh alasan per tenant yang gagal agar operator bisa mendiagnosis tanpa log, jadi `readOne` mengembalikan `error.message` mentah ke dalam payload. Pesan libSQL menyebut nama tabel dan kolom, artinya pengunjung anonim bisa memetakan skema tenant hanya dengan memancing tenant yang rusak |
+| **Solusi** | `readOne` mengembalikan objek `error` (bukan string) dan handler mencatatnya ke log server (`console.error` berlabel `[storefront] tenant "<slug>" skipped:`) lalu mengirim `reason: "unavailable"` — tingkat detail yang boleh dilihat orang luar. Tipe `skipped[]` dipersempit jadi literal `"unavailable"`, jadi kebocoran berikutnya tidak mungkin lolos typecheck |
+| **Bukti** | `api/storefront/marketplace.ts` (tipe `SkippedTenant`, `readOne`, cabang `'error' in result`); `curl localhost:3000/api/storefront/marketplace` → `shops=1 products=28 tenants=1/1 skipped=0` |
+| **Pelajaran** | "Alasan yang berguna untuk operator" dan "alasan yang boleh dibaca publik" adalah dua hal berbeda. Pada endpoint tanpa sesi, detail diagnosis harus pindah ke log — bukan ke JSON |
+
+## KS-34 · 2026-11-01 · URL produk berubah, tautan lama mati — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Etalase berubah jadi marketplace, route `/product/$slug` dihapus dan diganti `/product/$tenant/$slug`. Tautan yang terlanjur dibagikan (chat CS, WhatsApp, catatan pesanan, bookmark) berakhir di "Produk tidak ditemukan" |
+| **Akar masalah** | Slug hanya unik di dalam satu toko, jadi penjual wajib masuk ke URL — tetapi perubahan bentuk URL diperlakukan sebagai urusan internal, padahal URL adalah bagian dari kontrak yang sudah beredar |
+| **Solusi** | Route lama dipertahankan sebagai pengalihan (`tokoonline/src/routes/product.$slug.tsx`): slug dicari di seluruh marketplace, lalu `navigate(..., replace: true)` ke URL baru; slug yang sudah tidak ada sama sekali mendarat di `/katalog?q=<slug>` |
+| **Bukti** | Browser: `/product/chc-001` → `/product/thalia/chc-001` (h1 "Cokelat Bubuk Premium"); `/product/tidak-ada-xyz` → `/katalog?q=tidak-ada-xyz` dengan pesan "Tidak ada produk yang cocok" |
+| **Pelajaran** | Saat arti sebuah URL berubah, kirimkan juga penerjemahnya. Menghapus route lama tanpa pengalihan memindahkan biaya perbaikan ke setiap orang yang pernah menyimpan tautannya |
+
 ## Pelajaran umum (ringkas)
 
 1. **Isolasi harus fisik.** Pemfilteran data di sisi klien bukan keamanan.
@@ -460,7 +482,12 @@
 11. **Nilai contoh adalah kode.** `.env.example`, contoh perintah di README, dan nama grup di
     dokumen akan dijalankan apa adanya; nilai yang tidak ada di akun nyata lebih berbahaya daripada
     nilai kosong.
-12. **Verifikasi UI bukan pekerjaan unit test.** 161 test unit tidak melihat satu pun layar; alur
+12. **Verifikasi UI bukan pekerjaan unit test.** 207 test unit tidak melihat satu pun layar; alur
     yang benar-benar dipakai kasir harus dijalankan di browser. Harness yang dinilai model menambah
     dependensi baru yang bisa gagal sendiri (kunci API, kuota, kemampuan tool call), jadi langkah
     `agent.*` diperlakukan seperti layanan eksternal: beri timeout dan sediakan jalur deterministik.
+13. **Mengganti sistem berarti mengganti kalimatnya juga.** Saat satu toko menjadi marketplace,
+    yang usang bukan hanya data: alamat "ambil di toko kami", satu ongkir untuk satu penjual, dan
+    judul "etalase toko X" semuanya jadi salah ucap. Telusuri kembali setiap tempat yang menyebut
+    "toko kami" — teks CS, halaman info, ringkasan checkout, dan tautan yang sudah dibagikan —
+    bukan hanya berkas tema atau navigasi.

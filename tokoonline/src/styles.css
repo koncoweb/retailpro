@@ -26,36 +26,43 @@
 }
 
 :root {
-  --thalia-bg: #f4ebe4;
-  --thalia-surface: #fff8f3;
-  --thalia-fg: #2a211c;
-  --thalia-muted: #8a7368;
-  --thalia-subtle: #c4b2a8;
-  --thalia-accent: #a88889;
-  --thalia-accent-fg: #fff8f3;
-  --thalia-line: color-mix(in oklab, #2a211c 12%, transparent);
-  --thalia-primary: #2a211c;
-  --thalia-primary-fg: #f6ede8;
-  --thalia-frame: #d9cfc6;
+  /* Rose over warm sand: the neutrals keep their old warmth with only a hint of
+     pink, so the accent reads as a deliberate brand colour instead of a pasted
+     one. `primary` is the deep raspberry used for fills (CTA, active chip, chat
+     bubble); `accent` is one step brighter and is only used where it must be
+     legible as text on the page background. */
+  --thalia-bg: #f6ecea;
+  --thalia-surface: #fff9f8;
+  --thalia-fg: #2b2124;
+  --thalia-muted: #8b7278;
+  --thalia-subtle: #c7b0b4;
+  --thalia-accent: #b04a68;
+  --thalia-accent-fg: #fff9f8;
+  --thalia-line: color-mix(in oklab, #2b2124 12%, transparent);
+  --thalia-primary: #9d3455;
+  --thalia-primary-fg: #fdf4f5;
+  --thalia-frame: #e5d3d0;
   --shadow-border:
-    0px 0px 0px 1px rgba(42, 33, 28, 0.06),
-    0px 1px 2px -1px rgba(42, 33, 28, 0.06),
-    0px 8px 24px -12px rgba(42, 33, 28, 0.12);
+    0px 0px 0px 1px rgba(43, 33, 36, 0.06),
+    0px 1px 2px -1px rgba(43, 33, 36, 0.06),
+    0px 8px 24px -12px rgba(43, 33, 36, 0.12);
 }
 
 html.dark {
-  --thalia-bg: #0a0908;
-  --thalia-surface: #14110e;
-  --thalia-fg: #f6efe3;
-  --thalia-muted: #a89478;
-  --thalia-subtle: #6b5c48;
-  --thalia-accent: #c5ac7a;
-  --thalia-accent-fg: #0a0908;
-  --thalia-line: color-mix(in oklab, #f6efe3 14%, transparent);
-  --thalia-primary: #c5ac7a;
-  --thalia-primary-fg: #0a0908;
-  --thalia-frame: #050403;
-  --shadow-border: 0 0 0 1px rgba(246, 239, 227, 0.1);
+  /* On ink the rose has to lift instead of deepen: a light rose fill with dark
+     text keeps the same contrast relationship the light theme has. */
+  --thalia-bg: #0b0809;
+  --thalia-surface: #161012;
+  --thalia-fg: #f7eef0;
+  --thalia-muted: #b09aa1;
+  --thalia-subtle: #6e565d;
+  --thalia-accent: #eaa4ba;
+  --thalia-accent-fg: #221016;
+  --thalia-line: color-mix(in oklab, #f7eef0 14%, transparent);
+  --thalia-primary: #eaa4ba;
+  --thalia-primary-fg: #221016;
+  --thalia-frame: #060405;
+  --shadow-border: 0 0 0 1px rgba(247, 238, 240, 0.1);
 }
 
 html {

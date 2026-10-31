@@ -1,18 +1,19 @@
 import { cn } from "@/lib/utils";
 
 /**
- * Wordmark monogram.
+ * Storefront monogram.
  *
  * Drawn inline rather than shipped as a bitmap so it follows the theme tokens
- * (the old PNG pair could not), and so the shop's identity lives in one place
- * the code owns.
+ * (a PNG pair could not), and so the brand lives in one place the code owns.
+ * The letter matches the wordmark next to it; the sellers themselves are named
+ * on their own products and shop card, not in here.
  */
 export function LogoMark({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 48 48"
       role="img"
-      aria-label="Thalia"
+      aria-label="Toko Bahan Kue"
       className={cn("shrink-0", className)}
     >
       <circle cx="24" cy="24" r="23.2" fill="var(--color-primary)" />

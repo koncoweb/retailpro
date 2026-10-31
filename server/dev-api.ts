@@ -27,6 +27,10 @@ const routes: Route[] = [
     load: () => import('../api/storefront/catalog.js'),
   },
   {
+    pattern: /^\/api\/storefront\/marketplace\/?$/,
+    load: () => import('../api/storefront/marketplace.js'),
+  },
+  {
     pattern: /^\/api\/auth(?:\/.*)?$/,
     load: () => import('../api/auth/[...all].js'),
   },
@@ -75,6 +79,6 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[dev-api] listening on http://localhost:${PORT}`);
   console.log(
-    '[dev-api] routes: /api/health, /api/auth/*, /api/tenant/*, /api/admin/users*, /api/storefront/catalog'
+    '[dev-api] routes: /api/health, /api/auth/*, /api/tenant/*, /api/admin/users*, /api/storefront/{catalog,marketplace}'
   );
 });

@@ -1,25 +1,33 @@
 /**
- * The shop's connection to the back office.
+ * The storefront's connection to the RetailPro back office.
  *
- * `/api/storefront/catalog` belongs to the RetailPro backend: it resolves the
- * Thalia tenant, picks the online branch and reads the stock of the gudang that
- * ships web orders. The storefront therefore never holds a database
- * credential, and anything the shop staff change in the back office (new
- * product, new price, stock received) shows up here on the next load.
+ * `/api/storefront/marketplace` lives in the back office app: it walks every
+ * active tenant, picks each one's online channel, reads the stock of the gudang
+ * that ships web orders and returns one merged list with the seller attached to
+ * every product. This app therefore never holds a database credential, and
+ * anything a tenant's staff change in their back office (new product, new price,
+ * stock received) shows up here on the next load.
  */
 import { useEffect, useState } from "react";
 import type { Product } from "./products";
 
+/** One seller in the marketplace: a whole tenant and its online channel. */
 export interface ShopInfo {
+  /** Tenant slug — the seller's stable identity in URLs. */
+  slug: string;
   /** Registered company name, e.g. "Thalia Toko Bahan Kue". */
-  tenant: string;
-  /** The online branch this storefront stands for, e.g. "Thalia Online". */
+  name: string;
+  /** The online branch this seller ships from, e.g. "Thalia Online". */
   branch: string;
-  code: string | null;
-  address: string | null;
-  phone: string | null;
   /** Warehouse web orders are picked from. */
   warehouse: string;
+  address: string | null;
+  phone: string | null;
+  productCount: number;
+  /** Every category this seller sells, for the seller page. */
+  categories: string[];
+  /** Products with stock on hand right now. */
+  inStock: number;
 }
 
 export interface CategoryInfo {
@@ -27,16 +35,27 @@ export interface CategoryInfo {
   count: number;
 }
 
-export interface Catalog {
-  shop: ShopInfo;
+/** A catalogue product plus who sells it. */
+export interface MarketProduct extends Product {
+  /** Tenant slug, used together with `slug` in product URLs. */
+  tenant: string;
+  /** Shop name rendered on the tile. */
+  seller: string;
+  branch: string;
+}
+
+export interface Marketplace {
+  shops: ShopInfo[];
   categories: CategoryInfo[];
-  products: Product[];
+  products: MarketProduct[];
+  /** How many registered tenants answered, out of those registered. */
+  tenants: { total: number; live: number };
   syncedAt: string;
 }
 
-export type CatalogState =
+export type MarketplaceState =
   | { status: "loading" }
-  | { status: "ready"; catalog: Catalog }
+  | { status: "ready"; marketplace: Marketplace }
   | { status: "error"; message: string };
 
 /**
@@ -47,37 +66,37 @@ const API_BASE = (
   (import.meta.env.VITE_CATALOG_API_URL as string | undefined) ?? "http://localhost:3000"
 ).replace(/\/+$/, "");
 
-let cached: Catalog | null = null;
+let cached: Marketplace | null = null;
 
-async function fetchCatalog(): Promise<Catalog> {
-  const response = await fetch(`${API_BASE}/api/storefront/catalog`, {
+async function fetchMarketplace(): Promise<Marketplace> {
+  const response = await fetch(`${API_BASE}/api/storefront/marketplace`, {
     headers: { accept: "application/json" },
   });
   if (!response.ok) {
     throw new Error(`Katalog tidak bisa dimuat (HTTP ${response.status}).`);
   }
-  return (await response.json()) as Catalog;
+  return (await response.json()) as Marketplace;
 }
 
 /**
- * Loads the catalogue once per page load, sharing one request across routes.
+ * Loads the marketplace once per page load, sharing one request across routes.
  *
  * The first render is always `loading` — including on the server — because
  * seeding state from the module cache would make hydration disagree with the
  * HTML the server just produced.
  */
-export function useCatalog() {
-  const [state, setState] = useState<CatalogState>({ status: "loading" });
+export function useMarketplace() {
+  const [state, setState] = useState<MarketplaceState>({ status: "loading" });
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
-    if (cached) setState({ status: "ready", catalog: cached });
+    if (cached) setState({ status: "ready", marketplace: cached });
 
-    fetchCatalog()
-      .then((catalog) => {
-        cached = catalog;
-        if (live) setState({ status: "ready", catalog });
+    fetchMarketplace()
+      .then((marketplace) => {
+        cached = marketplace;
+        if (live) setState({ status: "ready", marketplace });
       })
       .catch((error: unknown) => {
         if (!live) return;
@@ -97,13 +116,22 @@ export function useCatalog() {
   return { state, reload: () => setAttempt((value) => value + 1) };
 }
 
-/** The product behind a URL, plus the catalogue state to render around it. */
-export function useProduct(slug: string) {
-  const catalog = useCatalog();
+/**
+ * The product behind a URL, plus the marketplace state to render around it.
+ * A slug is only unique inside one tenant, so the seller is part of the key.
+ */
+export function useProduct(tenant: string, slug: string) {
+  const marketplace = useMarketplace();
   const product =
-    catalog.state.status === "ready"
-      ? (catalog.state.catalog.products.find((item) => item.slug === slug) ?? null)
+    marketplace.state.status === "ready"
+      ? (marketplace.state.marketplace.products.find(
+          (item) => item.tenant === tenant && item.slug === slug,
+        ) ?? null)
+      : null;
+  const shop =
+    marketplace.state.status === "ready"
+      ? (marketplace.state.marketplace.shops.find((item) => item.slug === tenant) ?? null)
       : null;
 
-  return { ...catalog, product };
+  return { ...marketplace, product, shop };
 }

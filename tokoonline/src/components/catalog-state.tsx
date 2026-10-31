@@ -3,12 +3,18 @@ import { Button } from "@/components/ui/button";
 /** Placeholder grid shown while the catalogue request is in flight. */
 export function CatalogSkeleton({ tiles = 6 }: { tiles?: number }) {
   return (
-    <section className="grid grid-cols-2 gap-x-2.5 gap-y-4" aria-hidden>
+    <section className="grid grid-cols-2 gap-2.5" aria-hidden>
       {Array.from({ length: tiles }, (_, index) => (
-        <div key={index} className="flex flex-col gap-1.5">
-          <div className="aspect-square w-full animate-pulse rounded-md bg-surface" />
-          <div className="h-3 w-3/4 animate-pulse rounded-full bg-surface" />
-          <div className="h-3 w-1/3 animate-pulse rounded-full bg-surface" />
+        <div
+          key={index}
+          className="flex flex-col overflow-hidden rounded-lg bg-surface shadow-[var(--shadow-border)]"
+        >
+          <div className="aspect-square w-full animate-pulse bg-bg" />
+          <div className="flex flex-col gap-1.5 p-2">
+            <div className="h-2.5 w-3/4 animate-pulse rounded-full bg-bg" />
+            <div className="h-2.5 w-1/3 animate-pulse rounded-full bg-bg" />
+            <div className="h-2 w-1/2 animate-pulse rounded-full bg-bg" />
+          </div>
         </div>
       ))}
     </section>

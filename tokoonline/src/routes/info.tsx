@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ChevronRight } from "lucide-react";
 import { LogoMark } from "@/components/logo";
+import { formatIDR } from "@/lib/format";
 import { SHOP, waLink } from "@/lib/shop";
 import { useShop } from "@/lib/store";
 
@@ -15,19 +16,19 @@ function InfoPage() {
     <div className="flex flex-col px-4 pt-4 pb-10">
       <div className="flex flex-col items-center pt-4 pb-8 text-center">
         <LogoMark className="size-28" />
-        <h1 className="font-display mt-4 text-[28px] tracking-[0.18em]">
-          THALIA
+        <h1 className="font-display mt-4 text-[22px] tracking-[0.14em]">
+          TOKO BAHAN KUE
         </h1>
         <p className="mt-2 max-w-[30ch] text-[14px] leading-relaxed text-muted">
-          Toko Bahan Kue di Depok. Bahan, cokelat, kemasan, dan perlengkapan
-          dapur untuk dapur rumahan maupun usaha.
+          Marketplace bahan kue. Semua toko dalam satu aplikasi: bahan kue,
+          kemasan, dan kebutuhan dapur, dikirim dari gudang masing-masing toko.
         </p>
       </div>
 
       <ul className="overflow-hidden rounded-xl bg-surface shadow-[var(--shadow-border)]">
         <Row to="/orders" label="Pesanan saya" hint={String(orders.length)} />
         <a
-          href={waLink("Halo Thalia Toko Bahan Kue.")}
+          href={waLink("Halo CS Toko Bahan Kue.")}
           target="_blank"
           rel="noreferrer"
           className="flex items-center justify-between border-t border-line px-4 py-3.5"
@@ -54,27 +55,29 @@ function InfoPage() {
           {SHOP.hours}. {SHOP.closed}.
         </p>
         <p>
-          <span className="font-medium text-fg">Toko</span>
+          <span className="font-medium text-fg">Kantor &amp; toko</span>
           <br />
           {SHOP.atelier}
         </p>
         <p>
           <span className="font-medium text-fg">Pengiriman</span>
           <br />
-          {SHOP.deliveryArea}. Pesanan online disiapkan dari gudang pusat,
-          estimasi kirim H+{SHOP.leadDays} hari kerja.
+          {SHOP.deliveryArea}, ongkir {formatIDR(SHOP.deliveryFee)} per pesanan.
+          Tiap toko mengirim dari gudangnya sendiri; estimasi kirim H+
+          {SHOP.leadDays} hari kerja.
         </p>
         <p>
           <span className="font-medium text-fg">Pembayaran</span>
           <br />
-          Transfer BCA / Mandiri. QRIS dan gateway otomatis menyusul.
+          Satu pembayaran untuk semua toko dalam pesanan. Transfer BCA / Mandiri.
+          QRIS dan gateway otomatis menyusul.
         </p>
         <p>
           <span className="font-medium text-fg">Katalog</span>
           <br />
           Produk, harga, dan stok di aplikasi ini dibaca langsung dari sistem
-          toko Thalia Online. Perubahan dari back office langsung tampil di
-          sini.
+          setiap toko yang berjualan di marketplace ini. Perubahan dari back
+          office toko langsung tampil di sini.
         </p>
       </section>
     </div>

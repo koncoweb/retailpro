@@ -4,7 +4,7 @@ import { Check, Copy } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { formatDateID, formatIDR } from "@/lib/format";
 import { SHOP, waLink } from "@/lib/shop";
-import { useShop, type OrderStatus } from "@/lib/store";
+import { useShop, sellerGroups, type OrderStatus } from "@/lib/store";
 
 export const Route = createFileRoute("/order/$id")({ component: OrderPage });
 
@@ -33,7 +33,9 @@ function OrderPage() {
   }
 
   const bank = SHOP.banks.find((b) => b.id === order.payment);
-  const waText = `Halo Thalia Toko Bahan Kue, saya sudah memesan ${order.id} a.n. ${order.customer.name}, total ${formatIDR(order.total)}.`;
+  // The order was paid once, but each shop ships its own lines from its gudang.
+  const groups = sellerGroups(order.items);
+  const waText = `Halo CS Toko Bahan Kue, saya sudah memesan ${order.id} a.n. ${order.customer.name}, total ${formatIDR(order.total)}.`;
 
   async function copyRekening() {
     if (!bank) return;
@@ -87,17 +89,26 @@ function OrderPage() {
 
       {order.payment === "cash" && (
         <p className="rounded-xl bg-surface px-4 py-3 text-[13px] text-muted shadow-[var(--shadow-border)]">
-          Bayar tunai saat ambil di {SHOP.atelier}.
+          Bayar tunai saat ambil di toko penjual. Nomor pesanan menunjukkan
+          barang mana yang diambil di toko mana.
         </p>
       )}
 
       <section className="flex flex-col gap-1 text-[14px]">
-        {order.items.map((i) => (
-          <div key={i.key} className="flex justify-between py-1">
-            <span className="text-muted">
-              {i.qty}× {i.name} · {i.unitLabel}
-            </span>
-            <span className="tabular-nums">{formatIDR(i.unitPrice * i.qty)}</span>
+        {groups.map((group) => (
+          <div key={group.seller} className="border-b border-line py-2 last:border-0">
+            <p className="text-[11px] tracking-[0.12em] text-subtle uppercase">
+              {group.seller}
+            </p>
+            {group.lines.map((i) => (
+              <div key={i.key} className="flex justify-between pt-1">
+                <span className="text-muted">
+                  {i.qty}× {i.name}
+                  {i.variantLabel && ` · ${i.variantLabel}`} · {i.unitLabel}
+                </span>
+                <span className="tabular-nums">{formatIDR(i.unitPrice * i.qty)}</span>
+              </div>
+            ))}
           </div>
         ))}
         <div className="mt-2 flex justify-between border-t border-line pt-2">
@@ -108,10 +119,10 @@ function OrderPage() {
 
       <section className="text-[13px] leading-relaxed text-muted">
         <p>
-          {order.fulfillment === "delivery" ? "Diantar ke" : "Ambil di toko"}{" "}
+          {order.fulfillment === "delivery" ? "Diantar ke" : "Ambil sendiri"}{" "}
           {order.fulfillment === "delivery"
             ? order.customer.address
-            : SHOP.atelier}
+            : "di toko penjual — alamat dikonfirmasi lewat chat"}
         </p>
         <p className="mt-1">
           {formatDateID(order.date)} · {order.slot}

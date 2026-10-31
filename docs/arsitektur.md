@@ -5,7 +5,7 @@
 | Aplikasi | RetailPro — ERP/POS multi-tenant, multi-cabang (pasar Indonesia, IDR) |
 | Dokumen | `docs/arsitektur.md` |
 | Terakhir diperbarui | **2026-10-31** |
-| Versi skema tenant | `schema_version = 4` (`db/schema/tenant.sql` + `db/migrations/`) |
+| Versi skema tenant | `schema_version = 6` (`db/schema/tenant.sql` + `db/migrations/`) |
 | Status | Berjalan di lokal **dan** di Vercel (back office + toko online) dengan Turso cloud; belum dipakai data produksi nyata |
 
 > Dokumen ini menjelaskan **bagaimana sistem disusun dan mengapa**. Untuk daftar fitur lihat
@@ -44,7 +44,7 @@ database, menandatangani token, dan menyimpan identitas pengguna.
               v
    +----------------------+       +----------------------+
    |  Turso DB tenant A   |       |  Turso DB tenant B   |
-   |  29 tabel, tanpa     |       |  isolasi fisik       |
+   |  33 tabel, tanpa     |       |  isolasi fisik       |
    |  kolom tenant_id     |       +----------------------+
    +----------------------+
 ```
@@ -73,8 +73,8 @@ identitas, provisioning, penerbitan token, dan katalog publik toko.
 | Komponen | Lokasi | Tanggung jawab | Tidak boleh |
 |---|---|---|---|
 | SPA back office | `src/` | UI, aturan tampilan, query ke DB tenant | Menyimpan kredensial atau token di storage |
-| Toko online | `tokoonline/` | Katalog, keranjang, checkout pengunjung, chat | Menyimpan kredensial database atau menulis ke DB tenant |
-| Fungsi API | `api/` | Health, Better Auth handler, bootstrap/token tenant, provisioning, admin user, katalog publik toko | Menjalankan logika bisnis POS/inventori |
+| Toko online | `tokoonline/` | Marketplace semua tenant: katalog, keranjang lintas penjual, checkout pengunjung, chat | Menyimpan kredensial database atau menulis ke DB tenant |
+| Fungsi API | `api/` | Health, Better Auth handler, bootstrap/token tenant, provisioning, admin user, katalog publik (`/catalog` satu tenant, `/marketplace` gabungan) | Menjalankan logika bisnis POS/inventori |
 | Server library | `server/` | Better Auth, control DB, Turso Platform client, provisioning, render seed, generator demo | Diimpor dari `src/` (berisi rahasia) |
 | Control DB | Turso | Identitas (Better Auth) + registry tenant | Menyimpan data transaksi/bisnis |
 | DB tenant | Turso (1 per tenant) | Seluruh data bisnis | Menyimpan kredensial atau data tenant lain |
@@ -176,23 +176,32 @@ gudang pusat (`branch_id` NULL, `type = 'central'`) menjadi pemasok pesanan dan 
 online tidak punya rak: pesanannya dikirim langsung keluar dari gudang pusat tanpa membuat dokumen
 transfer (tidak ada tujuan internal).
 
-### 4.6 Katalog toko online (publik)
+### 4.6 Katalog marketplace (publik)
 
 ```
-tokoonline (browser / SSR)  ->  GET /api/storefront/catalog?slug=thalia
-   1. tenant_databases WHERE slug = ?        -> harus status 'active'
-   2. mintTenantToken(db_name, 60m)          -> token hanya di server
-   3. branches aktif, type 'online' dipilih lebih dulu (Thalia Online)
-   4. gudang pemenuh: gudang bersama -> central -> gudang default perusahaan
-                     (rak cabang toko itu sendiri dikecualikan)
-   5. products + product_units (harga & satuan jual) + SUM(batches) di gudang itu
-   -> { shop, categories[], products[], syncedAt }
+tokoonline (browser / SSR)  ->  GET /api/storefront/marketplace
+   1. tenant_databases WHERE status = 'active'   -> daftar penjual (sequential)
+   2. per tenant: mintTenantToken(db_name, 60m)  -> token hanya di server
+   3. readTenantCatalog (server/storefront-catalog.ts, dibagi dengan /catalog):
+      branches aktif type 'online' -> gudang pemenuh (bersama -> central -> default,
+      rak cabang itu sendiri dikecualikan) -> products + product_units + SUM(batches)
+   4. gabung semua tenant, product.id diberi prefiks "<slug>:" agar UUID tidak bentrok
+   -> { shops[], categories[], products[], tenants:{total,live}, skipped[], syncedAt }
+
+GET /api/storefront/catalog?slug=thalia  -> katalog satu tenant (bentuk yang sama,
+                                            tanpa `tenant`/`seller`), dipakai klien
+                                            yang memang hanya menampilkan satu toko
 ```
 
 Endpoint ini sengaja tanpa sesi dan tanpa cache: isinya sama dengan yang bisa dilihat pengunjung
 toko, dan setiap permintaan membaca database tenant sehingga perubahan harga/stok dari back office
-langsung terlihat. Aplikasi toko **tidak** memegang kredensial database; pesanan pengunjung masih
-disimpan di perangkat (prototype).
+langsung terlihat. Satu tenant yang gagal (belum punya cabang/gudang, database tidak terbaca)
+tidak menggagalkan permintaan: ia masuk `skipped[]` dengan alasan kasar `"unavailable"` sedangkan
+pesan error aslinya hanya ke log server — endpoint ini publik, dan pesan libSQL menyebut nama tabel.
+
+Aplikasi toko **tidak** memegang kredensial database; pesanan pengunjung masih disimpan di perangkat
+(prototype). Pembaca katalog ada satu (`server/storefront-catalog.ts`), jadi kedua endpoint tidak
+bisa menampilkan produk yang berbeda untuk tenant yang sama.
 
 ---
 
@@ -216,15 +225,15 @@ dan tidak pernah dipersist. Endpoint admin tetap mengandalkan sesi, bukan token.
 
 ## 6. Model data
 
-29 tabel di DB tenant, dikelompokkan:
+33 tabel di DB tenant, dikelompokkan:
 
 | Domain | Tabel |
 |---|---|
 | Profil | `schema_version`, `tenants`, `branches`, `warehouses`, `branch_warehouses`, `users` |
-| Katalog | `categories`, `suppliers`, `products`, `product_units`, `product_batches` |
-| Vendor | `vendor_products`, `vendor_payments` — `suppliers` adalah master vendor yang dipakai produk, PO, dan hutang |
+| Katalog | `categories`, `suppliers`, `products`, **`product_variants`**, `product_units`, `product_batches` — `products` adalah model, `product_variants` adalah SKU yang benar-benar dijual dan distok |
+| Vendor | `vendor_products`, `vendor_price_list`, `vendor_payments` — `suppliers` adalah master vendor yang dipakai produk, PO, dan hutang; `vendor_price_list` menyimpan harga beli yang disepakati per varian per pecahan |
 | Penjualan | `shifts`, `transactions`, `transaction_items` |
-| Persediaan | `stock_requests`, `stock_request_items`, `stock_transfers`, `transfer_items`, `purchase_orders`, `purchase_order_items` |
+| Persediaan | `stock_requests`, `stock_request_items`, `stock_transfers`, `transfer_items`, `purchase_orders`, `purchase_order_items`, `goods_receipts`, `goods_receipt_items` — PO = niat, penerimaan = kenyataan |
 | Keuangan | `expenses`, `payables` |
 | SDM | `attendance`, `leaves`, `employees` |
 | Jejak | `audit_logs` |
@@ -246,7 +255,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | Runtime API | Node ≥ 20 (Vercel Functions, `node:crypto`) |
 | Database | Turso libSQL cloud, grup `ap-southeast-2`; control DB + satu DB per tenant |
 | Dev lokal | `npm run dev` (SPA :8080) + `npm run dev:api` (:3000, proxy `VITE_API_PROXY_TARGET`) + `cd tokoonline && npm run dev` (:8082) |
-| Verifikasi | `npm run typecheck`, `npm test` (Vitest 13 berkas/161 test), `npm run audit:sql`, dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI |
+| Verifikasi | `npm run typecheck`, `npm test` (Vitest 16 berkas/207 test), `npm run audit:sql`, dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI |
 | Variabel | Lihat tabel env di [backend.md](backend.md) §2 (lokal) dan [deployment.md](deployment.md) §4 (produksi) |
 | Kontrak platform | Import relatif `.js` di `api/`+`server/`; route bracket lewat `rewrites` di `vercel.json`; `db/schema/**` ikut ke lambda |
 
@@ -294,3 +303,13 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
    setengah-setengah.
 10. **Satu region Turso** (`ap-southeast-2`) untuk control DB maupun tenant; belum ada replika baca,
     dan latensi mengikuti jarak ke region itu.
+11. **Marketplace membaca tenant satu per satu, tanpa cache.** Setiap permintaan
+    `/api/storefront/marketplace` mencetak token + enam query per tenant secara berurutan, jadi
+    latensinya naik linear terhadap jumlah penjual dan permintaan pertama pada instance Vercel yang
+    baru bisa mendekati batas durasi fungsi. Cukup untuk satu tenant hari ini; bila penjual
+    bertambah, urutannya diganti batching atau seluruh respons di-cache `s-maxage` pendek di edge.
+12. **Satu pesanan marketplace = satu tagihan untuk beberapa penjual.** Satu keranjang, satu ongkir,
+    satu rekening (platform sebagai merchant of record); tiap baris menyebut penjualnya dan
+    dikirim dari gudangnya sendiri, dan tampilan checkout/pesanan dikelompokkan per penjual.
+    Memecah keranjang menjadi satu pesanan per penjual (ongkir, pembayaran, dan settlement per
+    penjual) belum dikerjakan.
