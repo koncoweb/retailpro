@@ -1,5 +1,5 @@
 import { test, describe, afterEach, type Browser } from '@e2e-dev/web';
-import { expect } from 'e2e';
+import { expect, type JsonValue } from 'e2e';
 import {
   controlClient,
   tenantClient,
@@ -28,11 +28,19 @@ function newEmail(prefix: string): string {
   return `${prefix}.${Date.now()}.${Math.random().toString(36).slice(2, 7)}@${DOMAIN}`;
 }
 
+/**
+ * The body an evaluate callback may hand back to the test process. `browser.evaluate`
+ * only ships JSON across the page boundary, so its return must satisfy `JsonValue`
+ * — a plain `Record<string, unknown>` fails that constraint because `unknown`
+ * values are not provably JSON-safe.
+ */
+type JsonRecord = { readonly [key: string]: JsonValue };
+
 /** POST /api/admin/users through the running app, returning the typed body. */
 async function createUser(
   browser: Browser,
-  body: Record<string, unknown>,
-): Promise<{ status: number; json: Record<string, unknown> }> {
+  body: Record<string, JsonValue>,
+): Promise<{ status: number; json: JsonRecord }> {
   return browser.evaluate(async (payload: unknown) => {
     const response = await fetch('/api/admin/users', {
       method: 'POST',
@@ -40,18 +48,18 @@ async function createUser(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    return { status: response.status, json: (await response.json().catch(() => ({}))) as Record<string, unknown> };
-  }, body) as Promise<{ status: number; json: Record<string, unknown> }>;
+    return { status: response.status, json: (await response.json().catch(() => ({}))) as JsonRecord };
+  }, body as JsonValue) as Promise<{ status: number; json: JsonRecord }>;
 }
 
 async function patchUser(
   browser: Browser,
   id: string,
-  body: Record<string, unknown>,
+  body: Record<string, JsonValue>,
 ): Promise<{ status: number; code: string }> {
   return browser.evaluate(
     async (args: unknown) => {
-      const { id: userId, patch } = args as { id: string; patch: Record<string, unknown> };
+      const { id: userId, patch } = args as { id: string; patch: Record<string, JsonValue> };
       const response = await fetch(`/api/admin/users/${userId}`, {
         method: 'PATCH',
         credentials: 'include',

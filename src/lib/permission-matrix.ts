@@ -15,6 +15,12 @@
  * Deliberately free of React and of SQL, the same discipline `src/lib/
  * stock-issue.ts` and `src/lib/branch-orders.ts` follow for their domains. The
  * server imports these types too (`server/roles.ts`), so it must stay pure.
+ *
+ * The catalog import below is a *relative* `../config/roles.js`, not the `@/`
+ * alias: this module is reachable from a Vercel function (`api/tenant/
+ * bootstrap` -> `server/roles`), and the serverless Node runtime does not apply
+ * the tsconfig `paths` map, so an `@/config` specifier crashes with
+ * ERR_MODULE_NOT_FOUND. Vite resolves the relative form for the browser too.
  */
 import {
   ALL_PERMISSION_KEYS,
@@ -23,7 +29,7 @@ import {
   ROLES,
   resolveRolePermissions,
   type RoleValue,
-} from "@/config/roles";
+} from "../config/roles.js";
 
 /** Custom role keys are namespaced so they can never collide with a builtin. */
 export const CUSTOM_ROLE_PREFIX = "cust_";
