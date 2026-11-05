@@ -27,9 +27,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Plus, Warehouse as WarehouseIcon, Package, Building2, Edit, Loader2 } from "lucide-react";
+import { Plus, Warehouse as WarehouseIcon, Package, Building2, Edit, Loader2, MapPin } from "lucide-react";
 import { toast } from "sonner";
 import { batchQuery, query, runTransaction } from "@/lib/db";
+import { getCurrentCoords } from "@/lib/geolocation";
 
 type WarehouseType = "central" | "regional" | "store";
 
@@ -52,6 +53,12 @@ interface WarehouseRow {
   mapped_branches: number;
   active_batches: number;
   total_stock: number;
+  // Attendance geofence settings for this workplace (see db/schema v8).
+  latitude: number | null;
+  longitude: number | null;
+  geo_radius_m: number;
+  require_geo: number;
+  require_face: number;
 }
 
 interface BranchOption {
@@ -67,6 +74,7 @@ interface MappingRow {
 const WAREHOUSE_LIST_SQL = `
   SELECT
     w.id, w.name, w.code, w.type, w.branch_id, w.address, w.status, w.is_default,
+    w.latitude, w.longitude, w.geo_radius_m, w.require_geo, w.require_face,
     b.name as branch_name,
     (SELECT COUNT(*) FROM branch_warehouses bw WHERE bw.warehouse_id = w.id) as mapped_branches,
     (SELECT COUNT(*) FROM product_batches pb
@@ -86,6 +94,11 @@ const emptyForm = {
   branchId: "",
   address: "",
   mappedBranchIds: [] as string[],
+  latitude: "",
+  longitude: "",
+  geoRadius: "150",
+  requireGeo: true,
+  requireFace: false,
 };
 
 /**
@@ -102,6 +115,25 @@ export default function Warehouses() {
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editing, setEditing] = useState<WarehouseRow | null>(null);
   const [formData, setFormData] = useState({ ...emptyForm });
+  const [geoBusy, setGeoBusy] = useState(false);
+
+  // Fills lat/lng from the device GPS (secure context required).
+  const pickGps = async () => {
+    setGeoBusy(true);
+    try {
+      const c = await getCurrentCoords();
+      setFormData((prev) => ({
+        ...prev,
+        latitude: c.lat.toFixed(7),
+        longitude: c.lng.toFixed(7),
+      }));
+      toast.success("Koordinat diisi dari GPS");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Gagal mengambil lokasi");
+    } finally {
+      setGeoBusy(false);
+    }
+  };
 
   const fetchData = async () => {
     try {
@@ -142,6 +174,11 @@ export default function Warehouses() {
       type: warehouse.type,
       branchId: warehouse.branch_id ?? "",
       address: warehouse.address ?? "",
+      latitude: warehouse.latitude != null ? String(warehouse.latitude) : "",
+      longitude: warehouse.longitude != null ? String(warehouse.longitude) : "",
+      geoRadius: String(warehouse.geo_radius_m ?? 150),
+      requireGeo: Number(warehouse.require_geo ?? 1) === 1,
+      requireFace: Number(warehouse.require_face ?? 0) === 1,
       mappedBranchIds: mappings
         .filter((mapping) => mapping.warehouse_id === warehouse.id)
         .map((mapping) => mapping.branch_id),
@@ -165,6 +202,14 @@ export default function Warehouses() {
     }
 
     const owningBranchId = formData.branchId || null;
+    const lat = parseFloat(formData.latitude);
+    const lng = parseFloat(formData.longitude);
+    const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
+    const latitude = hasCoords ? lat : null;
+    const longitude = hasCoords ? lng : null;
+    const geoRadius = parseInt(formData.geoRadius) || 150;
+    const requireGeo = formData.requireGeo ? 1 : 0;
+    const requireFace = formData.requireFace ? 1 : 0;
     // The owning branch must also be a fulfilment source, otherwise a store
     // could own stock it is not allowed to sell from.
     const mappedBranchIds = Array.from(
@@ -179,14 +224,20 @@ export default function Warehouses() {
           warehouseId = editing.id;
           await tx.query(
             `UPDATE warehouses
-                SET name = $1, code = $2, type = $3, branch_id = $4, address = $5
-              WHERE id = $6`,
+                SET name = $1, code = $2, type = $3, branch_id = $4, address = $5,
+                    latitude = $6, longitude = $7, geo_radius_m = $8, require_geo = $9, require_face = $10
+              WHERE id = $11`,
             [
               formData.name.trim(),
               formData.code.trim() || null,
               formData.type,
               owningBranchId,
               formData.address.trim() || null,
+              latitude,
+              longitude,
+              geoRadius,
+              requireGeo,
+              requireFace,
               warehouseId,
             ]
           );
@@ -200,10 +251,11 @@ export default function Warehouses() {
           );
         } else {
           const created = await tx.query<{ id: string }>(
-            `INSERT INTO warehouses (name, code, type, branch_id, address, status, is_default)
+            `INSERT INTO warehouses (name, code, type, branch_id, address, status, is_default, latitude, longitude, geo_radius_m, require_geo, require_face)
              VALUES ($1, $2, $3, $4, $5, 'active',
                      (SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END
-                        FROM warehouses WHERE is_default = 1))
+                        FROM warehouses WHERE is_default = 1),
+                     $6, $7, $8, $9, $10)
              RETURNING id`,
             [
               formData.name.trim(),
@@ -211,6 +263,11 @@ export default function Warehouses() {
               formData.type,
               owningBranchId,
               formData.address.trim() || null,
+              latitude,
+              longitude,
+              geoRadius,
+              requireGeo,
+              requireFace,
             ]
           );
           warehouseId = created.rows[0].id;
@@ -517,6 +574,56 @@ export default function Warehouses() {
                 value={formData.address}
                 onChange={(e) => setFormData({ ...formData, address: e.target.value })}
               />
+            </div>
+
+            <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+              <div className="flex items-center justify-between">
+                <Label className="font-semibold">Lokasi & Absensi</Label>
+                <Button type="button" size="sm" variant="outline" className="gap-2" onClick={pickGps} disabled={geoBusy}>
+                  {geoBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPin className="h-4 w-4" />}
+                  Pakai GPS sekarang
+                </Button>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2">
+                  <Label>Latitude</Label>
+                  <Input
+                    type="number"
+                    step="0.000001"
+                    placeholder="-6.906700"
+                    value={formData.latitude}
+                    onChange={(e) => setFormData({ ...formData, latitude: e.target.value })}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label>Longitude</Label>
+                  <Input
+                    type="number"
+                    step="0.000001"
+                    placeholder="107.631200"
+                    value={formData.longitude}
+                    onChange={(e) => setFormData({ ...formData, longitude: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Label>Radius Geofence (meter)</Label>
+                <Input
+                  type="number"
+                  placeholder="150"
+                  value={formData.geoRadius}
+                  onChange={(e) => setFormData({ ...formData, geoRadius: e.target.value })}
+                />
+                <p className="text-xs text-muted-foreground">Jarak maksimum dari titik ini agar karyawan bisa absen di gudang ini.</p>
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="font-normal">Wajib verifikasi lokasi (geofence)</Label>
+                <Switch checked={formData.requireGeo} onCheckedChange={(v) => setFormData({ ...formData, requireGeo: v })} />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label className="font-normal">Wajib scan wajah</Label>
+                <Switch checked={formData.requireFace} onCheckedChange={(v) => setFormData({ ...formData, requireFace: v })} />
+              </div>
             </div>
 
             <div className="border rounded-md p-4 space-y-3 bg-muted/20">

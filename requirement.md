@@ -46,7 +46,7 @@ Setiap tenant mendapat **database Turso/libSQL sendiri di cloud**.
 *   **Grup Turso**: setiap database wajib berada di grup yang sudah ada. Organisasi baru hanya punya grup lokasi otomatis, jadi `TURSO_GROUP` diisi `ap-southeast-2` (bukan `retailpro` seperti contoh lama). `listGroups()` tersedia sebagai pemeriksaan sebelum provisioning.
 *   **Akses browser**: aplikasi hanya memegang token berumur `TENANT_TOKEN_TTL` (bawaan 60 menit) yang berlaku untuk **satu** database tenant. Token organisasi Turso tidak pernah sampai ke browser.
 *   **Kuota**: `TURSO_MAX_TENANT_DATABASES` (bawaan 99, mengikuti 100 database paket gratis per organisasi) → HTTP 429 bila penuh. Slug: minimal 3 karakter, unik, daftar terlarang (`www`, `api`, `admin`, …).
-*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **6**, 33 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
+*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **8**, 34 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
 *   **Konsekuensi yang harus diingat**: tidak ada query lintas tenant; laporan lintas cabang tetap butuh filter `branch_id` eksplisit; setiap database adalah satu unit backup/restore dan satu unit biaya.
 
 **Ditolak — Shared Database, Shared Schema + RLS.** Rencana awal memakai satu database PostgreSQL (Neon) dengan kolom `tenant_id` di setiap tabel dan Row Level Security yang identitasnya diatur lewat session variable. Dibatalkan 2026-10-27 karena isolasinya bergantung pada klien yang mengaku sebagai tenant tertentu (`set_config` dijalankan aplikasi), kredensial database ikut ke bundle browser, dan setiap query harus ingat `WHERE tenant_id`. Pelajaran: isolasi yang ditentukan klien adalah janji, bukan batas. Lihat `docs/kendala-solusi.md` KS-01 dan `docs/arsitektur.md` ADR-1.
@@ -118,7 +118,7 @@ Nama `admin` masih diterima oleh guard lama sebagai alias; jangan dipakai untuk 
 
 ## 4. Struktur Database (Schema Design)
 
-Kanónik: `db/schema/tenant.sql` (versi **6**, **33 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
+Kanónik: `db/schema/tenant.sql` (versi **8**, **34 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
 
 ### A. Core / Identity & Settings
 
@@ -148,9 +148,10 @@ Kanónik: `db/schema/tenant.sql` (versi **6**, **33 tabel**) + `db/migrations/`.
 
 ### C. HR & Employee Management
 
-1.  **`attendance`**: `id`, `employee_id` (→ `users.id`), `date`, `check_in`, `check_out`, `status` (`present`/`sick`/`permission`/`alpha`), `overtime`, `notes`, `created_at`. Tidak ada `tenant_id`.
+1.  **`attendance`**: `id`, `employee_id` (→ `users.id`), `date`, `check_in`, `check_out`, `status` (`present`/`sick`/`permission`/`alpha`), `overtime`, `notes`, `created_at`. Kolom audit v8: `location_type`/`location_id` (workplace acuan GPS), `check_in_lat`/`check_in_lng`/`check_in_acc`/`check_in_dist`, `check_out_lat`/`check_out_lng`/`check_out_dist` (jarak dalam meter, dihitung di perangkat), `face_score`/`face_verified`, dan `source` (`self`/`owner`). Trigger hari-berjalan v7 menolak insert bertanggal lain; guard geofence/wajah ditegakkan di UI, bukan DB. Tidak ada `tenant_id`.
 2.  **`leaves`**: `id`, `employee_id`, `type` (`annual`/`sick`/`unpaid`), `start_date`, `end_date`, `reason`, `status` (`pending`/`approved`/`rejected`), `created_at`. Tidak ada `tenant_id`.
-3.  **`employees`** dipertahankan hanya karena `Reports.tsx` membacanya; sumber data HR utama adalah `users` + `attendance` + `leaves`.
+3.  **`face_enrollments`** (v8): `employee_id` (PK), `descriptors` (JSON array descriptor wajah 128-float, beberapa sampel), `sample_count`, `match_threshold` (bawaan 0.5), `model_version`, `enrolled_by`, `created_at`, `updated_at`. Menyimpan angka biometrik, **bukan foto**; didaftarkan owner di `/backoffice/hr/face`, dipakai verifikasi di `/absen`.
+4.  **`employees`** dipertahankan hanya karena `Reports.tsx` membacanya; sumber data HR utama adalah `users` + `attendance` + `leaves`.
 
 ### D. Keuangan & POS
 
@@ -246,11 +247,11 @@ Tidak ada `tenant_id`.
 ## 8. Checklist Implementasi (MVP Phase 1)
 
 - [x] Setup project (Vite + React + TS + Tailwind + shadcn/ui)
-- [x] Database Turso: satu database per tenant, skema v6 (33 tabel), provisioning otomatis
+- [x] Database Turso: satu database per tenant, skema v8 (34 tabel), provisioning otomatis
 - [x] Autentikasi Better Auth + 7 peran, guard route gagal-tertutup
 - [x] CRUD master data (karyawan, cabang, gudang, produk, vendor, pelanggan)
 - [x] Modul vendor: master vendor, katalog vendor↔produk, PO per vendor, hutang & buku pembayaran
-- [x] Absensi & cuti (input manual, approval)
+- [x] Absensi & cuti (input manual, approval) + absen mandiri karyawan dengan geolokasi (geofence radius toko/gudang) dan pengenal wajah (descriptor 128-float, pendaftaran oleh owner) — lihat skema v8
 - [x] Laporan gaji dasar + konfigurasi payroll dinamis
 - [x] Role permission management (persisten di `tenants.settings`)
 - [x] POS: katalog, keranjang, multi-satuan, pembayaran, kembalian, FIFO/LIFO/FEFO

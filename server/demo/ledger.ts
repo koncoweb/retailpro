@@ -259,6 +259,23 @@ export function createThaliaIdentity(
 const DAY_MS = 86_400_000;
 const HOUR_MS = 3_600_000;
 
+/**
+ * The today-only guard from `db/schema/tenant.sql`, kept byte-identical. The
+ * demo writes 30 days of history, which the guard rejects by design, so the
+ * attendance section drops it on the way in and reinstalls this exact body on
+ * the way out — a seeded database ends up enforcing the same rule as a
+ * provisioned one.
+ */
+const ATTENDANCE_TODAY_GUARD_SQL = `CREATE TRIGGER IF NOT EXISTS trg_attendance_today_only
+  BEFORE INSERT ON attendance
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'Absensi standar hanya untuk tanggal hari ini'
+  )
+  WHERE NEW.date <> date('now', '+7 hours');
+END;`;
+
 /** Quantity steps that look like a real bakery order, per base unit. */
 const QUANTITY_STEPS: Record<string, number[]> = {
   kg: [0.5, 1, 1.5, 2, 2.5, 3, 5],
@@ -289,6 +306,17 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)];
   const chance = (probability: number) => rand() < probability;
 
+  // Deterministic workplace coordinates (schema v8). Bandung-ish base, spread
+  // per branch index so each store/gudang has a plausible, stable geofence
+  // centre. Real recognition cannot run in a headless seeder, so these are only
+  // coordinates + placeholder face vectors for populating the screens.
+  const BASE_LAT = -6.9147;
+  const BASE_LNG = 107.6098;
+  const geoFor = (index: number) => ({
+    lat: Number((BASE_LAT + index * 0.0085).toFixed(6)),
+    lng: Number((BASE_LNG + index * 0.0113).toFixed(6)),
+  });
+
   const startOfDay = (daysAgo: number) =>
     new Date(
       Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) - daysAgo * DAY_MS
@@ -296,6 +324,9 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   const addDays = (date: Date, days: number) => new Date(date.getTime() + days * DAY_MS);
   const dateOnly = (date: Date) => date.toISOString().slice(0, 10);
   const stamp = (date: Date) => date.toISOString();
+  // Wall-clock punch times are stored as `HH:MM` in WIB (the app reads them with
+  // `split(':')` for the Jam Kerja / payroll maths), so format +7h then slice.
+  const clock = (date: Date) => new Date(date.getTime() + 7 * 3_600_000).toISOString().slice(11, 16);
 
   const productBySku = new Map(identity.products.map((product) => [product.def.sku, product]));
 
@@ -324,16 +355,24 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   // the branches because every order and every web shipment starts here.
   add(
     `INSERT OR REPLACE INTO warehouses
-       (id, name, code, type, branch_id, address, status, is_default)
-     VALUES (?, ?, 'GD-PST', 'central', NULL, ?, 'active', 1)`,
-    [identity.centralWarehouseId, THALIA.centralWarehouse.name, THALIA.centralWarehouse.address]
+       (id, name, code, type, branch_id, address, status, is_default, latitude, longitude, geo_radius_m, require_geo, require_face)
+     VALUES (?, ?, 'GD-PST', 'central', NULL, ?, 'active', 1, ?, ?, 200, 1, 0)`,
+    [
+      identity.centralWarehouseId,
+      THALIA.centralWarehouse.name,
+      THALIA.centralWarehouse.address,
+      geoFor(0).lat,
+      geoFor(0).lng,
+    ]
   );
 
   identity.branches.forEach((branch, branchIndex) => {
+    const geo = geoFor(branchIndex);
     add(
       `INSERT OR REPLACE INTO branches
-         (id, name, code, address, phone, email, timezone, status, sales_target, type, is_headquarters)
-       VALUES (?, ?, ?, ?, ?, ?, 'Asia/Jakarta', 'active', ?, ?, ?)`,
+         (id, name, code, address, phone, email, timezone, status, sales_target, type, is_headquarters,
+          latitude, longitude, geo_radius_m, require_geo, require_face)
+       VALUES (?, ?, ?, ?, ?, ?, 'Asia/Jakarta', 'active', ?, ?, ?, ?, ?, 150, 1, 1)`,
       [
         branch.id,
         branch.name,
@@ -345,6 +384,8 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
         // The central store doubles as the head office.
         branch.type,
         branchIndex === 0 ? 1 : 0,
+        geo.lat,
+        geo.lng,
       ]
     );
 
@@ -366,9 +407,9 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
     // picked from.
     add(
       `INSERT OR REPLACE INTO warehouses
-         (id, name, code, type, branch_id, address, status, is_default)
-       VALUES (?, ?, ?, 'store', ?, ?, 'active', 0)`,
-      [shelfId, shelf.name, shelf.code, branch.id, branch.address]
+         (id, name, code, type, branch_id, address, status, is_default, latitude, longitude, geo_radius_m, require_geo, require_face)
+       VALUES (?, ?, ?, 'store', ?, ?, 'active', 0, ?, ?, 120, 1, 1)`,
+      [shelfId, shelf.name, shelf.code, branch.id, branch.address, geo.lat, geo.lng]
     );
     add(
       `INSERT OR REPLACE INTO branch_warehouses (branch_id, warehouse_id, is_default, priority)
@@ -1650,33 +1691,74 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
   // ---------------------------------------------------------------------
   // Attendance and leave requests for the payroll screen
   // ---------------------------------------------------------------------
+  // The rows below are deliberately dated, so the schema's today-only guard
+  // has to step aside first; it is reinstated right after the section (and
+  // `tenant.sql` recreates it idempotently on every re-apply).
+  add(`DROP TRIGGER IF EXISTS trg_attendance_today_only`);
+
   const attendanceStaff = identity.staff.filter((member) => member.branchId !== null);
+  const branchIndexById = new Map(identity.branches.map((b, i) => [b.id, i]));
   for (let daysAgo = 29; daysAgo >= 0; daysAgo -= 1) {
     const day = startOfDay(daysAgo);
     attendanceStaff.forEach((member) => {
       const roll = rand();
       if (roll < 0.05) return; // day off
       const status = roll < 0.1 ? 'absent' : roll < 0.17 ? 'late' : roll < 0.2 ? 'leave' : 'present';
+      const onSite = status === 'present' || status === 'late';
       const checkIn = new Date(day.getTime() + 55 * 60_000 + int(-5, 25) * 60_000);
       const checkOut = new Date(day.getTime() + 9 * HOUR_MS + 50 * 60_000 + int(0, 45) * 60_000);
+      // Geo/face audit fields. An on-site punch gets a point jittered inside the
+      // workplace radius; owner-recorded and off-site rows carry none.
+      const geo = geoFor(branchIndexById.get(member.branchId as string) ?? 0);
+      const source = onSite && chance(0.7) ? 'self' : 'owner';
+      const faceVerified = onSite && source === 'self' ? (chance(0.85) ? 1 : 0) : 0;
+      const faceScore = Number(((faceVerified ? 0.15 : 0.62) + rand() * 0.2).toFixed(3));
       add(
         `INSERT INTO attendance
-           (id, employee_id, date, check_in, check_out, status, overtime, notes, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, employee_id, date, check_in, check_out, status, overtime, notes, created_at,
+            source, location_type, location_id,
+            check_in_lat, check_in_lng, check_in_dist, face_score, face_verified)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           randomUUID(),
           member.id,
           dateOnly(day),
-          status === 'absent' || status === 'leave' ? null : stamp(checkIn),
-          status === 'absent' || status === 'leave' ? null : stamp(checkOut),
+          onSite ? clock(checkIn) : null,
+          onSite ? clock(checkOut) : null,
           status,
           status === 'present' && chance(0.12) ? int(1, 2) : 0,
           status === 'late' ? 'Terjebak macet' : status === 'leave' ? 'Cuti tahunan disetujui' : null,
           stamp(day),
+          source,
+          'branch',
+          member.branchId,
+          onSite ? Number((geo.lat + (rand() - 0.5) * 0.0006).toFixed(6)) : null,
+          onSite ? Number((geo.lng + (rand() - 0.5) * 0.0006).toFixed(6)) : null,
+          onSite ? int(6, 130) : null,
+          onSite ? faceScore : null,
+          faceVerified,
         ]
       );
     });
   }
+
+  add(ATTENDANCE_TODAY_GUARD_SQL);
+
+  // Placeholder face enrollments so the enrollment/face screens have data. A
+  // headless seeder cannot run the recognizer, so these are deterministic
+  // 128-float vectors (one array per employee, four angled samples) flagged as
+  // demo via `model_version`-only metadata — the owner re-enrolls for live use.
+  const demoDescriptor = (offset: number): number[] =>
+    Array.from({ length: 128 }, (_, i) => Number(Math.sin(i * 0.1 + offset).toFixed(5)));
+  attendanceStaff.forEach((member, index) => {
+    const samples = [0, 1, 2, 3].map((k) => demoDescriptor(index + k * 0.7));
+    add(
+      `INSERT OR REPLACE INTO face_enrollments
+         (employee_id, descriptors, sample_count, match_threshold, model_version, enrolled_by, created_at, updated_at)
+       VALUES (?, ?, 4, 0.5, 'face-recognition-v1', ?, ?, ?)`,
+      [member.id, JSON.stringify(samples), identity.ownerId, stamp(now), stamp(now)]
+    );
+  });
 
   const leavePlan = [
     { staffIndex: 1, type: 'annual', from: 10, to: 12, status: 'pending', reason: 'Acara keluarga di Garut' },

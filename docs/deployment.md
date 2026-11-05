@@ -33,7 +33,7 @@ Dua proyek Vercel, satu organisasi Turso.
                                     v
                     +-------------------------------+
                     | DB tenant Thalia (Turso)      |  <--- browser SPA: @libsql/client/web + JWT
-                    | 33 tabel, tanpa tenant_id     |
+                    | 34 tabel, tanpa tenant_id     |
                     +-------------------------------+
 ```
 

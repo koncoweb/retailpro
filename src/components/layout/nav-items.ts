@@ -24,6 +24,7 @@ import {
   FileText,
   LayoutDashboard,
   Package,
+  ScanFace,
   Settings,
   Store,
   Truck,
@@ -119,6 +120,12 @@ export const navItems: NavItem[] = [
     children: [
       { title: "Data Karyawan", path: "/backoffice/hr/employees", icon: Users },
       { title: "Absensi", path: "/backoffice/hr/attendance", icon: UserCheck },
+      {
+        title: "Wajah & Lokasi Absensi",
+        path: "/backoffice/hr/face",
+        icon: ScanFace,
+        permission: "manage_attendance",
+      },
       { title: "Jadwal Shift", path: "/backoffice/hr/schedule", icon: Calendar },
       { title: "Payroll", path: "/backoffice/hr/payroll", icon: DollarSign },
     ],

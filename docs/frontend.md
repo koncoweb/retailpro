@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/frontend.md` |
-| Terakhir diperbarui | **2026-11-01** |
+| Terakhir diperbarui | **2026-11-05** |
 | Stack | React 18 + Vite 5 + TypeScript, shadcn/ui, Tailwind, React Router 6 |
 | Bahasa UI | Indonesia (label, pesan, format Rupiah) |
 
@@ -24,7 +24,7 @@
 | Build | `vite build` → `dist/` (satu bundle ±2 MB, ada peringatan ukuran chunk) |
 | Typecheck | `npx tsc --noEmit -p tsconfig.app.json` (terpisah dari build) |
 | Lint | `npm run lint` (ESLint 9, config datar) |
-| Test | `npm run test` (Vitest; **17 file, 238 test**) |
+| Test | `npm run test` (Vitest; **19 file, 263 test**) |
 | Test E2E | `npm run test:e2e` (tester.army; `tests/**/*.e2e.ts`, butuh dev server `:8080` dan kunci model di `.env` — lihat §12) |
 | Toko online | `cd tokoonline && npm run dev` → port **8082**, `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) |
 
@@ -55,6 +55,9 @@ src/
     date-range.ts          Rentang periode laporan + koreksi zona waktu
     formatters.ts          formatRupiah, formatTanggal
     inventory-utils.ts     SKU otomatis, validasi barcode
+    geolocation.ts         getCurrentCoords (navigator.geolocation), haversineMeters, withinRadius, formatDistance; error bertipe + pesan "butuh HTTPS" saat bukan secure context
+    face.ts                Loader @vladmandic/face-api (lazy), captureDescriptor, encodeDescriptors/decodeDescriptors, bestMatch (jarak L2 < threshold); bagian matematika murni bisa diuji tanpa model
+    workplace.ts           Daftar lokasi kerja (branches+warehouses ber-koordinat), locationKey, fetchLocationNames/fetchWorkplaceLocations untuk absensi & geofence
   components/
     auth/{RoleBasedRoute,PermissionGate}.tsx
     layout/{POSLayout,BackOfficeLayout,Header,Sidebar}.tsx, nav-items.ts
@@ -104,6 +107,8 @@ adalah perubahan di Pengaturan → Role, bukan perubahan kode.
 | `/backoffice/finance/{journal,ap-ar,cashflow,expenses}` | `finance/*` | `view_finance` |
 | `/backoffice/hr/{employees,schedule}` | `Employees` | `view_employees` |
 | `/backoffice/hr/{attendance,payroll}` | `EmployeeReports` | `view_employees` |
+| `/backoffice/hr/face` | `FaceEnrollment` | `manage_attendance` |
+| `/absen` | `AttendanceCheckIn` | terautentikasi saja (tanpa kunci izin — semua karyawan absen sendiri); dibungkus `RequireTenant` + redirect `/login` bila belum login, **tanpa** `RoleBasedRoute` |
 | `/backoffice/reports` + `/{sales,inventory,finance,procurement}` | `Reports`, `*Report` | `view_reports`; tombol unduh `export_reports` |
 | `/backoffice/settings` | `Settings` | `view_settings`; simpan butuh `edit_settings`, tab Role butuh `manage_roles` |
 | `*` | `NotFound` | – |
@@ -179,7 +184,7 @@ komponen yang dulu ada sudah hilang.
 | `parseJson*` | Membaca kolom JSON (`settings`, `preferences`, `details`) |
 
 Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 baris),
-`EmployeeReports.tsx` (~986), `Branches.tsx` (~896), `Employees.tsx` (~861), `POS.tsx` (~792).
+`EmployeeReports.tsx` (~1.109), `Branches.tsx` (~896), `Employees.tsx` (~861), `POS.tsx` (~792).
 
 ---
 
@@ -252,6 +257,8 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-11-05 | — (working tree) | **Absensi geolokasi & pengenal wajah (skema v8)**. Library baru: `src/lib/geolocation.ts` (`getCurrentCoords`, `haversineMeters`, `withinRadius`, `formatDistance`) dan `src/lib/face.ts` (`@vladmandic/face-api` dimuat lazy, `captureDescriptor`, encode/decode descriptor 128-float, `bestMatch`) + `src/lib/workplace.ts` (daftar cabang/gudang ber-koordinat). Layar baru: `/absen` (`AttendanceCheckIn.tsx`, self-service, hard-block di luar radius & wajah tak cocok, kartu "Absensi/Presensi" selalu tampil di `ModeSelect`), `/backoffice/hr/face` (`FaceEnrollment.tsx`, owner mendaftarkan 4 sampel wajah → descriptor, hapus data). Dialog Cabang & Gudang menambahkan input lat/lng + radius + tombol "Pakai GPS sekarang" + switch `require_geo`/`require_face`. `EmployeeReports.tsx` menampilkan kolom Sumber/Lokasi/Geo/Wajah (di tabel & ekspor XLSX) dan capture GPS opsional di jalur override owner. Kunci izin baru `manage_attendance`. Model face-api di-vendor ke `public/models/`. Jarak & kecocokan dihitung di perangkat (audit, bukan paksaan DB); kamera/GPS butuh secure context |
+| 2026-11-05 | — (working tree) | `EmployeeReports.tsx` (Absensi & Libur): field Tanggal modal Tambah Absensi dikunci read-only ke hari berjalan WIB (`attendanceToday()`, UTC+7 — sejalan dengan trigger `trg_attendance_today_only` di skema v7), dengan validasi ganda sebelum insert; tab Libur mengganti array statis 2026 dengan `src/lib/holidays.ts` (API Tanggal Merah per tahun + fallback bawaan) lewat TanStack Query, lengkap pemilih tahun, badge Libur Nasional/Cuti Bersama, dan banner saat fallback dipakai |
 | 2026-11-05 | — (working tree) | Sistem izin ditulis ulang jadi **satu katalog → satu resolver → satu identitas**. `config/roles.ts` menyimpan key+label+hint dalam satu `PERMISSION_CATALOG` (label/hint/grup diturunkan, bukan ditulis tangan lagi); `lib/permission-matrix.ts` yang baru menghitung grant per peran (default < override tenant < role kustom di atas `clone_of`) dan scope-nya; `usePermissions()` pindah ke TanStack Query satu baca per halaman. Semua guard route, entri sidebar, dan kartu `ModeSelect` menuntut kunci izin, bukan daftar peran — grup `ALL_ROLES`/`FRONT_OFFICE`/`BACK_OFFICE`/`MANAGERS`/`STOCK_DOCS`/`PROCUREMENT_ROLES`/`HR_ROLES` dihapus. Kunci yang dulu ada tetapi tidak menjaga apa pun kini ditegakkan (`apply_discount`, `void_transaction` di POS, `export_reports` di 21 tombol ekspor, `view_settings`/`edit_settings`/`manage_roles` di Pengaturan). Lihat §13 |
 | 2026-11-05 | — (working tree) | Layar **Pengaturan → Role** ditulis ulang (`EmployeeRoleSettings.tsx`): editor master/detail + `Sheet` di layar kecil, pencarian izin, pilih-semua/kosongkan per grup, baris 44 px dengan hint, bilah Simpan lengket, dan hanya menyimpan **selisih** dari default per peran (sebelumnya snapshot semua peran dibekukan ke dokumen settings). Ditambah role kustom (buat/duplikat/hapus dengan penolakan bila masih dipakai) dan editor scope Cabang/Gudang, serta Pratinjau yang dirender dari `nav-items.ts` yang sama |
 | 2026-11-05 | — (working tree) | Scope diterapkan ke layar: `Dashboard` (hanya cabang in-scope, satu cabang in-scope dipaksa, kalimat penjelas, hitungan pesanan menunggu ikut difilter), `BranchPerformance`, `Inventory` (gudang di luar scope hilang dari daftar & pemilih), `BranchOrders` (kunci cabang manajer umum jadi "role ber-scope terkunci ke daftar cabang"), `POS` (cabang pilihan harus in-scope), dan badge sidebar |

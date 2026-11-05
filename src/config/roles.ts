@@ -168,6 +168,11 @@ export const PERMISSION_CATALOG = {
       label: "Hapus Karyawan",
       hint: "Menghapus akun karyawan. Yang sudah dihapus tidak bisa masuk lagi.",
     },
+    {
+      key: "manage_attendance",
+      label: "Kelola Absensi & Wajah",
+      hint: "Mendaftarkan wajah karyawan, mengatur lokasi/geofence tempat kerja, dan koreksi absensi manual. Absen harian oleh karyawan sendiri tidak butuh izin ini.",
+    },
   ],
   reports: [
     {

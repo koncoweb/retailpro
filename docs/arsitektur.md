@@ -4,8 +4,8 @@
 |---|---|
 | Aplikasi | RetailPro — ERP/POS multi-tenant, multi-cabang (pasar Indonesia, IDR) |
 | Dokumen | `docs/arsitektur.md` |
-| Terakhir diperbarui | **2026-10-31** |
-| Versi skema tenant | `schema_version = 6` (`db/schema/tenant.sql` + `db/migrations/`) |
+| Terakhir diperbarui | **2026-11-05** |
+| Versi skema tenant | `schema_version = 8` (`db/schema/tenant.sql` + `db/migrations/`) |
 | Status | Berjalan di lokal **dan** di Vercel (back office + toko online) dengan Turso cloud; belum dipakai data produksi nyata |
 
 > Dokumen ini menjelaskan **bagaimana sistem disusun dan mengapa**. Untuk daftar fitur lihat
@@ -44,7 +44,7 @@ database, menandatangani token, dan menyimpan identitas pengguna.
               v
    +----------------------+       +----------------------+
    |  Turso DB tenant A   |       |  Turso DB tenant B   |
-   |  33 tabel, tanpa     |       |  isolasi fisik       |
+   |  34 tabel, tanpa     |       |  isolasi fisik       |
    |  kolom tenant_id     |       +----------------------+
    +----------------------+
 ```
@@ -221,6 +221,13 @@ bisa menampilkan produk yang berbeda untuk tenant yang sama.
 pun di database **perusahaannya** selama ≤ 60 menit. Karena itu token sengaja pendek, per-database,
 dan tidak pernah dipersist. Endpoint admin tetap mengandalkan sesi, bukan token.
 
+Geofence & pengenal wajah (v8) tunduk pada batas yang sama: karena tidak ada server tenant, jarak GPS
+dan kecocokan wajah dihitung di perangkat (`src/lib/geolocation.ts` / `src/lib/face.ts`), di-*hard-block*
+di UI `/absen`, lalu disimpan ke `attendance` hanya sebagai jejak audit — satu-satunya paksaan di level
+database tetap trigger hari-berjalan `trg_attendance_today_only` (v7). Wajah disimpan sebagai descriptor
+128-float, bukan foto. Kamera (`getUserMedia`) dan `navigator.geolocation` menuntut **secure context**,
+sehingga jalan di HTTPS dan `http://localhost`, tetapi tidak di `http://<IP-LAN>`.
+
 Konsekuensinya, dan ini sengaja dipertahankan apa adanya: **matriks izin adalah lapis UX untuk
 data bisnis, bukan batas keamanan.** Yang ditegakkan di server adalah *identitas* (siapa boleh
 masuk, peran apa yang melekat, akun mana yang masih hidup); pintuan aksi (`can('approve_po')`)
@@ -232,7 +239,7 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 
 ## 6. Model data
 
-33 tabel di DB tenant, dikelompokkan:
+34 tabel di DB tenant, dikelompokkan:
 
 | Domain | Tabel |
 |---|---|
@@ -242,7 +249,7 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 | Penjualan | `shifts`, `transactions`, `transaction_items` |
 | Persediaan | `stock_requests`, `stock_request_items`, `stock_transfers`, `transfer_items`, `purchase_orders`, `purchase_order_items`, `goods_receipts`, `goods_receipt_items` — PO = niat, penerimaan = kenyataan |
 | Keuangan | `expenses`, `payables` |
-| SDM | `attendance`, `leaves`, `employees` |
+| SDM | `attendance`, `leaves`, `employees`, `face_enrollments` — `face_enrollments` menyimpan descriptor wajah 128-float per karyawan (bukan foto) untuk verifikasi absensi |
 | Jejak | `audit_logs` |
 | CRM | `customers` |
 
@@ -262,7 +269,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | Runtime API | Node ≥ 20 (Vercel Functions, `node:crypto`) |
 | Database | Turso libSQL cloud, grup `ap-southeast-2`; control DB + satu DB per tenant |
 | Dev lokal | `npm run dev` (SPA :8080) + `npm run dev:api` (:3000, proxy `VITE_API_PROXY_TARGET`) + `cd tokoonline && npm run dev` (:8082) |
-| Verifikasi | `npm run typecheck`, `npm test` (Vitest 16 berkas/207 test), `npm run audit:sql`, dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI |
+| Verifikasi | `npm run typecheck`, `npm test` (Vitest 19 berkas/263 test), `npm run audit:sql`, dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI |
 | Variabel | Lihat tabel env di [backend.md](backend.md) §2 (lokal) dan [deployment.md](deployment.md) §4 (produksi) |
 | Kontrak platform | Import relatif `.js` di `api/`+`server/`; route bracket lewat `rewrites` di `vercel.json`; `db/schema/**` ikut ke lambda |
 

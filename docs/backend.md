@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/backend.md` |
-| Terakhir diperbarui | **2026-10-31** |
+| Terakhir diperbarui | **2026-11-05** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
-| Versi skema tenant | **6** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
+| Versi skema tenant | **8** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
 
 > Dokumen ini menggantikan `Backend.md` lama (arsitektur Neon/Postgres dengan RLS) yang sudah
@@ -16,8 +16,8 @@
 ## 1. Peta kode
 
 ```
-db/schema/tenant.sql      Skema DB tenant (33 tabel + indeks), idempoten, schema_version = 6
-db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 006)
+db/schema/tenant.sql      Skema DB tenant (34 tabel + indeks + trigger), idempoten, schema_version = 8
+db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 008)
 db/schema/control.sql     Skema control DB (Better Auth 4 tabel + registry)
 db/schema/seed.sql        Seed provisioning dengan placeholder {{TOKEN}}
 db/__tests__/             Test skema, seed, dan tenant demo (DB sementara per run)
@@ -208,10 +208,10 @@ dengan yang bisa dibaca pengunjung mana pun.
 
 | Tabel | Kolom |
 |---|---|
-| `schema_version` | `id` (selalu 1), `version` (**6**), `applied_at` |
+| `schema_version` | `id` (selalu 1), `version` (**8**), `applied_at` |
 | `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `payroll_config`, `receipt`, `tax`, `bank`, `inventory` → `{stock_issue_method}`), `created_at` |
-| `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `created_at` |
-| `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `created_at` |
+| `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `latitude`, `longitude`, `geo_radius_m` (default 150), `require_geo`, `require_face` (v8 — titik & radius geofence tempat karyawan absen), `created_at` |
+| `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `latitude`, `longitude`, `geo_radius_m`, `require_geo`, `require_face` (v8), `created_at` |
 | `branch_warehouses` | `branch_id`, `warehouse_id`, `is_default`, `priority` — PK `(branch_id, warehouse_id)`; peta "gudang mana melayani cabang mana" |
 | `users` | `id` (= id Better Auth), `email`, `name`, `role`, `assigned_branch_id`, `is_active`, `base_salary`, `created_at` |
 
@@ -289,10 +289,21 @@ tetapi belum dipakai UI mana pun.
 
 | Tabel | Kolom |
 |---|---|
-| `attendance` | `id`, `employee_id`, `date`, `check_in`, `check_out`, `status`, `overtime`, `notes`, `created_at` |
+| `attendance` | `id`, `employee_id`, `date`, `check_in`, `check_out`, `status`, `overtime`, `notes`, `location_type`/`location_id` (v8: workplace tempat GPS diukur), `check_in_lat`/`check_in_lng`/`check_in_acc`/`check_in_dist`, `check_out_lat`/`check_out_lng`/`check_out_dist` (v8), `face_score`/`face_verified` (v8), `source` (`self`/`owner`, default `owner`, v8), `created_at` — trigger `trg_attendance_today_only` (v7) menolak INSERT yang `date`-nya bukan hari berjalan (UTC+7); penghapusan/koreksi historis tetap boleh. Seeder demo men-drop trigger ini di sekitar sesi absensi lalu memasangnya kembali |
+| `face_enrollments` | (v8) Biometrik wajah per karyawan: `employee_id` (PK), `descriptors` (JSON, array descriptor 128-float — beberapa sampel sudut), `sample_count`, `match_threshold` (default 0.5), `model_version`, `enrolled_by`, `created_at`, `updated_at`. Hanya angka descriptor yang disimpan, **tidak pernah foto asli**; dipakai layar `/absen` (verifikasi) & `FaceEnrollment` (pendaftaran oleh owner) |
 | `leaves` | `id`, `employee_id`, `type`, `start_date`, `end_date`, `reason`, `status`, `created_at` |
 | `employees` | `id`, `name`, `email`, `role`, `branch_id`, `status`, `created_at` — dipertahankan karena `Reports.tsx` membacanya; sumber data HR utama adalah `users` + `attendance` + `leaves` |
 | `audit_logs` | `id`, `user_id`, `action`, `entity`, `entity_id`, `details` (JSON), `ip_address`, `user_agent`, `created_at` |
+
+> **Batasan kepercayaan-klien (v8).** SPA menulis langsung ke database tenant dan tidak ada server
+> tenant, sehingga jarak GPS (`check_*_dist`) dan kecocokan wajah (`face_score`/`face_verified`) dihitung
+> di perangkat. Keduanya di-**hard-block** di UI `/absen` (tidak bisa submit di luar radius / wajah tidak
+> cocok) dan disimpan murni sebagai jejak audit agar owner bisa meninjau; satu-satunya batas database
+> sejati tetap trigger hari-berjalan `trg_attendance_today_only` (v7). Record koreksi owner memakai
+> `source='owner'` dan tidak pernah diblokir geofence. Kamera (`getUserMedia`) dan `geolocation` menuntut
+> **secure context** — jalan di HTTPS dan `http://localhost`, tidak di `http://<IP-LAN>` biasa. Tidak ada
+> liveness hardware: foto-dari-foto secara teori bisa menipu face-api.js, diperlambat hanya oleh
+> pendaftaran multi-sampel + peninjauan owner.
 
 ### 5.8 Indeks
 
@@ -321,6 +332,7 @@ tetapi belum dipakai UI mana pun.
 | `payables` | `(status, due_date)`, `(supplier_id)` |
 | `expenses` | `(date)`, `(category)`, `(branch_id)` |
 | `attendance` | `(employee_id, date)` |
+| `face_enrollments` | PK `employee_id` (satu baris descriptor per karyawan) |
 | `leaves` | `(employee_id, start_date)` |
 | `audit_logs` | `(created_at)` |
 
@@ -373,7 +385,7 @@ jam sebelum fisiknya sampai di rak.
 
 Role kustom dan scope lokasi sengaja **tidak** diberi tabel sendiri. `users.role` (tenant) dan
 `user.role` (control) keduanya `TEXT NOT NULL` tanpa CHECK, jadi key `cust_*` tidak butuh DDL;
-menambah tabel berarti `schema_version` 7 + migrasi + reseed tenant demo + `npm run e2e:users`,
+menambah tabel berarti `schema_version` naik (mis. 8 → 9) + migrasi + reseed tenant demo + `npm run e2e:users`,
 blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen JSON.
 
 ```jsonc
@@ -531,7 +543,7 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: 16 berkas, 207 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt, pricing, variants, password) |
+| `npm test` | Vitest: 19 berkas, 263 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt, pricing, variants, password, geolocation, face) |
 | `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---
@@ -552,6 +564,8 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | 2026-10-28 | **Skema v4** (`db/migrations/004_branch_orders.sql`): tabel baru `stock_requests` + `stock_request_items`, `stock_transfers.request_id`, status transfer menerima `in_transit` (mesin status di kode, tanpa CHECK constraint) | Tenant v3: `ALTER TABLE stock_transfers ADD COLUMN request_id`; tabel baru memakai `CREATE TABLE IF NOT EXISTS` sehingga aman dijalankan berulang. Tidak ada data lama yang perlu di-backfill. Lihat KS-25 |
 | 2026-10-30 | **Skema v5** (`db/migrations/005_procurement_lifecycle.sql`): siklus PO (`submitted`/`approved`/`partially_received`/`rejected`/`cancelled`, `payment_terms_days` sebagai snapshot), tabel `goods_receipts` + `goods_receipt_items`, `purchase_order_items.quantity_received`, `product_batches.purchase_order_id`/`goods_receipt_id` | Tenant v4: kolom `ALTER TABLE` dengan default konstan; tabel baru idempoten. Belum ada perpindahan stok sebelum PO `approved`. Lihat [spec-purchase-order.md](spec-purchase-order.md) |
 | 2026-10-31 | **Skema v6** (`db/migrations/006_variants_pricing.sql`): tabel `product_variants` + `vendor_price_list`, `products.variant_attributes`, `product_units.cost`, `variant_id` di 7 tabel yang memindahkan stok atau mencatat uang, indeks `idx_units_prod_factor` diganti `idx_units_variant_factor` | Tenant v5: setiap produk memperoleh satu varian `Default` (SKU = SKU produk), lalu `product_units` / `product_batches` / `transaction_items` / item PO / item penerimaan / item permintaan / item transfer di-backfill ke varian pertama; `product_units.cost` diisi dari `products.cost_price`; `vendor_price_list` diisi dari `vendor_products.last_cost` untuk pecahan faktor 1. Lihat [spec-varian-harga-vendor.md](spec-varian-harga-vendor.md) |
+| 2026-11-05 | **Skema v7** (`db/migrations/007_attendance_today_guard.sql`): trigger `trg_attendance_today_only` pada `attendance` — absensi standar hanya boleh bertanggal hari berjalan (WIB/UTC+7). SPA menulis langsung ke database tenant, jadi guard harus hidup di SQL, bukan hanya di modal | Tenant v6: `CREATE TRIGGER IF NOT EXISTS` saja (tanpa perubahan tabel/data); baris lama tidak tersentuh karena trigger hanya BEFORE INSERT. Tab Libur kini memuat hari libur nasional + cuti bersama per tahun dari API Tanggal Merah (`src/lib/holidays.ts`), tanpa tabel baru |
+| 2026-11-05 | **Skema v8** (`db/migrations/008_attendance_geo_face.sql`): `branches`/`warehouses` + `latitude`/`longitude`/`geo_radius_m`/`require_geo`/`require_face`; `attendance` + kolom audit geolokasi (`location_type`/`location_id`, `check_in_lat/lng/acc/dist`, `check_out_lat/lng/dist`), wajah (`face_score`, `face_verified`), dan `source` (`self`/`owner`); tabel baru `face_enrollments` (descriptor 128-float per karyawan) | Tenant v7: `ALTER TABLE ... ADD COLUMN` dengan default konstan per kolom + `CREATE TABLE IF NOT EXISTS face_enrollments`; pemicu hari-berjalan v7 tidak berubah. Jarak GPS & kecocokan wajah dihitung di browser (tanpa server tenant) sehingga bersifat audit, bukan paksaan DB — lihat catatan batasan di §5.7. Tabel 33 → 34. Kamera/GPS butuh secure context |
 
 Cara mengubah skema ke depan:
 

@@ -10,12 +10,14 @@ import ModeSelect from "./pages/ModeSelect";
 import POS from "./pages/POS";
 import POSTransactions from "./pages/POSTransactions";
 import POSShifts from "./pages/POSShifts";
+import AttendanceCheckIn from "./pages/AttendanceCheckIn";
 import Dashboard from "./pages/Dashboard";
 import Branches from "./pages/Branches";
 import Warehouses from "./pages/Warehouses";
 import Inventory from "./pages/Inventory";
 import Employees from "./pages/Employees";
 import EmployeeReports from "./pages/EmployeeReports";
+import FaceEnrollment from "./pages/FaceEnrollment";
 import Reports from "./pages/Reports";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
@@ -80,6 +82,21 @@ function guardedAny(element: React.ReactNode, permissions: string[]) {
   );
 }
 
+/**
+ * A screen every signed-in employee reaches, whatever their role — the self
+ * check-in. Passing no permission key keeps `RoleBasedRoute`'s fail-closed
+ * behaviour (an unauthenticated or roleless session still bounces to /login)
+ * while skipping the matrix lookup, so a cashier with no back-office grant can
+ * still clock in. `RequireTenant` guarantees their database is reachable first.
+ */
+function guardedAuthed(element: React.ReactNode) {
+  return (
+    <RequireTenant>
+      <RoleBasedRoute>{element}</RoleBasedRoute>
+    </RequireTenant>
+  );
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <ThemeProvider defaultTheme="dark" storageKey="erp-theme">
@@ -102,6 +119,9 @@ const App = () => (
                 element={guardedAny(<POSTransactions />, ["view_dashboard", "view_inventory"])}
               />
               <Route path="/pos/shifts" element={guarded(<POSShifts />, "access_pos")} />
+
+              {/* Self-service attendance: any signed-in user, no role gate. */}
+              <Route path="/absen" element={guardedAuthed(<AttendanceCheckIn />)} />
 
               {/* Back Office Routes */}
               <Route path="/backoffice" element={guarded(<Dashboard />, "view_analytics")} />
@@ -136,6 +156,7 @@ const App = () => (
               <Route path="/backoffice/finance/expenses" element={guarded(<Expenses />, "view_finance")} />
               <Route path="/backoffice/hr/employees" element={guarded(<Employees />, "view_employees")} />
               <Route path="/backoffice/hr/attendance" element={guarded(<EmployeeReports />, "view_employees")} />
+              <Route path="/backoffice/hr/face" element={guarded(<FaceEnrollment />, "manage_attendance")} />
               <Route path="/backoffice/hr/schedule" element={guarded(<Employees />, "view_employees")} />
               <Route path="/backoffice/hr/payroll" element={guarded(<EmployeeReports />, "view_employees")} />
               <Route path="/backoffice/reports" element={guarded(<Reports />, "view_reports")} />

@@ -63,6 +63,44 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     expect(settings.role_permissions.tenant_owner.manage_roles).toBe(true);
   });
 
+  it('provisions the v8 attendance geo/face data and reinstalls the today-only guard', async () => {
+    // schema bumped to v8
+    const version = await rows<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
+    expect(Number(version[0].version)).toBe(8);
+
+    // every branch carries coordinates so the geofence screens have a target
+    const noGeo = await scalar(
+      `SELECT count(*) AS value FROM branches WHERE latitude IS NULL OR longitude IS NULL`
+    );
+    expect(noGeo).toBe(0);
+
+    // self punches exist with geo + face audit fields populated
+    const selfVerified = await scalar(
+      `SELECT count(*) AS value FROM attendance
+        WHERE source = 'self' AND face_verified = 1 AND check_in_dist IS NOT NULL`
+    );
+    expect(selfVerified).toBeGreaterThan(0);
+
+    // placeholder face enrollments exist for the branch staff
+    const enrollments = await rows<{ employee_id: string; descriptors: string; sample_count: number }>(
+      `SELECT employee_id, descriptors, sample_count FROM face_enrollments`
+    );
+    expect(enrollments.length).toBeGreaterThan(0);
+    for (const enrollment of enrollments) {
+      const parsed = JSON.parse(enrollment.descriptors) as number[][];
+      expect(parsed.length).toBe(Number(enrollment.sample_count));
+      expect(parsed[0].length).toBe(128);
+    }
+
+    // the today-only trigger is back: a past-dated punch is refused after seeding
+    await expect(
+      client.execute({
+        sql: `INSERT INTO attendance (employee_id, date, check_in, status) VALUES ('nope', '2000-01-01', '08:00', 'present')`,
+        args: [],
+      })
+    ).rejects.toThrow(/hari ini/);
+  });
+
   it('fills every branch with staff, shelves and suppliers', async () => {
     expect(await scalar(`SELECT count(*) AS value FROM branches`)).toBe(THALIA.branches.length);
     expect(await scalar(`SELECT count(*) AS value FROM users`)).toBe(THALIA.staff.length + 1);

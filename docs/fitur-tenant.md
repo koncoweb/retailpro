@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-tenant.md` |
-| Terakhir diperbarui | **2026-10-30** |
+| Terakhir diperbarui | **2026-11-05** |
 | Cakupan | Semua fitur yang tersedia di dalam satu tenant (POS + back office) |
 
 ## Cara memakai log ini
@@ -194,6 +194,12 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-11-05 | — (working tree) | Pengaturan | **Role custom + scope lokasi** milik owner disimpan di dokumen `tenants.settings` (`custom_roles`, `role_scopes`) tanpa migrasi skema: buat/duplikat/hapus role, editor matriks master/detail dengan pencarian izin, dan penerapan "dimana" (cabang/gudang) di Dashboard, Pesanan Cabang, Inventori, POS, dan badge | Baru |
 | 2026-11-05 | — (working tree) | UI/UX | Editor matriks dan halaman Karyawan responsif (kartu di layar kecil, tabel di `md`+), target sentuh `min-h-11`, primitif `permission-row` dan varian tombol `touch`, serta panel "Hubungi owner" saat tak ada layar yang bisa dibuka | Baru |
 | 2026-11-05 | — (working tree) | Akses | Peran `purchasing` kini benar-benar bisa dibuat dan punya kartu mode-select serta akses `/backoffice/inventory/po` (selama ini dideklarasikan tapi tak bisa dibuat) | Perbaikan |
+| 2026-11-05 | — (working tree) | Karyawan | **Absensi terkunci hari berjalan**: field Tanggal pada modal Tambah Absensi di-read-only-kan ke tanggal hari ini (WIB) dan skema v7 menambahkan trigger `trg_attendance_today_only` yang menolak insert `attendance` bertanggal lain di level database (SPA menulis langsung ke Turso, jadi guard UI saja tidak cukup); hapus/koreksi histori tetap boleh | Baru |
+| 2026-11-05 | — (working tree) | Karyawan | **Tab Libur dinamis per tahun**: daftar hari libur nasional + cuti bersama tidak lagi array statis 2026 — dimuat dari API Tanggal Merah per tahun terpilih (default tahun berjalan, `/api/years` untuk daftar tahun), dengan fallback daftar bawaan saat offline | Baru |
+| 2026-11-05 | — (working tree) | Skema | Versi skema **8**: migrasi `008_attendance_geo_face` — `branches`/`warehouses` berkoordinat (`latitude`/`longitude`/`geo_radius_m`/`require_geo`/`require_face`), kolom audit geolokasi (`location_*`, `check_in/out_lat/lng/acc/dist`), wajah (`face_score`/`face_verified`), dan `source` di `attendance`, plus tabel baru `face_enrollments` (34 tabel) | Baru |
+| 2026-11-05 | — (working tree) | Karyawan | **Absensi self-service ber-geolokasi & wajah (`/absen`)**: karyawan ambil GPS + scan wajah, submit di-*hard-block* bila di luar radius workplace atau wajah tidak cocok. `@vladmandic/face-api` jalan penuh di browser; hanya descriptor 128-float yang disimpan, bukan foto | Baru |
+| 2026-11-05 | — (working tree) | Karyawan | **Pendaftaran wajah oleh owner (`/backoffice/hr/face`, izin baru `manage_attendance`)**: 4 sampel sudut per karyawan, re-enroll menimpa, hapus data. Laporan absensi (`EmployeeReports`) menambah kolom Sumber/Lokasi/Geo/Wajah (tabel + ekspor XLSX) dan capture GPS opsional pada jalur override owner | Baru |
+| 2026-11-05 | — (working tree) | Cabang/Gudang | Pengaturan titik geofence per cabang & gudang: input lat/lng + radius meter + tombol "Pakai GPS sekarang" + switch `require_geo`/`require_face` pada dialog tambah/edit | Baru |
 
 ### Riwayat commit (aplikasi sebelum migrasi)
 
@@ -328,9 +334,10 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 |---|---|---|
 | Data karyawan + role | Ada | 7 peran (lihat §3) |
 | Gaji pokok | Ada | Dipakai laporan payroll |
-| Presensi (check-in/out) | Sebagian | Tercatat di `attendance`, tapi input manual bukan jam otomatis |
+| Presensi (check-in/out) | Sebagian | Tercatat di `attendance`, tapi input manual bukan jam otomatis. Modal absensi mengunci tanggal hari berjalan (UTC+7) dan trigger `trg_attendance_today_only` (skema v7) menolak insert bertanggal lain — back/forward-dating lewat payload tidak bisa lagi |
 | Lembur | Sebagian | Kolom `overtime` ada, input manual |
 | Cuti | Ada | Pengajuan + status; approval belum berjejak audit |
+| Hari libur nasional | Ada | Tab Libur memuat libur nasional + cuti bersama per tahun dari API Tanggal Merah (`src/lib/holidays.ts`), otomatis mengikuti tahun berjalan; offline jatuh ke daftar bawaan tahun aktif |
 | Slip gaji | Belum | Laporan payroll berupa tabel, bukan slip |
 
 ### 2.8 Laporan

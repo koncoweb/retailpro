@@ -43,11 +43,27 @@ import {
     Users,
     Plane,
     DollarSign,
-    CalendarDays
+    CalendarDays,
+    MapPin,
+    ScanFace,
+    ShieldCheck
 } from "lucide-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { query, batchQuery } from "@/lib/db";
+import {
+  fetchLocationNames,
+  fetchWorkplaceLocations,
+  locationKey,
+  type WorkplaceLocation,
+} from "@/lib/workplace";
+import {
+  getCurrentCoords,
+  haversineMeters,
+  formatDistance,
+  type GeoFix,
+} from "@/lib/geolocation";
 import { getPeriodRange } from "@/lib/date-range";
+import { fetchAvailableYears, fetchHolidaysForYear, type HolidayEntry } from "@/lib/holidays";
 import { readTenantSettings, setTenantSetting } from "@/lib/tenant-settings";
 import { toast } from "sonner";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
@@ -75,6 +91,15 @@ interface Attendance {
   check_out: string | null;
   status: string;
   overtime: number;
+  // Geofence + face audit columns (schema v8). Present on every row now that
+  // the report reads `SELECT *`; nullable because owner overrides may omit them.
+  source?: string | null;
+  location_type?: string | null;
+  location_id?: string | null;
+  check_in_dist?: number | null;
+  check_out_dist?: number | null;
+  face_score?: number | null;
+  face_verified?: number | null;
 }
 
 interface Leave {
@@ -88,24 +113,16 @@ interface Leave {
   reason: string;
 }
 
-const publicHolidays = [
-  { date: "2026-01-01", name: "Tahun Baru Masehi" },
-  { date: "2026-01-27", name: "Isra Mi'raj Nabi Muhammad SAW" },
-  { date: "2026-02-17", name: "Tahun Baru Imlek 2577 Kongzili" },
-  { date: "2026-03-03", name: "Hari Suci Nyepi Tahun Baru Saka 1948" },
-  { date: "2026-03-20", name: "Hari Raya Idul Fitri 1447 Hijriah" },
-  { date: "2026-03-21", name: "Hari Raya Idul Fitri 1447 Hijriah" },
-  { date: "2026-04-03", name: "Wafat Isa Al Masih" },
-  { date: "2026-05-01", name: "Hari Buruh Internasional" },
-  { date: "2026-05-14", name: "Kenaikan Isa Al Masih" },
-  { date: "2026-05-31", name: "Hari Raya Waisak 2570 BE" },
-  { date: "2026-06-01", name: "Hari Lahir Pancasila" },
-  { date: "2026-06-27", name: "Hari Raya Idul Adha 1447 Hijriah" },
-  { date: "2026-07-17", name: "Tahun Baru Islam 1448 Hijriah" },
-  { date: "2026-08-17", name: "Hari Kemerdekaan Republik Indonesia" },
-  { date: "2026-09-25", name: "Maulid Nabi Muhammad SAW" },
-  { date: "2026-12-25", name: "Hari Raya Natal" },
-];
+/**
+ * The standard check-in/check-out day, formatted like every other attendance
+ * date in this screen. WIB (UTC+7) is the operative timezone — the same clock
+ * the schema's today-only trigger (`trg_attendance_today_only`) compares
+ * against — so a browser elsewhere in the world still books the Indonesian
+ * "hari ini" instead of its own calendar day.
+ */
+function attendanceToday(): string {
+  return format(new Date(Date.now() + 7 * 3_600_000), "yyyy-MM-dd");
+}
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(value);
@@ -163,6 +180,27 @@ export default function EmployeeReports() {
     mealAllowance: 35000
   });
 
+  // Holidays state: the Libur tab follows the selected year, defaulting to the
+  // running one so the list refreshes itself every 1 January.
+  const [holidayYear, setHolidayYear] = useState(new Date().getFullYear());
+  const holidaysQuery = useQuery({
+    queryKey: ["holidays", holidayYear],
+    queryFn: () => fetchHolidaysForYear(holidayYear),
+  });
+  const yearsQuery = useQuery({
+    queryKey: ["holiday-years"],
+    queryFn: fetchAvailableYears,
+    staleTime: 60 * 60 * 1000,
+  });
+  const holidayYears = useMemo(() => {
+    const list = new Set(yearsQuery.data ?? []);
+    // The selected and running years must always be offered, even when the
+    // API's coverage or an offline fallback narrows the list.
+    list.add(holidayYear);
+    list.add(new Date().getFullYear());
+    return [...list].sort((a, b) => a - b);
+  }, [yearsQuery.data, holidayYear]);
+
   // Delete State
   const [deleteItem, setDeleteItem] = useState<{id: string, type: 'attendance' | 'leave'} | null>(null);
 
@@ -174,6 +212,13 @@ export default function EmployeeReports() {
   const [newAttCheckOut, setNewAttCheckOut] = useState("");
   const [newAttStatus, setNewAttStatus] = useState("present");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Owner override may record where the check-in happened for audit. Optional:
+  // the owner is the authoritative source, so geo/face is never a gate here.
+  const [workplaceLocations, setWorkplaceLocations] = useState<WorkplaceLocation[]>([]);
+  const [locationNames, setLocationNames] = useState<Record<string, string>>({});
+  const [newAttLocationKey, setNewAttLocationKey] = useState("");
+  const [newAttCoords, setNewAttCoords] = useState<GeoFix | null>(null);
+  const [ownerGeoBusy, setOwnerGeoBusy] = useState(false);
 
   // Add Leave State
   const [isAddLeaveOpen, setIsAddLeaveOpen] = useState(false);
@@ -280,22 +325,112 @@ export default function EmployeeReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attendancePage, leavePage, selectedMonth]);
 
+  // Load workplace locations + id→name map once for the report columns and the
+  // owner override picker. Cheap, and rarely changes while the screen is open.
+  useEffect(() => {
+    let alive = true;
+    Promise.all([fetchLocationNames(), fetchWorkplaceLocations()])
+      .then(([names, locs]) => {
+        if (!alive) return;
+        setLocationNames(names);
+        setWorkplaceLocations(locs);
+      })
+      .catch((e) => console.error("Failed to load workplace locations", e));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const selectedAttLocation = useMemo(
+    () => workplaceLocations.find((l) => locationKey(l.type, l.id) === newAttLocationKey) ?? null,
+    [workplaceLocations, newAttLocationKey]
+  );
+
+  const ownerDistance = useMemo(() => {
+    if (!newAttCoords || !selectedAttLocation?.latitude || !selectedAttLocation?.longitude) return null;
+    return haversineMeters(newAttCoords, {
+      lat: selectedAttLocation.latitude,
+      lng: selectedAttLocation.longitude,
+    });
+  }, [newAttCoords, selectedAttLocation]);
+
+  const captureOwnerGps = async () => {
+    setOwnerGeoBusy(true);
+    try {
+      setNewAttCoords(await getCurrentCoords());
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Gagal mengambil lokasi");
+    } finally {
+      setOwnerGeoBusy(false);
+    }
+  };
+
+  /** Human label for where a stored attendance row happened. */
+  const locationLabel = (att: Attendance): string => {
+    if (!att.location_type || !att.location_id) return "-";
+    return locationNames[locationKey(att.location_type, att.location_id)] ?? "(lokasi dihapus)";
+  };
+
+  /** Distance + within/outside verdict against the location's current radius. */
+  const geoLabel = (att: Attendance): string => {
+    if (att.check_in_dist == null) return "-";
+    const dist = formatDistance(att.check_in_dist);
+    if (!att.location_type || !att.location_id) return dist;
+    const loc = workplaceLocations.find(
+      (l) => locationKey(l.type, l.id) === locationKey(att.location_type!, att.location_id!)
+    );
+    if (!loc) return dist;
+    return `${att.check_in_dist <= loc.geo_radius_m ? "Dalam" : "Luar"} · ${dist}`;
+  };
+
+  /** Face verification state for the row. */
+  const faceLabel = (att: Attendance): string => {
+    if (att.source === "owner") return "Override owner";
+    if (Number(att.face_verified) === 1) {
+      return att.face_score != null ? `Terverifikasi (${Number(att.face_score).toFixed(3)})` : "Terverifikasi";
+    }
+    return att.face_score != null ? `Tidak cocok (${Number(att.face_score).toFixed(3)})` : "Belum diverifikasi";
+  };
+
   const handleAddAttendance = async () => {
     if(!newAttEmployeeId || !newAttDate) {
         toast.error("Pilih karyawan dan tanggal");
         return;
     }
+    // Front half of the guard; the tenant database enforces the same rule, so
+    // a hand-edited payload cannot book attendance for another day.
+    if (newAttDate !== attendanceToday()) {
+        toast.error("Absensi standar hanya untuk tanggal hari ini");
+        return;
+    }
     setIsSubmitting(true);
     try {
         await query(`
-            INSERT INTO attendance (employee_id, date, check_in, check_out, status, overtime)
-            VALUES ($1, $2, $3, $4, $5, 0)
-        `, [newAttEmployeeId, newAttDate, newAttCheckIn || null, newAttCheckOut || null, newAttStatus]);
+            INSERT INTO attendance (employee_id, date, check_in, check_out, status, overtime,
+                                    source, location_type, location_id,
+                                    check_in_lat, check_in_lng, check_in_dist, face_verified)
+            VALUES ($1, $2, $3, $4, $5, 0, 'owner', $6, $7, $8, $9, $10, 0)
+        `, [
+            newAttEmployeeId,
+            newAttDate,
+            newAttCheckIn || null,
+            newAttCheckOut || null,
+            newAttStatus,
+            selectedAttLocation?.type ?? null,
+            selectedAttLocation?.id ?? null,
+            newAttCoords?.lat ?? null,
+            newAttCoords?.lng ?? null,
+            ownerDistance != null ? Math.round(ownerDistance) : null,
+        ]);
         toast.success("Absensi berhasil ditambahkan");
         setIsAddAttendanceOpen(false);
         setNewAttDate("");
         setNewAttCheckIn("");
         setNewAttCheckOut("");
+        setNewAttEmployeeId("");
+        setNewAttStatus("present");
+        setNewAttLocationKey("");
+        setNewAttCoords(null);
         fetchData();
     } catch(e) {
         console.error(e);
@@ -402,7 +537,7 @@ export default function EmployeeReports() {
   };
 
   const handleExport = () => {
-    let data: any[] = [];
+    let data: Record<string, unknown>[] = [];
     let filename = "";
     let sheetName = "";
 
@@ -419,7 +554,11 @@ export default function EmployeeReports() {
                         "Check In": att.check_in || "-",
                         "Check Out": att.check_out || "-",
                         "Status": att.status,
-                        "Overtime (Jam)": att.overtime
+                        "Overtime (Jam)": att.overtime,
+                        "Sumber": att.source === "self" ? "Karyawan" : att.source === "owner" ? "Owner" : "-",
+                        "Lokasi": locationLabel(att),
+                        "Geo": geoLabel(att),
+                        "Wajah": faceLabel(att)
                     };
                 }
                 return null;
@@ -553,7 +692,13 @@ export default function EmployeeReports() {
                     </div>
                 </PopoverContent>
             </Popover>
-            <Button variant="outline" className="gap-2" onClick={() => setIsAddAttendanceOpen(true)}>
+            <Button variant="outline" className="gap-2" onClick={() => {
+                // The modal always opens on the running day and the date field
+                // is locked: standard check-in/out cannot be back- or
+                // forward-dated (the DB trigger rejects anything else anyway).
+                setNewAttDate(attendanceToday());
+                setIsAddAttendanceOpen(true);
+            }}>
                 <Plus className="w-4 h-4" /> Absensi
             </Button>
             <Button variant="outline" className="gap-2" onClick={() => setIsAddLeaveOpen(true)}>
@@ -665,6 +810,10 @@ export default function EmployeeReports() {
                     <TableHead>Jam Kerja</TableHead>
                     <TableHead>Overtime</TableHead>
                     <TableHead className="text-center">Status</TableHead>
+                    <TableHead className="hidden lg:table-cell">Sumber</TableHead>
+                    <TableHead className="hidden lg:table-cell">Lokasi</TableHead>
+                    <TableHead className="hidden lg:table-cell">Geo</TableHead>
+                    <TableHead className="hidden lg:table-cell">Wajah</TableHead>
                     <TableHead className="w-12"></TableHead>
                   </TableRow>
                 </TableHeader>
@@ -700,6 +849,25 @@ export default function EmployeeReports() {
                           >
                             {att.status === "present" ? "Hadir" : att.status === "leave" ? "Cuti" : "Absen"}
                           </Badge>
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell">
+                          <Badge variant={att.source === "self" ? "secondary" : "outline"}>
+                            {att.source === "self" ? "Karyawan" : att.source === "owner" ? "Owner" : "-"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="hidden lg:table-cell text-sm">{locationLabel(att)}</TableCell>
+                        <TableCell className="hidden lg:table-cell text-sm">{geoLabel(att)}</TableCell>
+                        <TableCell className="hidden lg:table-cell text-sm">
+                          <span className="inline-flex items-center gap-1">
+                            {Number(att.face_verified) === 1 ? (
+                              <ShieldCheck className="w-3.5 h-3.5 text-success" />
+                            ) : att.source === "owner" ? (
+                              <ScanFace className="w-3.5 h-3.5 text-muted-foreground" />
+                            ) : (
+                              <ScanFace className="w-3.5 h-3.5 text-warning" />
+                            )}
+                            {faceLabel(att)}
+                          </span>
                         </TableCell>
                         <TableCell>
                             <Button 
@@ -853,30 +1021,76 @@ export default function EmployeeReports() {
 
            {/* Public Holidays Tab */}
           <TabsContent value="holidays" className="space-y-4">
-             {/* ... existing code ... */}
-             <div className="bg-card rounded-xl border overflow-hidden animate-fade-in">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">
+                Hari Libur Nasional &amp; Cuti Bersama tahun {holidayYear}, dimuat otomatis dari
+                kalender libur pemerintah.
+              </p>
+              <Select value={String(holidayYear)} onValueChange={(v) => setHolidayYear(Number(v))}>
+                <SelectTrigger className="w-32"><SelectValue placeholder="Tahun" /></SelectTrigger>
+                <SelectContent>
+                  {holidayYears.map((year) => (
+                    <SelectItem key={year} value={String(year)}>{year}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="bg-card rounded-xl border overflow-hidden animate-fade-in">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Tanggal</TableHead>
-                    <TableHead>Hari Libur Nasional</TableHead>
                     <TableHead>Hari</TableHead>
+                    <TableHead>Nama Libur</TableHead>
+                    <TableHead className="text-center">Jenis</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {publicHolidays.map((holiday, index) => {
-                    const date = new Date(holiday.date);
-                    const dayName = date.toLocaleDateString("id-ID", { weekday: "long" });
-                    return (
-                      <TableRow key={index}>
-                        <TableCell className="font-mono">{holiday.date}</TableCell>
-                        <TableCell className="font-medium">{holiday.name}</TableCell>
-                        <TableCell>{dayName}</TableCell>
-                      </TableRow>
-                    );
-                  })}
+                  {holidaysQuery.isLoading ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                        <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                        Memuat hari libur {holidayYear}...
+                      </TableCell>
+                    </TableRow>
+                  ) : (holidaysQuery.data?.holidays.length ?? 0) === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">
+                        Belum ada data libur untuk tahun {holidayYear}.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    holidaysQuery.data!.holidays.map((holiday: HolidayEntry) => {
+                      const dayName = format(new Date(`${holiday.date}T00:00:00`), "EEEE", { locale: id });
+                      return (
+                        <TableRow key={`${holiday.date}-${holiday.name}`}>
+                          <TableCell className="font-mono">{holiday.date}</TableCell>
+                          <TableCell>{dayName}</TableCell>
+                          <TableCell className="font-medium">{holiday.name}</TableCell>
+                          <TableCell className="text-center">
+                            <Badge
+                              className={
+                                holiday.type === "holiday"
+                                  ? "bg-primary/10 text-primary"
+                                  : "bg-warning/20 text-warning"
+                              }
+                            >
+                              {holiday.type === "holiday" ? "Libur Nasional" : "Cuti Bersama"}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
+                  )}
                 </TableBody>
               </Table>
+              {holidaysQuery.data?.fallback ? (
+                <div className="px-4 py-3 text-sm text-muted-foreground border-t bg-muted/30">
+                  <AlertCircle className="w-4 h-4 inline mr-1" />
+                  Kalender online tidak dapat dijangkau — menampilkan daftar bawaan aplikasi untuk{" "}
+                  {holidayYear}. Data tahun lain akan dimuat begitu koneksi tersedia.
+                </div>
+              ) : null}
             </div>
           </TabsContent>
         </Tabs>
@@ -902,8 +1116,21 @@ export default function EmployeeReports() {
                         </Select>
                     </div>
                     <div className="grid gap-2">
-                        <Label>Tanggal</Label>
-                        <Input type="date" value={newAttDate} onChange={e => setNewAttDate(e.target.value)} />
+                        <Label htmlFor="attendance-date">Tanggal</Label>
+                        {/* Locked to the running day: standard check-in/out is a
+                            live event, and the tenant DB rejects inserts dated
+                            any other day. */}
+                        <Input
+                            id="attendance-date"
+                            type="date"
+                            value={newAttDate || attendanceToday()}
+                            readOnly
+                            disabled
+                            className="bg-muted text-muted-foreground"
+                        />
+                        <p className="text-xs text-muted-foreground">
+                            Tanggal terkunci pada hari berjalan ({attendanceToday()}).
+                        </p>
                     </div>
                     <div className="grid grid-cols-2 gap-4">
                          <div className="grid gap-2">
@@ -927,6 +1154,43 @@ export default function EmployeeReports() {
                                 <SelectItem value="absent">Absen</SelectItem>
                             </SelectContent>
                         </Select>
+                    </div>
+                    <div className="border rounded-md p-3 space-y-3 bg-muted/20">
+                        <div className="flex items-center gap-2">
+                            <MapPin className="w-4 h-4 text-muted-foreground" />
+                            <Label className="font-medium">Lokasi &amp; GPS (opsional)</Label>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                            Override owner tidak diblokir geofence. Pilih lokasi untuk mencatat tempat
+                            absensi ini demi audit.
+                        </p>
+                        <Select value={newAttLocationKey} onValueChange={setNewAttLocationKey}>
+                            <SelectTrigger>
+                                <SelectValue placeholder="Pilih lokasi kerja" />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {workplaceLocations.map((l) => (
+                                    <SelectItem key={locationKey(l.type, l.id)} value={locationKey(l.type, l.id)}>
+                                        {l.name ?? l.id} ({l.type === "branch" ? "Cabang" : "Gudang"})
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        <div className="flex items-center gap-2">
+                            <Button type="button" size="sm" variant="outline" className="gap-2" onClick={captureOwnerGps} disabled={ownerGeoBusy}>
+                                {ownerGeoBusy ? <Loader2 className="w-4 h-4 animate-spin" /> : <MapPin className="w-4 h-4" />}
+                                Ambil GPS sekarang
+                            </Button>
+                            {newAttCoords && ownerDistance != null ? (
+                                <span className="text-xs text-muted-foreground">
+                                    {selectedAttLocation
+                                        ? `${ownerDistance <= selectedAttLocation.geo_radius_m ? "Dalam" : "Luar"} · ${formatDistance(ownerDistance)}`
+                                        : formatDistance(ownerDistance)}
+                                </span>
+                            ) : newAttCoords ? (
+                                <span className="text-xs text-muted-foreground">Lokasi tercatat (pilih lokasi untuk jarak)</span>
+                            ) : null}
+                        </div>
                     </div>
                 </div>
                 <DialogFooter>

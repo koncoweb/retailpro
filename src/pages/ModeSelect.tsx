@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { ShoppingCart, Briefcase, Store, Truck, Moon, Sun, KeyRound, Loader2 } from "lucide-react";
+import { ShoppingCart, Briefcase, Store, Truck, Moon, Sun, KeyRound, Loader2, UserCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
 import { usePermissions } from "@/hooks/use-permissions";
@@ -20,6 +20,9 @@ export default function ModeSelect() {
   const canSeeAnalytics = can("view_analytics");
   const canUseBackOffice = canSeeAnalytics || can("view_inventory");
   const canUseVendors = can("view_finance");
+  // Self-service check-in is deliberately role-free: every signed-in employee
+  // lands here, so it is always renderable (the /absen route gates on auth only).
+  const canUseAttendance = true;
 
   /**
    * Somebody scoped to the stock screens has no dashboard to land on, so their
@@ -30,10 +33,12 @@ export default function ModeSelect() {
     ? ["Dashboard & Analytics", "Inventory & Cabang", "Keuangan & HR", "Laporan & Pengaturan"]
     : ["Pesanan Cabang", "Transfer Stok", "Stok Opname"];
 
-  const nothingRenderable = !loading && !canUsePos && !canUseBackOffice && !canUseVendors;
   // A role key that resolves to no grant is a custom role that was deleted while
   // somebody was still using it. Saying so beats a blank grid.
   const unknownRole = !loading && !!role && !grants[role];
+  // The dead-end panel only makes sense when there is genuinely nothing to open.
+  // Check-in is always available, so the one real dead end is a broken role.
+  const nothingRenderable = unknownRole;
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -91,6 +96,38 @@ export default function ModeSelect() {
           )}
 
           <div className="grid md:grid-cols-3 gap-6">
+            {/* Attendance Mode — always shown; every employee clocks in here. */}
+            {canUseAttendance && (
+              <Link to="/absen" className="block group">
+              <div className="p-6 rounded-2xl border-2 border-transparent bg-card hover:border-primary transition-all duration-300 hover:shadow-xl hover:shadow-primary/10">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-success to-primary flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                  <UserCheck className="w-8 h-8 text-primary-foreground" />
+                </div>
+                <h2 className="text-xl font-bold mb-2">Absensi / Presensi</h2>
+                <p className="text-muted-foreground text-sm mb-4">
+                  Catat kehadiran Anda dengan verifikasi lokasi dan pengenalan wajah.
+                </p>
+                <ul className="text-sm space-y-2 text-muted-foreground">
+                  <li className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-success" />
+                    Check In / Check Out
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-success" />
+                    Verifikasi Wajah & Lokasi
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-success" />
+                    Riwayat Absensi Saya
+                  </li>
+                </ul>
+                <Button className="w-full mt-6" size="lg">
+                  Mulai Absen
+                </Button>
+              </div>
+            </Link>
+            )}
+
             {/* POS Mode */}
             {canUsePos && (
               <Link to="/pos" className="block group">

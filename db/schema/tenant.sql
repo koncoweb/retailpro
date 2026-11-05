@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 6);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 8);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
 -- receipt/tax/bank settings as JSON text.
@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS branches (
   timezone         TEXT NOT NULL DEFAULT 'Asia/Jakarta',
   status           TEXT NOT NULL DEFAULT 'active',
   sales_target     INTEGER NOT NULL DEFAULT 0,
+  -- Workplace geolocation for the attendance geofence. latitude/longitude are
+  -- WGS84 decimals; both NULL means this branch is not a check-in location.
+  -- geo_radius_m is the accepted distance for a self check-in; require_geo /
+  -- require_face toggle the two verifications for this location's staff.
+  latitude         REAL,
+  longitude        REAL,
+  geo_radius_m     INTEGER NOT NULL DEFAULT 150,
+  require_geo      INTEGER NOT NULL DEFAULT 1,
+  require_face     INTEGER NOT NULL DEFAULT 1,
   created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -69,6 +78,13 @@ CREATE TABLE IF NOT EXISTS warehouses (
   address    TEXT,
   status     TEXT NOT NULL DEFAULT 'active',
   is_default INTEGER NOT NULL DEFAULT 0,
+  -- Workplace geolocation, same semantics as `branches` (a warehouse is a
+  -- check-in location for its stocking staff).
+  latitude         REAL,
+  longitude        REAL,
+  geo_radius_m     INTEGER NOT NULL DEFAULT 150,
+  require_geo      INTEGER NOT NULL DEFAULT 1,
+  require_face     INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -550,8 +566,46 @@ CREATE TABLE IF NOT EXISTS attendance (
   status      TEXT NOT NULL DEFAULT 'present',
   overtime    INTEGER NOT NULL DEFAULT 0,
   notes       TEXT,
+  -- Attendance audit captured by the self-service / owner check-in screens.
+  -- location_type/'location_id' name the workplace the GPS was measured
+  -- against ('branch' | 'warehouse'); check_in_*/check_out_* hold the captured
+  -- coordinates, accuracy and distance-to-workplace in metres; face_score is
+  -- the smallest descriptor distance at check-in and face_verified the 0/1
+  -- result. `source` separates a real-time 'self' record from an owner's
+  -- manual/override 'owner' entry. These are client-supplied — the SPA talks
+  -- straight to Turso — so they are for owner review, not a hard boundary;
+  -- the only DB rule is the today-only trigger below.
+  location_type   TEXT,
+  location_id     TEXT,
+  check_in_lat    REAL,
+  check_in_lng    REAL,
+  check_in_acc    REAL,
+  check_in_dist   INTEGER,
+  check_out_lat   REAL,
+  check_out_lng   REAL,
+  check_out_dist  INTEGER,
+  face_score      REAL,
+  face_verified   INTEGER NOT NULL DEFAULT 0,
+  source          TEXT NOT NULL DEFAULT 'owner',
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+-- Standard check-in/check-out may only be booked for the running day. The SPA
+-- talks straight to this database, so the modal's locked date input alone is
+-- not a boundary: any payload can name another day. This trigger is the
+-- server-side rule — `date` must equal today in WIB (UTC+7, the tenant's
+-- operative timezone; `branches.timezone` defaults to 'Asia/Jakarta').
+-- The demo seeder writes history, so it drops the trigger around its
+-- attendance section and recreates it afterwards (see `server/demo/ledger.ts`).
+CREATE TRIGGER IF NOT EXISTS trg_attendance_today_only
+  BEFORE INSERT ON attendance
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'Absensi standar hanya untuk tanggal hari ini'
+  )
+  WHERE NEW.date <> date('now', '+7 hours');
+END;
 
 CREATE TABLE IF NOT EXISTS leaves (
   id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
@@ -562,6 +616,25 @@ CREATE TABLE IF NOT EXISTS leaves (
   reason      TEXT,
   status      TEXT NOT NULL DEFAULT 'pending',
   created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Per-employee face-recognition enrollment for attendance. The browser runs
+-- face-api.js locally and stores ONLY the 128-float descriptors (never the
+-- photo): `descriptors` is a JSON array of numeric vectors captured at
+-- different angles. A check-in compares a fresh descriptor against these and
+-- records the closest distance as `attendance.face_score`. One row per
+-- employee; re-enrolling overwrites. model_version invalidates vectors if the
+-- recognition model is ever swapped. `enrolled_by` is the user id of the owner
+-- who captured the samples.
+CREATE TABLE IF NOT EXISTS face_enrollments (
+  employee_id     TEXT PRIMARY KEY,
+  descriptors     TEXT NOT NULL DEFAULT '[]',
+  sample_count    INTEGER NOT NULL DEFAULT 0,
+  match_threshold REAL NOT NULL DEFAULT 0.5,
+  model_version   TEXT,
+  enrolled_by     TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 -- Referenced by Reports.tsx:251. Kept as its own table so that report keeps working.

@@ -21,6 +21,7 @@ import { parseJson } from '../json';
 import { translate } from '../translate';
 import { sortBatchesForIssue } from '../../stock-issue';
 import { getPeriodRange, sqliteTzModifier } from '../../date-range';
+import { decodeDescriptors, encodeDescriptors, FACE_MODEL_VERSION } from '../../face';
 
 const root = process.cwd();
 // A unique file per run: libSQL keeps a handle open, so a shared path would
@@ -51,7 +52,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(6);
+    expect(rows[0].version).toBe(8);
   });
 
   it('exposes every table the application queries', async () => {
@@ -64,6 +65,7 @@ describe('tenant.sql', () => {
       'customers',
       'employees',
       'expenses',
+      'face_enrollments',
       'leaves',
       'payables',
       'product_batches',
@@ -478,6 +480,141 @@ describe('seed state', () => {
         [branchId]
       )
     ).rejects.toThrow(/UNIQUE constraint failed/);
+  });
+
+  it('locks standard attendance to the running day (today-only trigger)', async () => {
+    // The SPA writes straight to the tenant database, so this trigger — not the
+    // modal's locked input — is the boundary against a hand-edited payload.
+    // The bound date is computed with the same UTC+7 clock the trigger uses, so
+    // the test does not depend on the machine's timezone.
+    const todayWib = new Date(Date.now() + 7 * 3_600_000).toISOString().slice(0, 10);
+    const yesterdayWib = new Date(Date.now() + 7 * 3_600_000 - 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const tomorrowWib = new Date(Date.now() + 7 * 3_600_000 + 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+
+    // Back-dating and forward-dating are both rejected...
+    for (const date of [yesterdayWib, tomorrowWib]) {
+      await expect(
+        run(
+          `INSERT INTO attendance (employee_id, date, check_in, status) VALUES ($1, $2, '08:00', 'present')`,
+          ['user-1', date]
+        )
+      ).rejects.toThrow(/hanya untuk tanggal hari ini/);
+    }
+
+    // ...while the running day passes, and deleting history stays allowed
+    // (the guard is BEFORE INSERT only).
+    await run(
+      `INSERT INTO attendance (employee_id, date, check_in, status) VALUES ($1, $2, '08:00', 'present')`,
+      ['user-1', todayWib]
+    );
+    const rows = await run<{ id: string }>(
+      `SELECT id FROM attendance WHERE employee_id = 'user-1' AND date = ?`,
+      [todayWib]
+    );
+    expect(rows).toHaveLength(1);
+    await run(`DELETE FROM attendance WHERE id = ?`, [rows[0].id]);
+  });
+
+  it('carries the v8 geofence + face columns and the face_enrollments table', async () => {
+    // Schema v8 added workplace coordinates, per-punch geo/face audit fields,
+    // and a face_enrollments table. Fresh tenants get them inside the CREATE
+    // TABLE blocks (SQLite ALTER ADD COLUMN is not idempotent), so assert the
+    // shipped schema provisions them directly.
+    const rows = await run<{ table_name: string; name: string }>(
+      `SELECT m.name AS table_name, p.name AS name
+         FROM sqlite_master m
+         JOIN pragma_table_info(m.name) p
+        WHERE m.type = 'table'
+          AND m.name IN ('branches', 'warehouses', 'attendance', 'face_enrollments')`
+    );
+    const columns = rows.map((row) => `${row.table_name}.${row.name}`);
+    const expected = [
+      'branches.latitude',
+      'branches.longitude',
+      'branches.geo_radius_m',
+      'branches.require_geo',
+      'branches.require_face',
+      'warehouses.latitude',
+      'warehouses.longitude',
+      'warehouses.geo_radius_m',
+      'warehouses.require_geo',
+      'warehouses.require_face',
+      'attendance.location_type',
+      'attendance.location_id',
+      'attendance.check_in_lat',
+      'attendance.check_in_lng',
+      'attendance.check_in_dist',
+      'attendance.check_out_lat',
+      'attendance.check_out_lng',
+      'attendance.check_out_dist',
+      'attendance.face_score',
+      'attendance.face_verified',
+      'attendance.source',
+      'face_enrollments.employee_id',
+      'face_enrollments.descriptors',
+      'face_enrollments.sample_count',
+      'face_enrollments.match_threshold',
+      'face_enrollments.model_version',
+      'face_enrollments.enrolled_by',
+    ];
+    for (const column of expected) expect(columns).toContain(column);
+
+    // The v8 columns sit inside the idempotent baseline, and migration 008 is
+    // what upgrades an existing (v7) tenant. The fleet runner discovers
+    // migrations by numeric prefix and its target version must match.
+    const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*8/);
+    const migration = readFileSync(
+      path.join(root, 'db', 'migrations', '008_attendance_geo_face.sql'),
+      'utf8'
+    );
+    expect(migration).toMatch(/ALTER TABLE branches ADD COLUMN latitude/i);
+    expect(migration).toMatch(/ALTER TABLE attendance ADD COLUMN source/i);
+    expect(migration).toMatch(/CREATE TABLE IF NOT EXISTS face_enrollments/i);
+    expect(migration).toMatch(/SET version = 8 WHERE id = 1/i);
+  });
+
+  it('stores a face_enrollments row and reads the descriptor JSON back', async () => {
+    const samples = [
+      Float32Array.from({ length: 128 }, (_, i) => i / 128),
+      Float32Array.from({ length: 128 }, (_, i) => (i % 7) / 7),
+    ];
+    const descriptors = encodeDescriptors(samples);
+    await run(
+      `INSERT INTO face_enrollments (employee_id, descriptors, sample_count, match_threshold, model_version, enrolled_by)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      ['user-face', descriptors, samples.length, 0.5, FACE_MODEL_VERSION, 'user-1']
+    );
+    const rows = await run<{ descriptors: string; sample_count: number; match_threshold: number }>(
+      `SELECT descriptors, sample_count, match_threshold FROM face_enrollments WHERE employee_id = $1`,
+      ['user-face']
+    );
+    expect(rows).toHaveLength(1);
+    const decoded = decodeDescriptors(rows[0].descriptors);
+    expect(decoded).toHaveLength(2);
+    expect(decoded[0]).toBeInstanceOf(Float32Array);
+    expect(decoded[0].length).toBe(128);
+    expect(Number(decoded[0][64])).toBeCloseTo(64 / 128, 5);
+    expect(Number(rows[0].sample_count)).toBe(2);
+    expect(Number(rows[0].match_threshold)).toBeCloseTo(0.5);
+
+    // Upsert on the primary key replaces the enrollment wholesale.
+    await run(
+      `INSERT INTO face_enrollments (employee_id, descriptors, sample_count)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (employee_id) DO UPDATE SET
+         descriptors = excluded.descriptors, sample_count = excluded.sample_count`,
+      ['user-face', encodeDescriptors([samples[0]]), 1]
+    );
+    const after = await run<{ sample_count: number }>(
+      `SELECT sample_count FROM face_enrollments WHERE employee_id = $1`,
+      ['user-face']
+    );
+    expect(Number(after[0].sample_count)).toBe(1);
   });
 
   it('batch deduction uses the tenant issue policy (FIFO / LIFO / FEFO)', async () => {

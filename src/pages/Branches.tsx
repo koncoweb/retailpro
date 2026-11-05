@@ -42,8 +42,10 @@ import {
   Phone,
   Edit,
   Download,
+  Loader2,
 } from "lucide-react";
 import { query, runTransaction } from "@/lib/db";
+import { getCurrentCoords } from "@/lib/geolocation";
 import * as XLSX from "xlsx";
 
 /** Same-origin by default; `VITE_API_BASE_URL` only for split-origin dev. */
@@ -72,6 +74,12 @@ interface Branch {
   salesTarget: number;
   type: BranchType;
   isHeadquarters: boolean;
+  // Attendance geofence settings for this workplace (see db/schema v8).
+  latitude: number | null;
+  longitude: number | null;
+  geoRadius: number;
+  requireGeo: boolean;
+  requireFace: boolean;
 }
 
 function formatCurrency(value: number) {
@@ -104,7 +112,14 @@ export default function Branches() {
     salesTarget: "50000000",
     type: "store" as BranchType,
     isHeadquarters: false,
+    latitude: "",
+    longitude: "",
+    geoRadius: "150",
+    requireGeo: true,
+    requireFace: false,
   });
+
+  const [geoBusy, setGeoBusy] = useState(false);
 
   const fetchBranches = async () => {
     try {
@@ -113,7 +128,7 @@ export default function Branches() {
       const res = await query(`
         SELECT 
           b.id, b.name, b.code, b.address, b.phone, b.email, b.status, b.sales_target,
-          b.type, b.is_headquarters,
+          b.type, b.is_headquarters, b.latitude, b.longitude, b.geo_radius_m, b.require_geo, b.require_face,
           (SELECT email FROM users WHERE assigned_branch_id = b.id AND role = 'store_manager' LIMIT 1) as manager_email,
           (SELECT count(*) FROM users WHERE assigned_branch_id = b.id) as employees,
           (SELECT count(DISTINCT pb.product_id) FROM product_batches pb
@@ -140,6 +155,11 @@ export default function Branches() {
         salesTarget: parseFloat(row.sales_target) || 0,
         type: (row.type as BranchType) || "store",
         isHeadquarters: Number(row.is_headquarters) === 1,
+        latitude: row.latitude != null ? Number(row.latitude) : null,
+        longitude: row.longitude != null ? Number(row.longitude) : null,
+        geoRadius: Number(row.geo_radius_m ?? 150),
+        requireGeo: Number(row.require_geo ?? 1) === 1,
+        requireFace: Number(row.require_face ?? 0) === 1,
       }));
       
       setBranches(mappedBranches);
@@ -235,9 +255,12 @@ export default function Branches() {
 
     try {
       // 1. Insert Branch
+      const lat = parseFloat(formData.latitude);
+      const lng = parseFloat(formData.longitude);
+      const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
       const res = await query(
-        `INSERT INTO branches (name, code, address, phone, email, status, sales_target, type) 
-         VALUES ($1, $2, $3, $4, $5, 'active', $6, $7) RETURNING id`,
+        `INSERT INTO branches (name, code, address, phone, email, status, sales_target, type, latitude, longitude, geo_radius_m, require_geo, require_face) 
+         VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
         [
           formData.name,
           formData.code,
@@ -246,6 +269,11 @@ export default function Branches() {
           formData.email,
           parseFloat(formData.salesTarget),
           formData.type,
+          hasCoords ? lat : null,
+          hasCoords ? lng : null,
+          parseInt(formData.geoRadius) || 150,
+          formData.requireGeo ? 1 : 0,
+          formData.requireFace ? 1 : 0,
         ]
       );
       
@@ -336,7 +364,8 @@ export default function Branches() {
       setFormData({ 
         name: "", code: "", address: "", phone: "", email: "", 
         manager: "", createManagerUser: false, managerEmail: "", salesTarget: "50000000",
-                type: "store", isHeadquarters: false 
+                type: "store", isHeadquarters: false,
+        latitude: "", longitude: "", geoRadius: "150", requireGeo: true, requireFace: false
       });
       fetchBranches();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -365,6 +394,11 @@ export default function Branches() {
       salesTarget: branch.salesTarget.toString(),
       type: branch.type,
       isHeadquarters: branch.isHeadquarters,
+      latitude: branch.latitude != null ? String(branch.latitude) : "",
+      longitude: branch.longitude != null ? String(branch.longitude) : "",
+      geoRadius: String(branch.geoRadius ?? 150),
+      requireGeo: branch.requireGeo,
+      requireFace: branch.requireFace,
     });
   };
 
@@ -372,9 +406,12 @@ export default function Branches() {
     if (!editingBranch) return;
 
     try {
+      const lat = parseFloat(formData.latitude);
+      const lng = parseFloat(formData.longitude);
+      const hasCoords = Number.isFinite(lat) && Number.isFinite(lng);
       await runTransaction(async (tx) => {
         await tx.query(
-          `UPDATE branches SET name=$1, code=$2, address=$3, phone=$4, email=$5, sales_target=$6, type=$7 WHERE id=$8`,
+          `UPDATE branches SET name=$1, code=$2, address=$3, phone=$4, email=$5, sales_target=$6, type=$7, latitude=$8, longitude=$9, geo_radius_m=$10, require_geo=$11, require_face=$12 WHERE id=$13`,
           [
             formData.name,
             formData.code,
@@ -383,6 +420,11 @@ export default function Branches() {
             formData.email,
             parseFloat(formData.salesTarget),
             formData.type,
+            hasCoords ? lat : null,
+            hasCoords ? lng : null,
+            parseInt(formData.geoRadius) || 150,
+            formData.requireGeo ? 1 : 0,
+            formData.requireFace ? 1 : 0,
             editingBranch.id,
           ]
         );
@@ -481,7 +523,8 @@ export default function Branches() {
       setFormData({ 
         name: "", code: "", address: "", phone: "", email: "", 
         manager: "", createManagerUser: false, managerEmail: "", salesTarget: "50000000",
-                type: "store", isHeadquarters: false 
+                type: "store", isHeadquarters: false,
+        latitude: "", longitude: "", geoRadius: "150", requireGeo: true, requireFace: false
       });
       fetchBranches();
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -490,6 +533,82 @@ export default function Branches() {
       toast.error("Gagal update cabang: " + (error.message || "Unknown error"));
     }
   };
+
+  // ── Attendance geofence settings (schema v8) ────────────────────────────
+  // Fills the lat/lng inputs from the device GPS so the owner does not have to
+  // transcribe coordinates by hand. Requires a secure context (see geolocation.ts).
+  const pickGps = async () => {
+    setGeoBusy(true);
+    try {
+      const c = await getCurrentCoords();
+      setFormData((prev) => ({
+        ...prev,
+        latitude: c.lat.toFixed(7),
+        longitude: c.lng.toFixed(7),
+      }));
+      toast.success("Koordinat diisi dari GPS");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Gagal mengambil lokasi");
+    } finally {
+      setGeoBusy(false);
+    }
+  };
+
+  // Shared by the Add and Edit dialogs — both drive the same `formData`.
+  const geoSection = (
+    <div className="border rounded-md p-4 space-y-3 bg-muted/20">
+      <div className="flex items-center justify-between">
+        <Label className="font-semibold">Lokasi & Absensi</Label>
+        <Button type="button" size="sm" variant="outline" className="gap-2" onClick={pickGps} disabled={geoBusy}>
+          {geoBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MapPin className="h-4 w-4" />}
+          Pakai GPS sekarang
+        </Button>
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="grid gap-2">
+          <Label>Latitude</Label>
+          <Input
+            type="number"
+            step="0.000001"
+            placeholder="-7.795580"
+            value={formData.latitude}
+            onChange={(e) => setFormData({ ...formData, latitude: e.target.value })}
+          />
+        </div>
+        <div className="grid gap-2">
+          <Label>Longitude</Label>
+          <Input
+            type="number"
+            step="0.000001"
+            placeholder="110.369489"
+            value={formData.longitude}
+            onChange={(e) => setFormData({ ...formData, longitude: e.target.value })}
+          />
+        </div>
+      </div>
+      <div className="grid gap-2">
+        <Label>Radius Geofence (meter)</Label>
+        <Input
+          type="number"
+          placeholder="150"
+          value={formData.geoRadius}
+          onChange={(e) => setFormData({ ...formData, geoRadius: e.target.value })}
+        />
+        <p className="text-xs text-muted-foreground">Jarak maksimum dari titik ini agar karyawan bisa absen.</p>
+      </div>
+      <div className="flex items-center justify-between">
+        <Label className="font-normal">Wajib verifikasi lokasi (geofence)</Label>
+        <Switch checked={formData.requireGeo} onCheckedChange={(v) => setFormData({ ...formData, requireGeo: v })} />
+      </div>
+      <div className="flex items-center justify-between">
+        <Label className="font-normal">Wajib scan wajah</Label>
+        <Switch checked={formData.requireFace} onCheckedChange={(v) => setFormData({ ...formData, requireFace: v })} />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Isi koordinat untuk mengaktifkan batas lokasi absensi. Kosongkan bila tidak digunakan.
+      </p>
+    </div>
+  );
 
   return (
     <BackOfficeLayout>
@@ -598,6 +717,8 @@ export default function Branches() {
                 <p className="text-xs text-muted-foreground">
                   Gudang cabang beserta pemetaannya dibuat otomatis dan bisa diubah di menu Gudang.
                 </p>
+
+                {geoSection}
 
                 <div className="border rounded-md p-4 space-y-4 bg-muted/20">
                   <div className="flex items-center space-x-2">
@@ -721,6 +842,8 @@ export default function Branches() {
                   </div>
                 </div>
               </div>
+
+              {geoSection}
 
                <div className="border rounded-md p-4 space-y-4 bg-muted/20">
                   <div className="flex items-center space-x-2">
