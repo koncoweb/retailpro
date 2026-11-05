@@ -18,6 +18,7 @@
  *   e2e.admin@tokobahankue.com   tenant_admin  -> back office, HR, settings
  *   e2e.kasir@tokobahankue.com   cashier       -> POS only
  *   e2e.gudang@tokobahankue.com  warehouse     -> stock documents only
+ *   e2e.purchasing@tokobahankue.com purchasing  -> purchase orders + receiving
  */
 import 'dotenv/config';
 import { createClient } from '@libsql/client';
@@ -31,7 +32,7 @@ const RESET = process.argv.includes('--reset');
 interface TestAccount {
   local: string;
   name: string;
-  role: 'tenant_admin' | 'cashier' | 'warehouse';
+  role: 'tenant_admin' | 'cashier' | 'warehouse' | 'purchasing';
   /** Branch code from the tenant `branches` table; null means tenant-wide. */
   branch: string | null;
 }
@@ -40,6 +41,7 @@ const ACCOUNTS: TestAccount[] = [
   { local: 'e2e.admin', name: 'Admin E2E', role: 'tenant_admin', branch: 'THL-01' },
   { local: 'e2e.kasir', name: 'Kasir E2E', role: 'cashier', branch: 'THL-01' },
   { local: 'e2e.gudang', name: 'Gudang E2E', role: 'warehouse', branch: 'THL-01' },
+  { local: 'e2e.purchasing', name: 'Purchasing E2E', role: 'purchasing', branch: 'THL-01' },
 ];
 
 function fail(message: string): never {

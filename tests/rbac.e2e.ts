@@ -17,6 +17,7 @@ const SCREEN: Record<string, string> = {
   '/backoffice/branches/orders': 'Pesanan Cabang',
   '/backoffice/branches/transfer': 'Transfer Stok Antar Gudang',
   '/backoffice/inventory/products': 'Inventory Produk',
+  '/backoffice/inventory/po': 'Inventory Produk',
   '/backoffice/finance/journal': 'Jurnal Umum',
   '/backoffice/finance/ap-ar': 'Hutang & Piutang',
   '/backoffice/finance/expenses': 'Pengeluaran',
@@ -173,5 +174,30 @@ describe('warehouse staff', { tags: ['rbac'] }, () => {
    */
   test('is turned away from the vendor directory', { session: 'gudang' }, async ({ app, browser }) => {
     await expectRedirectToModeSelect(app, browser, '/backoffice/vendors');
+  });
+});
+
+/**
+ * The purchasing desk was long declared but un-creatable. Now that it ships as a
+ * real role it must reach the purchase-order screen (the whole point of the job)
+ * without gaining a till or the dashboard it was never meant to see.
+ */
+describe('purchasing desk', { tags: ['rbac'] }, () => {
+  test('the mode chooser offers the back office and nothing else', { session: 'purchasing' }, async ({ app, screen }) => {
+    await app.open('/mode-select');
+
+    await expect(screen.getByRole('heading', 'Back Office', { level: 2 })).toBeVisible();
+    await expect(screen.getByRole('heading', 'POS & Kasir', { level: 2 })).toBeHidden();
+    await expect(screen.getByRole('heading', 'Vendor & Supplier', { level: 2 })).toBeHidden();
+  });
+
+  test('reaches purchase orders', { session: 'purchasing' }, async ({ app, screen }) => {
+    await expectScreen(app, screen, '/backoffice/inventory/po');
+  });
+
+  test('is turned away from the dashboard and settings', { session: 'purchasing' }, async ({ app, browser }) => {
+    for (const path of ['/backoffice', '/backoffice/settings']) {
+      await expectRedirectToModeSelect(app, browser, path);
+    }
   });
 });

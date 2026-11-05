@@ -20,6 +20,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { resetClient } from '@/lib/db/client';
+import { TENANT_SETTINGS_QUERY_KEY, type RoleGrants } from '@/lib/permission-matrix';
 import {
   getTenantSession,
   setTenantSession,
@@ -58,9 +59,12 @@ interface BootstrapPayload {
     id: string;
     name: string;
     email: string;
-    role: UserRole;
+    /** A custom role key is an arbitrary string, not one of the eight builtin. */
+    role: string;
     branchId: string | null;
   };
+  /** Resolved by the same `buildGrants()` the browser would run. */
+  grants?: RoleGrants;
 }
 
 export function TenantProvider({ children }: { children: ReactNode }) {
@@ -142,9 +146,16 @@ export function TenantProvider({ children }: { children: ReactNode }) {
         userId: payload.user.id,
         userName: payload.user.name,
         userEmail: payload.user.email,
-        role: payload.user.role,
+        role: payload.user.role as UserRole,
         branchId: payload.user.branchId,
       };
+
+      // First paint already knows what this person may do. Without the seed,
+      // every gated button on the landing screen would render hidden for one
+      // query round-trip and then pop in.
+      if (payload.grants) {
+        queryClient.setQueryData(TENANT_SETTINGS_QUERY_KEY, payload.grants);
+      }
 
       setTenantSession(next);
       setSession(next);
@@ -158,7 +169,7 @@ export function TenantProvider({ children }: { children: ReactNode }) {
     } finally {
       inFlight.current = null;
     }
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -209,6 +220,13 @@ export function useTenant(): TenantContextValue {
  */
 export function RequireTenant({ children }: { children: ReactNode }) {
   const { status, failure, bootstrap } = useTenant();
+  const { isAuthenticated, isLoading: authLoading } = useAuth();
+
+  // An anonymous visitor is not waiting for a database — they are waiting for
+  // the login form. Let them through so `RoleBasedRoute` can redirect; the
+  // guard sits inside this component, so blocking here would strand them on a
+  // spinner with no way to sign in.
+  if (!authLoading && !isAuthenticated) return <>{children}</>;
 
   if (status === 'ready') return <>{children}</>;
 

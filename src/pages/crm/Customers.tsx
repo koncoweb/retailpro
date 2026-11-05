@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { useAuth } from "@/hooks/use-auth";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
@@ -332,10 +333,12 @@ export default function Customers() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <Button variant="outline" className="gap-2" onClick={handleExport}>
-            <Download className="w-4 h-4" />
-            Export Excel
-          </Button>
+          <PermissionGate permission="export_reports">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="w-4 h-4" />
+              Export Excel
+            </Button>
+          </PermissionGate>
         </div>
 
         <div className="rounded-md border bg-card">

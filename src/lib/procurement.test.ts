@@ -19,15 +19,21 @@ import {
   normalizePurchaseOrderStatus,
   PO_STATUS_LABEL,
   remainingQuantity,
-  roleHasPurchasePermission,
   validatePurchaseOrder,
   validateReceipt,
   PURCHASE_ORDER_STATUSES,
   type PurchaseOrderStatus,
 } from './procurement';
+import { buildGrants, grantForRole, makeChecker, type PermissionCheck } from './permission-matrix';
 
 const allowAll = () => true;
 const denyAll = () => false;
+/** Holds only the approval right, so the self-approval rule is tested alone. */
+const canApprove: PermissionCheck = (permission) => permission === 'approve_po';
+
+/** The shipped matrix of a role, through the resolver the screens use. */
+const asRole = (role: string): PermissionCheck =>
+  makeChecker(grantForRole(buildGrants(null), role));
 
 /** The §4 verbs for a status; `view` is not a transition, so it is dropped. */
 const verbs = (status: PurchaseOrderStatus) =>
@@ -67,38 +73,98 @@ describe('purchase orders: actions per status', () => {
 
 describe('purchase orders: approval rights', () => {
   it('lets an owner sign their own order but not an admin', () => {
-    expect(checkApprovalRights({ role: 'tenant_owner', actorId: 'u1', createdBy: 'u1' })).toBeNull();
-    expect(checkApprovalRights({ role: 'platform_owner', actorId: 'u1', createdBy: 'u1' })).toBeNull();
-    expect(checkApprovalRights({ role: 'tenant_admin', actorId: 'u1', createdBy: 'u1' })).toContain(
-      'Anda buat sendiri'
-    );
-    expect(checkApprovalRights({ role: 'store_manager', actorId: 'u1', createdBy: 'u1' })).toContain(
-      'Anda buat sendiri'
-    );
+    expect(
+      checkApprovalRights({ role: 'tenant_owner', actorId: 'u1', createdBy: 'u1', can: canApprove })
+    ).toBeNull();
+    expect(
+      checkApprovalRights({
+        role: 'platform_owner',
+        actorId: 'u1',
+        createdBy: 'u1',
+        can: canApprove,
+      })
+    ).toBeNull();
+    expect(
+      checkApprovalRights({ role: 'tenant_admin', actorId: 'u1', createdBy: 'u1', can: canApprove })
+    ).toContain('Anda buat sendiri');
+    expect(
+      checkApprovalRights({
+        role: 'store_manager',
+        actorId: 'u1',
+        createdBy: 'u1',
+        can: canApprove,
+      })
+    ).toContain('Anda buat sendiri');
+  });
+
+  it('asks the permission before the authorship', () => {
+    // Separation of duties is meaningless for a role that cannot approve at all,
+    // and the message has to say which of the two is missing.
+    expect(
+      checkApprovalRights({
+        role: 'purchasing',
+        actorId: 'u2',
+        createdBy: 'u1',
+        can: asRole('purchasing'),
+      })
+    ).toContain('tidak punya izin');
   });
 
   it('allows anyone else to approve, and refuses an unknown session', () => {
-    expect(checkApprovalRights({ role: 'tenant_admin', actorId: 'u2', createdBy: 'u1' })).toBeNull();
+    expect(
+      checkApprovalRights({ role: 'tenant_admin', actorId: 'u2', createdBy: 'u1', can: canApprove })
+    ).toBeNull();
     // An order with no recorded creator is not a self-approval.
-    expect(checkApprovalRights({ role: 'tenant_admin', actorId: 'u2', createdBy: null })).toContain(
-      'Anda buat sendiri'
-    );
-    expect(checkApprovalRights({ role: 'tenant_owner', actorId: null, createdBy: 'u1' })).toContain(
-      'Sesi tidak dikenali'
-    );
+    expect(
+      checkApprovalRights({
+        role: 'tenant_admin',
+        actorId: 'u2',
+        createdBy: null,
+        can: canApprove,
+      })
+    ).toContain('Anda buat sendiri');
+    expect(
+      checkApprovalRights({
+        role: 'tenant_owner',
+        actorId: null,
+        createdBy: 'u1',
+        can: canApprove,
+      })
+    ).toContain('Sesi tidak dikenali');
   });
 
   it('separates raising from approving by role', () => {
-    expect(roleHasPurchasePermission('purchasing', 'create_po')).toBe(true);
-    expect(roleHasPurchasePermission('purchasing', 'approve_po')).toBe(false);
-    expect(roleHasPurchasePermission('store_manager', 'create_po')).toBe(true);
-    expect(roleHasPurchasePermission('store_manager', 'approve_po')).toBe(false);
-    expect(roleHasPurchasePermission('warehouse', 'receive_po')).toBe(true);
-    expect(roleHasPurchasePermission('warehouse', 'create_po')).toBe(false);
-    expect(roleHasPurchasePermission('tenant_owner', 'approve_po')).toBe(true);
+    expect(asRole('purchasing')('create_po')).toBe(true);
+    expect(asRole('purchasing')('approve_po')).toBe(false);
+    expect(asRole('store_manager')('create_po')).toBe(true);
+    expect(asRole('store_manager')('approve_po')).toBe(false);
+    expect(asRole('warehouse')('receive_po')).toBe(true);
+    expect(asRole('warehouse')('create_po')).toBe(false);
+    expect(asRole('tenant_owner')('approve_po')).toBe(true);
     // The legacy `admin` column means `tenant_admin`.
-    expect(roleHasPurchasePermission('admin', 'approve_po')).toBe(true);
-    expect(roleHasPurchasePermission(null, 'create_po')).toBe(false);
+    expect(asRole('admin')('approve_po')).toBe(true);
+    // An unknown role key — a custom role that was deleted — holds nothing.
+    expect(asRole('cust_gone')('create_po')).toBe(false);
+  });
+
+  it('obeys an owner who moves the approval right to purchasing', () => {
+    const grants = buildGrants({
+      role_permissions: { purchasing: { approve_po: true } },
+    });
+    const buyer = makeChecker(grants['purchasing']);
+    expect(buyer('approve_po')).toBe(true);
+    expect(
+      checkApprovalRights({ role: 'purchasing', actorId: 'u2', createdBy: 'u1', can: buyer })
+    ).toBeNull();
+    // …while the same owner can still take it back and close the step again.
+    expect(
+      checkApprovalRights({
+        role: 'purchasing',
+        actorId: 'u2',
+        createdBy: 'u1',
+        can: makeChecker(buildGrants({ role_permissions: { purchasing: { approve_po: false } } })['purchasing']),
+      })
+    ).toContain('tidak punya izin');
   });
 });
 

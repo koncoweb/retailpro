@@ -2,158 +2,33 @@ import { ReactNode, useEffect, useState } from "react";
 import { NavLink, useLocation, Link } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import {
-  LayoutDashboard,
-  Building2,
-  Package,
-  Users,
-  CreditCard,
-  BarChart3,
-  Settings,
+  ArrowLeftRight,
   ChevronDown,
   ChevronRight,
-  Store,
-  ArrowLeftRight,
-  FileText,
-  Calculator,
-  UserCheck,
-  Calendar,
-  DollarSign,
-  Shield,
-  Menu,
-  X,
   LogOut,
+  Menu,
   Moon,
+  Shield,
+  Store,
   Sun,
-  Warehouse,
-  Contact,
-  Truck,
-  ClipboardList,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { navItems, type NavChild, type NavItem } from "@/components/layout/nav-items";
 import { useTheme } from "@/hooks/use-theme";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions, useBranchScope } from "@/hooks/use-permissions";
 import { useSignOut } from "@/hooks/use-sign-out";
-import { ROLES } from "@/config/roles";
 import { query } from "@/lib/db";
-import type { UserRole } from "@/types";
 
 interface BackOfficeLayoutProps {
   children: ReactNode;
 }
 
-interface NavChild {
-  title: string;
-  path: string;
-  icon: React.ElementType;
-  /** Absent means every role that reaches the back office sees it. */
-  allowedRoles?: UserRole[];
-  /** Which counter, if any, to render next to the label. */
-  badge?: "pendingOrders";
-}
-
-interface NavItem {
-  title: string;
-  icon: React.ElementType;
-  path?: string;
-  allowedRoles?: UserRole[];
-  children?: NavChild[];
-}
-
-const MANAGER_ROLES: UserRole[] = [
-  "platform_owner",
-  "tenant_owner",
-  "tenant_admin",
-  "store_manager",
-  "admin",
-];
-
-/**
- * Stock documents only — the manager roles plus gudang staff.
- *
- * Warehouse staff approve and ship branch orders, count stock and move goods
- * between locations. They must not see the rest of the back office (finance,
- * HR, customers, settings), which is why visibility is declared per entry
- * here instead of relying on the route guard alone: a visible link that ends
- * in a redirect reads like a broken app.
- */
-const STOCK_ROLES: UserRole[] = [...MANAGER_ROLES, "warehouse"];
-
-const navItems: NavItem[] = [
-  // The dashboard is manager-only (`BACK_OFFICE` in `App.tsx`); showing it to
-  // gudang staff would give them a link that redirects straight back out.
-  { title: "Dashboard", icon: LayoutDashboard, path: "/backoffice", allowedRoles: MANAGER_ROLES },
-  {
-    title: "Cabang",
-    icon: Building2,
-    children: [
-      { title: "Daftar Cabang", path: "/backoffice/branches", icon: Store, allowedRoles: MANAGER_ROLES },
-      { title: "Gudang", path: "/backoffice/warehouses", icon: Warehouse, allowedRoles: STOCK_ROLES },
-      {
-        title: "Pesanan Cabang",
-        path: "/backoffice/branches/orders",
-        icon: ClipboardList,
-        allowedRoles: STOCK_ROLES,
-        badge: "pendingOrders",
-      },
-      { title: "Transfer Stok", path: "/backoffice/branches/transfer", icon: ArrowLeftRight, allowedRoles: STOCK_ROLES },
-    ],
-  },
-  {
-    title: "Inventory",
-    icon: Package,
-    children: [
-      { title: "Produk", path: "/backoffice/inventory/products", icon: Package, allowedRoles: STOCK_ROLES },
-      { title: "Stok Masuk", path: "/backoffice/inventory/stock-in", icon: Warehouse, allowedRoles: MANAGER_ROLES },
-      { title: "Stok Opname", path: "/backoffice/inventory/opname", icon: Calculator, allowedRoles: STOCK_ROLES },
-      { title: "Purchase Order", path: "/backoffice/inventory/po", icon: FileText, allowedRoles: MANAGER_ROLES },
-    ],
-  },
-  {
-    title: "Vendor",
-    icon: Truck,
-    allowedRoles: MANAGER_ROLES,
-    children: [
-      { title: "Data Vendor", path: "/backoffice/vendors", icon: Truck },
-      { title: "Hutang Vendor", path: "/backoffice/finance/ap-ar", icon: DollarSign },
-    ],
-  },
-  {
-    title: "CRM",
-    icon: Contact,
-    allowedRoles: MANAGER_ROLES,
-    children: [
-      { title: "Pelanggan", path: "/backoffice/crm/customers", icon: Users },
-    ],
-  },
-  {
-    title: "Keuangan",
-    icon: CreditCard,
-    allowedRoles: MANAGER_ROLES,
-    children: [
-      { title: "Jurnal", path: "/backoffice/finance/journal", icon: FileText },
-      { title: "Hutang/Piutang", path: "/backoffice/finance/ap-ar", icon: DollarSign },
-      { title: "Cash Flow", path: "/backoffice/finance/cashflow", icon: BarChart3 },
-      { title: "Pengeluaran", path: "/backoffice/finance/expenses", icon: CreditCard },
-    ],
-  },
-  {
-    title: "Karyawan",
-    icon: Users,
-    allowedRoles: MANAGER_ROLES,
-    children: [
-      { title: "Data Karyawan", path: "/backoffice/hr/employees", icon: Users },
-      { title: "Absensi", path: "/backoffice/hr/attendance", icon: UserCheck },
-      { title: "Jadwal Shift", path: "/backoffice/hr/schedule", icon: Calendar },
-      { title: "Payroll", path: "/backoffice/hr/payroll", icon: DollarSign },
-    ],
-  },
-  { title: "Laporan", icon: BarChart3, path: "/backoffice/reports", allowedRoles: MANAGER_ROLES },
-  { title: "Pengaturan", icon: Settings, path: "/backoffice/settings", allowedRoles: MANAGER_ROLES },
-];
-
 // Detail pages (/backoffice/vendors/:id) still belong to their list menu entry.
 const matchesRoute = (pathname: string, path: string) =>
   pathname === path || pathname.startsWith(`${path}/`);
+
 
 export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
   const [collapsed, setCollapsed] = useState(false);
@@ -163,15 +38,17 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
   const { user } = useAuth();
+  const { can, roleLabel: permissionRoleLabel } = usePermissions();
+  const { branchIds } = useBranchScope();
   const signOut = useSignOut();
 
   // The sidebar is the only place the signed-in person sees their own name.
-  const roleLabel = ROLES.find((role) => role.value === user?.role)?.label ?? "Staff";
+  // The label comes from the resolved grant, so a custom role reads the name
+  // the owner typed instead of falling back to "Staff".
+  const roleLabel = permissionRoleLabel;
 
-  const role = user?.role;
-  /** An entry with no `allowedRoles` is open to whoever reached this layout. */
-  const canSee = (item: { allowedRoles?: UserRole[] }) =>
-    !item.allowedRoles || (role ? item.allowedRoles.includes(role) : false);
+  /** An entry without a `permission` is open to whoever reached this layout. */
+  const canSee = (item: { permission?: string }) => !item.permission || can(item.permission);
 
   // A group with nothing visible inside it is hidden rather than rendered empty.
   const visibleNav = navItems
@@ -185,31 +62,54 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
    * How many orders are waiting on this person.
    *
    * The shop counts what it still has to do (finish drafts, confirm arrivals);
-   * the gudang counts what it owes the shops (approve, then ship). One query,
+   * the gudang counts what it owes the shops (approve, then ship). Which side
+   * that is comes from the matrix â€” the permission to approve or dispatch, not
+   * the job title â€” and the count only covers the branches in scope. One query,
    * refreshed on navigation, and a failure is silent: a badge must never stop
    * the sidebar from rendering.
    */
   const branchId = user?.assigned_branch_id ?? null;
+  const seesStock = can("view_inventory");
+  const supplySide = can("approve_stock_request") || can("dispatch_stock");
 
   useEffect(() => {
-    if (!role || !STOCK_ROLES.includes(role)) return;
+    if (!seesStock) return;
     let cancelled = false;
 
     const load = async () => {
       try {
-        const res =
-          role === "store_manager"
-            ? await query<{ pending: number }>(
-                `SELECT COUNT(*) AS pending
+        const placeholders = (ids: string[]) =>
+          ids.map((_, index) => `$${index + 1}`).join(", ");
+
+        let sql: string;
+        let params: unknown[];
+        if (supplySide) {
+          sql = `SELECT COUNT(*) AS pending
                    FROM stock_requests
-                  WHERE status IN ('in_transit', 'draft') AND branch_id = $1`,
-                [branchId ?? ""]
-              )
-            : await query<{ pending: number }>(
-                `SELECT COUNT(*) AS pending
+                  WHERE status IN ('submitted', 'approved')`;
+          params = [];
+          if (branchIds) {
+            if (branchIds.length === 0) {
+              setPendingOrders(0);
+              return;
+            }
+            sql += ` AND branch_id IN (${placeholders(branchIds)})`;
+            params = branchIds;
+          }
+        } else {
+          const own = branchIds ?? (branchId ? [branchId] : []);
+          if (own.length === 0) {
+            setPendingOrders(0);
+            return;
+          }
+          sql = `SELECT COUNT(*) AS pending
                    FROM stock_requests
-                  WHERE status IN ('submitted', 'approved')`
-              );
+                  WHERE status IN ('in_transit', 'draft')
+                    AND branch_id IN (${placeholders(own)})`;
+          params = own;
+        }
+
+        const res = await query<{ pending: number }>(sql, params);
         if (!cancelled) setPendingOrders(Number(res.rows[0]?.pending ?? 0));
       } catch {
         if (!cancelled) setPendingOrders(0);
@@ -220,7 +120,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
     return () => {
       cancelled = true;
     };
-  }, [role, branchId, location.pathname]);
+  }, [seesStock, supplySide, branchIds, branchId, location.pathname]);
 
   // Opening a page from the mode selector must not leave its menu group
   // collapsed, otherwise the active entry looks like it does not exist.
@@ -269,7 +169,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
                 to={item.path}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
+                    "flex min-h-11 items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
                     isActive
                       ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-md"
                       : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
@@ -285,7 +185,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
                 <button
                   onClick={() => toggleExpand(item.title)}
                   className={cn(
-                    "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
+                    "flex w-full min-h-11 items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200",
                     isActive(undefined, item.children)
                       ? "bg-sidebar-accent text-sidebar-foreground"
                       : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground"
@@ -311,7 +211,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
                         to={child.path}
                         className={({ isActive }) =>
                           cn(
-                            "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
+                            "flex min-h-11 items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
                             isActive
                               ? "bg-sidebar-primary text-sidebar-primary-foreground"
                               : "text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground"
@@ -345,7 +245,7 @@ export function BackOfficeLayout({ children }: BackOfficeLayoutProps) {
           {!collapsed && (
             <div className="animate-fade-in">
               <p className="text-sm font-medium text-sidebar-foreground">
-                {user?.name ?? "Memuat…"}
+                {user?.name ?? "Memuatâ€¦"}
               </p>
               <p className="text-xs text-sidebar-foreground/60">{roleLabel}</p>
             </div>

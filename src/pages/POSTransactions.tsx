@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -258,10 +259,12 @@ export default function POSTransactions() {
               <Calendar className="w-4 h-4" />
               Hari Ini
             </Button>
-            <Button variant="outline" className="gap-2" onClick={handleExport}>
-              <Download className="w-4 h-4" />
-              Export Excel
-            </Button>
+            <PermissionGate permission="export_reports">
+              <Button variant="outline" className="gap-2" onClick={handleExport}>
+                <Download className="w-4 h-4" />
+                Export Excel
+              </Button>
+            </PermissionGate>
           </div>
         </div>
 

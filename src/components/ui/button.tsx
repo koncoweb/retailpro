@@ -31,6 +31,13 @@ const buttonVariants = cva(
         icon: "h-10 w-10",
         iconSm: "h-8 w-8",
         iconLg: "h-12 w-12",
+        /**
+         * 44px is the smallest hit area a thumb can be trusted on, and a shared
+         * name is the only way every screen keeps the same target instead of
+         * each one inventing its own padding.
+         */
+        touch: "h-11 px-4 text-sm",
+        iconTouch: "h-11 w-11",
         pos: "h-16 px-6",
         posGrid: "h-20 w-full",
       },

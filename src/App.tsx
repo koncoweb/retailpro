@@ -35,42 +35,48 @@ import Customers from "./pages/crm/Customers";
 import SalesReport from "./pages/SalesReport";
 import InventoryReport from "./pages/InventoryReport";
 import FinanceReports from "./pages/FinanceReports";
-import type { UserRole } from "./types";
-import {
-  ALL_ROLE_VALUES,
-  MANAGER_ROLES,
-  FRONT_OFFICE_ROLES,
-  BACK_OFFICE_ROLES,
-  STOCK_DOC_ROLES,
-  PROCUREMENT_ROLES,
-  HR_ROLES,
-} from "./config/roles";
+import ProcurementReport from "./pages/ProcurementReport";
 
 const queryClient = new QueryClient();
 
 /**
  * Every authenticated route is gated twice:
- *   RoleBasedRoute -> is this person allowed on this screen?
  *   RequireTenant  -> is their company database reachable?
+ *   RoleBasedRoute -> does the matrix hand them the key for this screen?
  * Nothing below mounts until both hold, so no page can issue a query without a
  * tenant client.
  *
- * The lists live in `config/roles.ts` so a screen that links to a guarded page
- * (the mode chooser, the sidebar) can use the same one.
+ * The order matters. `RoleBasedRoute` reads the tenant's settings document, so
+ * it has to run inside `RequireTenant`; and because a deep link cannot be
+ * judged before that read answers, the guard waits instead of bouncing.
+ * `RequireTenant` lets an anonymous visitor through so the guard can still send
+ * them to the login form.
+ *
+ * Keys live in the permission catalog (`src/config/roles.ts`) and are the same
+ * ones the sidebar and the mode chooser use, so no link can bounce. Changing
+ * who reaches what is a Settings edit, not a code change.
  */
-const ALL_ROLES = ALL_ROLE_VALUES;
-const MANAGERS = MANAGER_ROLES;
-const FRONT_OFFICE = FRONT_OFFICE_ROLES;
-const BACK_OFFICE = BACK_OFFICE_ROLES;
-const STOCK_DOCS = STOCK_DOC_ROLES;
-const PROCUREMENT = PROCUREMENT_ROLES;
-const HR_ONLY = HR_ROLES;
-
-function guarded(element: React.ReactNode, allowedRoles: UserRole[]) {
+function guarded(element: React.ReactNode, permission: string) {
   return (
-    <RoleBasedRoute allowedRoles={allowedRoles}>
-      <RequireTenant>{element}</RequireTenant>
-    </RoleBasedRoute>
+    <RequireTenant>
+      <RoleBasedRoute permission={permission}>{element}</RoleBasedRoute>
+    </RequireTenant>
+  );
+}
+
+/**
+ * A screen that two families legitimately share.
+ *
+ * `/pos/transactions` is the till's own ledger (a cashier must reach it) and at
+ * the same time the history a warehouse person checks when a stock movement
+ * looks wrong. Asking for `anyOf` keeps both, where one key would silently take
+ * the page away from whoever the second family is.
+ */
+function guardedAny(element: React.ReactNode, permissions: string[]) {
+  return (
+    <RequireTenant>
+      <RoleBasedRoute anyOf={permissions}>{element}</RoleBasedRoute>
+    </RequireTenant>
   );
 }
 
@@ -90,53 +96,60 @@ const App = () => (
               <Route path="/mode-select" element={<ModeSelect />} />
 
               {/* POS Routes */}
-              <Route path="/pos" element={guarded(<POS />, FRONT_OFFICE)} />
-              <Route path="/pos/transactions" element={guarded(<POSTransactions />, ALL_ROLES)} />
-              <Route path="/pos/shifts" element={guarded(<POSShifts />, FRONT_OFFICE)} />
+              <Route path="/pos" element={guarded(<POS />, "access_pos")} />
+              <Route
+                path="/pos/transactions"
+                element={guardedAny(<POSTransactions />, ["view_dashboard", "view_inventory"])}
+              />
+              <Route path="/pos/shifts" element={guarded(<POSShifts />, "access_pos")} />
 
               {/* Back Office Routes */}
-              <Route path="/backoffice" element={guarded(<Dashboard />, BACK_OFFICE)} />
-              <Route path="/backoffice/crm/suppliers" element={guarded(<Vendors />, BACK_OFFICE)} />
-              <Route path="/backoffice/vendors" element={guarded(<Vendors />, BACK_OFFICE)} />
-              <Route path="/backoffice/vendors/:id" element={guarded(<VendorDetail />, BACK_OFFICE)} />
-              <Route path="/backoffice/crm/customers" element={guarded(<Customers />, BACK_OFFICE)} />
+              <Route path="/backoffice" element={guarded(<Dashboard />, "view_analytics")} />
+              <Route path="/backoffice/crm/suppliers" element={guarded(<Vendors />, "view_finance")} />
+              <Route path="/backoffice/vendors" element={guarded(<Vendors />, "view_finance")} />
+              <Route path="/backoffice/vendors/:id" element={guarded(<VendorDetail />, "view_finance")} />
+              <Route path="/backoffice/crm/customers" element={guarded(<Customers />, "view_finance")} />
 
               {/* Branch Management Routes */}
-              <Route path="/backoffice/branches" element={guarded(<Branches />, MANAGERS)} />
-              <Route path="/backoffice/warehouses" element={guarded(<Warehouses />, STOCK_DOCS)} />
+              <Route path="/backoffice/branches" element={guarded(<Branches />, "manage_branches")} />
+              <Route path="/backoffice/warehouses" element={guarded(<Warehouses />, "view_inventory")} />
               <Route
                 path="/backoffice/branches/dashboard"
-                element={guarded(<BranchDashboard />, MANAGERS)}
+                element={guarded(<BranchDashboard />, "manage_branches")}
               />
               <Route
                 path="/backoffice/branches/transfer"
-                element={guarded(<BranchTransfers />, STOCK_DOCS)}
+                element={guarded(<BranchTransfers />, "view_inventory")}
               />
               <Route
                 path="/backoffice/branches/orders"
-                element={guarded(<BranchOrders />, STOCK_DOCS)}
+                element={guarded(<BranchOrders />, "view_inventory")}
               />
 
-              <Route path="/backoffice/inventory/products" element={guarded(<Inventory />, STOCK_DOCS)} />
-              <Route path="/backoffice/inventory/stock-in" element={guarded(<Inventory />, BACK_OFFICE)} />
-              <Route path="/backoffice/inventory/opname" element={guarded(<Inventory />, STOCK_DOCS)} />
-              <Route path="/backoffice/inventory/po" element={guarded(<Inventory />, PROCUREMENT)} />
-              <Route path="/backoffice/finance/journal" element={guarded(<Journal />, BACK_OFFICE)} />
-              <Route path="/backoffice/finance/ap-ar" element={guarded(<ApAr />, BACK_OFFICE)} />
-              <Route path="/backoffice/finance/cashflow" element={guarded(<Cashflow />, BACK_OFFICE)} />
-              <Route path="/backoffice/finance/expenses" element={guarded(<Expenses />, BACK_OFFICE)} />
-              <Route path="/backoffice/hr/employees" element={guarded(<Employees />, HR_ONLY)} />
-              <Route path="/backoffice/hr/attendance" element={guarded(<EmployeeReports />, HR_ONLY)} />
-              <Route path="/backoffice/hr/schedule" element={guarded(<Employees />, HR_ONLY)} />
-              <Route path="/backoffice/hr/payroll" element={guarded(<EmployeeReports />, HR_ONLY)} />
-              <Route path="/backoffice/reports" element={guarded(<Reports />, BACK_OFFICE)} />
-              <Route path="/backoffice/reports/sales" element={guarded(<SalesReport />, BACK_OFFICE)} />
+              <Route path="/backoffice/inventory/products" element={guarded(<Inventory />, "view_inventory")} />
+              <Route path="/backoffice/inventory/stock-in" element={guarded(<Inventory />, "add_stock")} />
+              <Route path="/backoffice/inventory/opname" element={guarded(<Inventory />, "view_inventory")} />
+              <Route path="/backoffice/inventory/po" element={guarded(<Inventory />, "view_inventory")} />
+              <Route path="/backoffice/finance/journal" element={guarded(<Journal />, "view_finance")} />
+              <Route path="/backoffice/finance/ap-ar" element={guarded(<ApAr />, "view_finance")} />
+              <Route path="/backoffice/finance/cashflow" element={guarded(<Cashflow />, "view_finance")} />
+              <Route path="/backoffice/finance/expenses" element={guarded(<Expenses />, "view_finance")} />
+              <Route path="/backoffice/hr/employees" element={guarded(<Employees />, "view_employees")} />
+              <Route path="/backoffice/hr/attendance" element={guarded(<EmployeeReports />, "view_employees")} />
+              <Route path="/backoffice/hr/schedule" element={guarded(<Employees />, "view_employees")} />
+              <Route path="/backoffice/hr/payroll" element={guarded(<EmployeeReports />, "view_employees")} />
+              <Route path="/backoffice/reports" element={guarded(<Reports />, "view_reports")} />
+              <Route path="/backoffice/reports/sales" element={guarded(<SalesReport />, "view_reports")} />
               <Route
                 path="/backoffice/reports/inventory"
-                element={guarded(<InventoryReport />, BACK_OFFICE)}
+                element={guarded(<InventoryReport />, "view_reports")}
               />
-              <Route path="/backoffice/reports/finance" element={guarded(<FinanceReports />, BACK_OFFICE)} />
-              <Route path="/backoffice/settings" element={guarded(<Settings />, HR_ONLY)} />
+              <Route path="/backoffice/reports/finance" element={guarded(<FinanceReports />, "view_reports")} />
+              <Route
+                path="/backoffice/reports/procurement"
+                element={guarded(<ProcurementReport />, "view_reports")}
+              />
+              <Route path="/backoffice/settings" element={guarded(<Settings />, "view_settings")} />
 
               <Route path="*" element={<NotFound />} />
             </Routes>

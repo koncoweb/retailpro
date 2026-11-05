@@ -226,10 +226,10 @@ export async function resolveTenantForUser(
  * Placeholder token accepted by `scripts/dev-db-server.mjs`, which serves a local
  * libSQL file and performs no authentication.
  */
-const LOCAL_DEV_TOKEN = 'local-dev';
+export const LOCAL_DEV_TOKEN = 'local-dev';
 
 /** True for a database served by the loopback dev server, not by Turso. */
-function isLoopbackHost(hostname?: string | null): boolean {
+export function isLoopbackHost(hostname?: string | null): boolean {
   if (!hostname) return false;
   return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\/?$/.test(hostname.trim());
 }

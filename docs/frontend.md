@@ -24,7 +24,7 @@
 | Build | `vite build` → `dist/` (satu bundle ±2 MB, ada peringatan ukuran chunk) |
 | Typecheck | `npx tsc --noEmit -p tsconfig.app.json` (terpisah dari build) |
 | Lint | `npm run lint` (ESLint 9, config datar) |
-| Test | `npm run test` (Vitest; **16 file, 207 test**) |
+| Test | `npm run test` (Vitest; **17 file, 238 test**) |
 | Test E2E | `npm run test:e2e` (tester.army; `tests/**/*.e2e.ts`, butuh dev server `:8080` dan kunci model di `.env` — lihat §12) |
 | Toko online | `cd tokoonline && npm run dev` → port **8082**, `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) |
 
@@ -34,35 +34,37 @@
 
 ```
 src/
-  App.tsx                  Tabel route + guard
+  App.tsx                  Tabel route + guard per izin
   main.tsx                 Bootstrap React
   contexts/TenantContext.tsx  Bootstrap tenant, RequireTenant
-  hooks/                   use-auth, use-mobile, use-theme, use-toast
-  config/roles.ts          Daftar role, grup izin, izin default
+  hooks/                   use-auth, use-mobile, use-theme, use-toast, use-permissions
+  config/roles.ts          Katalog izin (satu sumber), peran bawaan, izin default
   types/index.ts           Tipe domain
   lib/
     db/                    query, runTransaction, batchQuery, translate, json
     tenant-session.ts      Penyimpan token di memori
-    tenant-settings.ts     Baca/merge settings tenant (+ getStockIssueMethod)
+    tenant-settings.ts     Baca/merge settings tenant (+ getStockIssueMethod, replaceTenantSetting)
+    permission-matrix.ts   Resolusi peran → izin + scope (murni, tanpa React/SQL)
     warehouse.ts           Gudang cabang: resolveBranchWarehouse, resolveWarehouseBranch
     stock-issue.ts         Kebijakan FIFO/LIFO/FEFO: comparator + sortBatchesForIssue
     stock-movement.ts      Satu-satunya penulis perpindahan stok (transfer, kirim, terima, batal)
     branch-orders.ts       Mesin status pesanan cabang: canPerform, validate*, nextOrderNumber
+    procurement.ts         Mesin purchase order: status, nomor, hak setuju
     vendor.ts              Kode vendor, termin, kategori, saldo hutang
     audit.ts               logAudit / logAuditTx
     date-range.ts          Rentang periode laporan + koreksi zona waktu
     formatters.ts          formatRupiah, formatTanggal
     inventory-utils.ts     SKU otomatis, validasi barcode
   components/
-    auth/RoleBasedRoute.tsx
-    layout/{POSLayout,BackOfficeLayout,Header,Sidebar}.tsx
+    auth/{RoleBasedRoute,PermissionGate}.tsx
+    layout/{POSLayout,BackOfficeLayout,Header,Sidebar}.tsx, nav-items.ts
     dashboard/*            Kartu statistik, grafik, modal detail
     inventory/*            AddProduct, StockTransfer, StockOpname, PurchaseOrder, Import/Export
     pos/{PaymentModal,ShiftModal}.tsx
     branches/BranchDetailModal.tsx
     vendors/*              Daftar & detail vendor
     settings/{Receipt,TaxDiscount,Bank,EmployeeRole,Inventory}Settings.tsx
-    ui/*                   shadcn/ui (51 komponen, termasuk pagination-bar.tsx)
+    ui/*                   shadcn/ui (51 komponen, termasuk pagination-bar.tsx, permission-row.tsx)
   pages/                   Satu file per layar (lihat §3)
 ```
 
@@ -73,51 +75,49 @@ punya `package.json` dan `node_modules` sendiri — lihat §11.
 
 ## 3. Peta route
 
-Semua route terautentikasi dibungkus dua lapis: `RoleBasedRoute` (boleh atau tidak) dan
-`RequireTenant` (database tenant siap atau belum).
+Semua route terautentikasi dibungkus dua lapis: `RequireTenant` (database tenant siap atau
+belum) dan `RoleBasedRoute` (matriks izin memberi kunci layar itu atau tidak). Urutannya
+sengaja: guard izin membaca dokumen `tenants.settings`, jadi ia harus berjalan **di dalam**
+`RequireTenant`, dan ia menunggu hasil baca itu alih-alih langsung mengalihkan — tautan
+langsung (`/backoffice/hr/employees`) tidak boleh dibuang hanya karena settingnya belum selesai
+dimuat.
 
-| Path | Komponen | Grup peran yang diizinkan |
+Guard tidak lagi menyebut nama peran. Setiap route menuntut **satu kunci izin** dari katalog
+(`src/config/roles.ts`), dan kunci yang sama dipakai entri sidebar serta kartu `ModeSelect`,
+sehingga tidak ada tautan yang berujung pengalihan. Mengubah siapa boleh masuk layar mana
+adalah perubahan di Pengaturan → Role, bukan perubahan kode.
+
+| Path | Komponen | Kunci izin |
 |---|---|---|
 | `/login` | `auth/Login` | publik |
 | `/register-tenant` | `auth/RegisterTenant` | publik (butuh sesi) |
-| `/mode-select` | `ModeSelect` | semua |
-| `/pos` | `POS` | `FRONT_OFFICE` |
-| `/pos/transactions` | `POSTransactions` | `ALL_ROLES` |
-| `/pos/shifts` | `POSShifts` | `FRONT_OFFICE` |
-| `/backoffice` | `Dashboard` | `BACK_OFFICE` |
-| `/backoffice/vendors` | `vendors/Vendors` | `BACK_OFFICE` |
-| `/backoffice/vendors/:id` | `vendors/VendorDetail` | `BACK_OFFICE` |
-| `/backoffice/crm/suppliers` | `vendors/Vendors` (alias lama) | `BACK_OFFICE` |
-| `/backoffice/crm/customers` | `crm/Customers` | `BACK_OFFICE` |
-| `/backoffice/branches` | `Branches` | `MANAGERS` |
-| `/backoffice/warehouses` | `Warehouses` | `STOCK_DOCS` |
-| `/backoffice/branches/dashboard` | `branches/Dashboard` | `MANAGERS` |
-| `/backoffice/branches/transfer` | `BranchTransfers` | `STOCK_DOCS` |
-| `/backoffice/branches/orders` | `BranchOrders` | `STOCK_DOCS` |
-| `/backoffice/inventory/{products,opname}` | `Inventory` | `STOCK_DOCS` |
-| `/backoffice/inventory/{stock-in,po}` | `Inventory` | `BACK_OFFICE` |
-| `/backoffice/finance/{journal,ap-ar,cashflow,expenses}` | `finance/*` | `BACK_OFFICE` |
-| `/backoffice/hr/{employees,schedule}` | `Employees` | `HR_ONLY` |
-| `/backoffice/hr/{attendance,payroll}` | `EmployeeReports` | `HR_ONLY` |
-| `/backoffice/reports` | `Reports` | `BACK_OFFICE` |
-| `/backoffice/reports/{sales,inventory,finance}` | `SalesReport`, `InventoryReport`, `FinanceReports` | `BACK_OFFICE` |
-| `/backoffice/settings` | `Settings` | `HR_ONLY` |
+| `/mode-select` | `ModeSelect` | semua (kartu dibuat dari `can(...)`) |
+| `/pos`, `/pos/shifts` | `POS`, `POSShifts` | `access_pos` |
+| `/pos/transactions` | `POSTransactions` | `view_dashboard` **atau** `view_inventory` (`anyOf`) |
+| `/backoffice` | `Dashboard` | `view_analytics` |
+| `/backoffice/vendors`, `/vendors/:id`, `/crm/suppliers`, `/crm/customers` | `vendors/*`, `crm/Customers` | `view_finance` |
+| `/backoffice/branches`, `/branches/dashboard` | `Branches`, `branches/Dashboard` | `manage_branches` |
+| `/backoffice/warehouses` | `Warehouses` | `view_inventory` |
+| `/backoffice/branches/{orders,transfer}` | `BranchOrders`, `BranchTransfers` | `view_inventory` (tindak lanjut per aksi) |
+| `/backoffice/inventory/{products,opname,po}` | `Inventory` | `view_inventory` |
+| `/backoffice/inventory/stock-in` | `Inventory` | `add_stock` |
+| `/backoffice/finance/{journal,ap-ar,cashflow,expenses}` | `finance/*` | `view_finance` |
+| `/backoffice/hr/{employees,schedule}` | `Employees` | `view_employees` |
+| `/backoffice/hr/{attendance,payroll}` | `EmployeeReports` | `view_employees` |
+| `/backoffice/reports` + `/{sales,inventory,finance,procurement}` | `Reports`, `*Report` | `view_reports`; tombol unduh `export_reports` |
+| `/backoffice/settings` | `Settings` | `view_settings`; simpan butuh `edit_settings`, tab Role butuh `manage_roles` |
 | `*` | `NotFound` | – |
 
-Grup peran (didefinisikan di `src/App.tsx`):
-
-| Grup | Isi |
-|---|---|
-| `ALL_ROLES` | 7 peran resmi + alias `admin` |
-| `FRONT_OFFICE` | platform_owner, tenant_owner, tenant_admin, store_manager, cashier (+ `admin`) |
-| `BACK_OFFICE` = `MANAGERS` | platform_owner, tenant_owner, tenant_admin, store_manager (+ `admin`) |
-| `STOCK_DOCS` | `MANAGERS` + `warehouse` — dokumen stok saja |
-| `HR_ONLY` | platform_owner, tenant_owner, tenant_admin (+ `admin`) |
+Cara kunci itu dihitung (`src/lib/permission-matrix.ts`, lihat §13): default bawaan →
+override tenant di `settings.role_permissions` → definisi role kustom di `settings.custom_roles`
+di atas `clone_of`-nya. Peran yang tidak dikenal matriks (misalnya role kustom yang terlanjur
+dihapus) mendapat grant kosong sehingga **semua** guard menolak — gagal-tertutup, dan
+`ModeSelect` menampilkan panel "Hubungi owner untuk pengaturan akses" alih-alih layar kosong.
 
 Catatan: empat route inventori memakai satu komponen yang sama (`Inventory`) dan memilih tab dari
 path; `attendance`/`payroll` juga berbagi satu halaman, begitu pula `employees`/`schedule`.
-`STOCK_DOCS` memisahkan staf gudang (boleh menghitung stok, menyetujui & mengirim pesanan) dari
-stok masuk dan PO yang tetap `BACK_OFFICE`.
+Izin `manage_branches` dan `view_finance` baru — keduanya diberi nilai `true` untuk
+`store_manager` agar layar yang dulu terbuka untuk manajer tetap terbuka.
 
 ---
 
@@ -129,7 +129,8 @@ stok masuk dan PO yang tetap `BACK_OFFICE`.
 | `BackOfficeLayout` | Sidebar + header + area konten |
 | `Sidebar` | Menu per seksi (POS, Dashboard, Cabang, Gudang, Inventori, Keuangan, SDM, Laporan, Pengaturan) |
 | `Header` | Judul halaman, indikator pengguna, pemilih cabang (hanya untuk peran yang boleh lintas cabang) |
-| `ModeSelect` | Pintu masuk setelah login: POS atau Back Office |
+| `ModeSelect` | Pintu masuk setelah login: kartunya dibuat dari `can('access_pos')` / `can('view_dashboard')` / `can('view_inventory')`; bila tidak ada yang bisa dibuka, tampil panel "Hubungi owner" |
+| `nav-items.ts` | Daftar menu + kunci izin per item, diimpor `BackOfficeLayout` **dan** pratinjau di layar Role agar preview tidak bisa bohong |
 | `pagination-bar.tsx` | Komponen pagination bersama (halaman, ukuran, jumlah) |
 
 ---
@@ -137,18 +138,33 @@ stok masuk dan PO yang tetap `BACK_OFFICE`.
 ## 5. Alur identitas di UI
 
 ```
-Login → authClient (cookie) → useAuth() ambil session
+Login → authClient (cookie) → useAuth() ambil session (peran = kolom `user.role` di control plane)
       → TenantProvider.bootstrap  → status: idle | loading | ready | no-tenant | error
-            ready      → buka libSQL client (token di memori)
+            ready      → buka libSQL client (token di memori) + simpan grants dari respons
             no-tenant  → arahkan ke /register-tenant
             error      → tampilkan layar gagal + tombol coba lagi
-      → RoleBasedRoute: role tidak dikenal → /login (gagal-tertutup)
       → RequireTenant: belum ready → spinner, halaman tidak pernah mount tanpa client
+      → RoleBasedRoute: matriks tidak memberi kunci (atau peran tidak dikenal) → /login (gagal-tertutup)
 ```
 
 `useAuth()` memetakan field session Better Auth (`tenantId`, `branchId`, `role`) ke nama field
 lama yang dibaca halaman (`tenant_id`, `assigned_branch_id`), sehingga kode halaman lama tetap
 jalan tanpa diubah.
+
+**Satu identitas, satu penulis.** Session `useAuth()` dan baris `users` di database tenant
+dulu bisa berbeda (halaman Karyawan hanya menulis proyeksi tenant), sehingga mengganti peran
+terlihat sukses tetapi tidak berubah. Sekarang `/api/admin/users/[id]` (PATCH/DELETE) yang
+menulis control plane lebih dulu lalu mencerminkan ke proyeksi, dan
+`api/tenant/bootstrap` menolak memberi token kalau baris proyeksi tidak ada atau
+`is_active = 0` (`403 account_inactive`).
+
+**Satu jalur baca izin.** `usePermissions()` (`src/hooks/use-permissions.ts`) membaca
+dokumen settings **satu kali** lewat TanStack Query (`queryKey: ['tenant-settings']`,
+`staleTime` 60 detik) dan mengembalikan `{ can, granted, scope, loading, role, roleLabel }`.
+Cache-nya disemai dari respons bootstrap sehingga paint pertama tidak berkedip `loading`,
+dan setiap simpanan di layar Role memanggil `useInvalidateTenantSettings()` sehingga edit
+matriks langsung berlaku tanpa reload. Nomor `SELECT settings FROM tenants LIMIT 1` per
+komponen yang dulu ada sudah hilang.
 
 ---
 
@@ -201,6 +217,12 @@ Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 ba
 | Harga beli per pecahan | `lib/pricing.ts`, `AddProductModal`, `inventory/PurchaseOrderModal.tsx`, `vendors/VendorDetail.tsx` | Tabel varian × pecahan dengan harga beli **dan** harga jual; `resolveBuyPrice` mengambil pricelist vendor dulu; `packEconomics`/`priceIssues` memberi margin dan peringatan (hanya `cost_above_price` yang memblokir simpan) |
 | Audit | `lib/audit.ts` | `logAudit` (best effort) dan `logAuditTx` (ikut rollback) |
 | Notifikasi | `ui/toast`, `ui/sonner` | Dua jalur toast; pesan sukses/gagal berbahasa Indonesia |
+| Matriks izin | `settings/EmployeeRoleSettings.tsx` | Master/detail: daftar role di kiri, editor izin di kanan (di layar kecil jadi `Sheet` dari bawah). Kolom pencarian "Cari izin…", "Pilih semua / Kosongkan" per grup, tiap baris `min-h-11` dengan label + hint + Switch, bilah Simpan lengket dengan penanda "Belum disimpan", dan Pratinjau yang dirender dari `nav-items.ts` |
+| Role kustom | `settings/EmployeeRoleSettings.tsx` | Buat / duplikat / hapus (`cust_*`, disimpan di `settings.custom_roles`). Menghapus ditolak selama masih dipakai karyawan, dengan daftar namanya; id tidak pernah diganti, hanya label |
+| Scope lokasi | `settings/EmployeeRoleSettings.tsx` + `useBranchScope` / `useWarehouseScope` | "Terapkan di" Cabang/Gudang berupa chip; layar yang kena scope menampilkan kalimat penjelas ("Anda hanya melihat cabang: …") dan baris di luar scope **tidak ditampilkan**, bukan sekadar-disabled |
+| Tombol berizin | `auth/PermissionGate.tsx` | Pembungkus standar aksi yang butuh izin: tersembunyi saat `loading`, tersembunyi/`fallback` saat ditolak, supaya aturan "jangan tampilkan tombol yang pasti gagal" tidak ditulis ulang per halaman |
+| Baris izin | `ui/permission-row.tsx` | Label + hint + Switch setinggi 44 px — dipakai matriks dan layar pengaturan berikutnya |
+| Sasaran sentuh | `ui/button.tsx` | `size="touch"` / `"iconTouch"` (tinggi 44 px); sidebar, kartu karyawan, dan editor role memakainya sehingga konsistensi tidak per-halaman |
 
 Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
@@ -218,6 +240,11 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 8. **Toko online belum punya spec E2E** — `tokoonline/` (marketplace, varian, pengalihan tautan
    lama) hanya diuji di level helper (`tokoonline/src/lib/products.test.ts`, 39 test) dan lewat
    pemeriksaan browser manual; belum ada spec E2E storefront.
+9. **Matriks izin masih lapis UI untuk data bisnis** — `server/provision.ts` memberi token
+   full-access ke database tenant, jadi seorang yang login masih bisa menulis baris apa pun di
+   tenantnya lewat konsol. Yang ditegakkan di server adalah **identitas** (bootstrap + endpoint
+   admin); pintuan aksi bisnis (`can(...)`) mengatur apa yang ditawarkan aplikasi. Lihat
+   §13 dan [arsitektur.md](arsitektur.md).
 
 ---
 
@@ -225,6 +252,9 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-11-05 | — (working tree) | Sistem izin ditulis ulang jadi **satu katalog → satu resolver → satu identitas**. `config/roles.ts` menyimpan key+label+hint dalam satu `PERMISSION_CATALOG` (label/hint/grup diturunkan, bukan ditulis tangan lagi); `lib/permission-matrix.ts` yang baru menghitung grant per peran (default < override tenant < role kustom di atas `clone_of`) dan scope-nya; `usePermissions()` pindah ke TanStack Query satu baca per halaman. Semua guard route, entri sidebar, dan kartu `ModeSelect` menuntut kunci izin, bukan daftar peran — grup `ALL_ROLES`/`FRONT_OFFICE`/`BACK_OFFICE`/`MANAGERS`/`STOCK_DOCS`/`PROCUREMENT_ROLES`/`HR_ROLES` dihapus. Kunci yang dulu ada tetapi tidak menjaga apa pun kini ditegakkan (`apply_discount`, `void_transaction` di POS, `export_reports` di 21 tombol ekspor, `view_settings`/`edit_settings`/`manage_roles` di Pengaturan). Lihat §13 |
+| 2026-11-05 | — (working tree) | Layar **Pengaturan → Role** ditulis ulang (`EmployeeRoleSettings.tsx`): editor master/detail + `Sheet` di layar kecil, pencarian izin, pilih-semua/kosongkan per grup, baris 44 px dengan hint, bilah Simpan lengket, dan hanya menyimpan **selisih** dari default per peran (sebelumnya snapshot semua peran dibekukan ke dokumen settings). Ditambah role kustom (buat/duplikat/hapus dengan penolakan bila masih dipakai) dan editor scope Cabang/Gudang, serta Pratinjau yang dirender dari `nav-items.ts` yang sama |
+| 2026-11-05 | — (working tree) | Scope diterapkan ke layar: `Dashboard` (hanya cabang in-scope, satu cabang in-scope dipaksa, kalimat penjelas, hitungan pesanan menunggu ikut difilter), `BranchPerformance`, `Inventory` (gudang di luar scope hilang dari daftar & pemilih), `BranchOrders` (kunci cabang manajer umum jadi "role ber-scope terkunci ke daftar cabang"), `POS` (cabang pilihan harus in-scope), dan badge sidebar |
 | 2026-11-01 | — (working tree) | Banner beranda menjadi **gambar**, bukan kartu teks: `hero-slider.tsx` menerima `{ id, src, alt }` dan merender banner 16:9 dari `public/slider/` (dua banner TokoBahanKue), tiap banner menaut ke `/katalog`. Tiga slide teks yang dulu dihitung dari katalog (`N toko`, `N produk`, `Dikirim dari gudang`) dihapus karena tulisan itu sudah ada di banner dan angka hidupnya sudah tampil di strip penjual serta grid produk. Slide pertama `eager` + `fetchPriority="high"`, sisanya `lazy`. Kedua berkas di-encode ulang ke **WebP 1400×788** (115 KB + 137 KB) dari master PNG 1672×941 (676–700 KB): kartu banner hanya ~400 px lebar, jadi 1400 px sudah cukup untuk layar 3× dan total berat turun dari 1,3 MB ke 253 KB |
 | 2026-11-01 | — (working tree) | Penyisiran ulang setelah etalase menjadi marketplace: pesanan yang berisi barang beberapa toko kini dikelompokkan per penjual (`sellerGroups()` di `lib/store.ts`) di summary checkout dan halaman pesanan, dengan subtotal per toko bila tokonya lebih dari satu. Kalimat yang masih mengandaikan satu toko diperbaiki: ambil sendiri lewat `SHOP.pickupNote` (bukan alamat satu toko), `deliveryArea` menjadi `Jabodetabek`, halaman info menyebut ongkir per pesanan & pengiriman dari gudang masing-masing toko, dan jawaban CS tidak lagi mengklaim "Gudang Pusat Depok" untuk semua barang. Tautan `/product/<slug>` lama dialihkan ke URL berpenjual (KS-34). Baris bertanggal sama yang menyebut "merek etalase pindah ke RetailPro" sudah digantikan: nama akhirnya **Toko Bahan Kue** dengan sub-baris **Marketplace** |
 | 2026-11-01 | — (working tree) | Tema toko online memakai aksen **rose**: `styles.css` mengganti token `--thalia-*` (primary `#9d3455`, accent `#b04a68` di terang; `#eaa4ba` di gelap) dan netralnya diberi rona pink tipis. Harga produk di kartu dan halaman produk ikut memakai `text-primary`, `theme-color` dan `public/favicon.svg` disesuaikan |
@@ -305,9 +335,9 @@ sungguhan; langkah yang butuh ketepatan selector ditulis deterministik, langkah 
 
 | Aspek | Nilai |
 |---|---|
-| Berkas uji | `tests/**/*.e2e.ts` — 7 berkas, 40 test (36 `test` + 4 `test.setup`): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac` |
+| Berkas uji | `tests/**/*.e2e.ts` — 8 berkas, 49 test (44 `test` + 5 `test.setup`): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac`, `permissions` |
 | Konfigurasi | `e2e.config.ts` |
-| Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `kasir`, `gudang`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts` |
+| Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `kasir`, `gudang`, `purchasing`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts`; dibuat oleh `npm run e2e:users` |
 | Target | `APP_URL`, default `http://localhost:8080` (`npm run dev`) |
 | Model agent | Provider OpenAI-compatible dari `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL`; bawaan SumoPod + `deepseek-v4.1-flash:netra` |
 | Perintah | `npm run test:e2e`, atau `npx e2e run --grep login` untuk sebagian |
@@ -336,6 +366,20 @@ Aturan yang dipakai di repo ini:
    `session.save()`; tes lain memakainya lewat `{ session }`. Tes yang menguji tombol Keluar harus
    login sendiri di dalam tubuh tes, karena `signOut()` mencabut sesi itu di server dan tes lain yang
    memulihkannya akan menjadi anonim.
+9. **Penegakan identitas diuji lewat endpoint, bukan UI.** `tests/permissions.e2e.ts` (sesi owner)
+   memakai `browser.evaluate(fetch)` untuk `POST`/`PATCH`/`DELETE /api/admin/users/[id]` lalu membaca
+   control DB dan proyeksi tenant secara langsung (helper jajak `pollDb` menelan konsistensi-akhir
+   Turso lintas koneksi): PATCH satu penulis menyeragamkan kedua store, `active:false` menyet
+   `banned=1`, DELETE menghapus identitas sehingga sign-in ditolak, dan peran tak dikenal/self-removal
+   ditolak 400. Peran `purchasing` kini punya sesi sendiri di `rbac.e2e.ts` (kartu Back Office, akses
+   `/backoffice/inventory/po`, ditolak dari dashboard).
+10. **Siklus role custom diuji tanpa login sebagai karyawan baru.** Harness ini hanya menyimpan sesi
+    untuk peran yang sudah ada di roster, jadi tes `permissions.e2e.ts` membuktikan bagian yang bisa
+    dibuktikan secara deterministik — buat role → muncul di daftar → bisa ditugaskan lewat PATCH →
+    penolakan hapus saat masih dipakai ("dipakai 1 karyawan") → tenant dibersihkan. Langkah "login
+    sebagai karyawan role custom lalu lihat kartu POS" sengaja tidak ditranskripsi sebagai tes UI
+    karena tidak didukung model sesi; perilaku itu dijamin oleh `rbac` peran builtin + unit test
+    resolver (`permission-matrix.test.ts`), bukan diabaikan.
 
 Menjalankan:
 
@@ -347,4 +391,41 @@ npm run test:e2e
 
 Batasannya: model yang dipilih mendukung tool call tetapi **tidak** mendukung `responseFormat`,
 sehingga `agent.extract` tidak bisa dipakai (KS-32 di [kendala-solusi.md](kendala-solusi.md)).
+
+---
+
+## 13. Izin: katalog, resolver, dan pemakaian
+
+Tiga lapis, dan hanya tiga tempat yang boleh menjawab "boleh tidak orang ini":
+
+| Lapis | Berkas | Isi |
+|---|---|---|
+| Deklarasi | `src/config/roles.ts` | `PERMISSION_CATALOG` (key + label + hint per grup), `ROLES`, `BUILTIN_ASSIGNABLE_ROLES`, `DEFAULT_ROLE_PERMISSIONS`, `resolveRolePermissions()`. `PERMISSION_GROUPS` / `PERMISSION_LABELS` / `PERMISSION_HINTS` / `ALL_PERMISSION_KEYS` **diturunkan** dari katalog — tidak boleh ditulis tangan lagi |
+| Perhitungan | `src/lib/permission-matrix.ts` | murni (tanpa React, tanpa SQL; ikut dipakai `server/roles.ts`): `buildGrants(settings)`, `grantForRole`, `effectivePermissions`, `makeChecker`, `permissionRole` (alias `admin` → `tenant_admin`), `inScope`/`branchInScope`/`warehouseInScope`, `effectiveBranchScope`, `effectiveWarehouseScope` |
+| Pemakaian | `src/hooks/use-permissions.ts` | `usePermissions()` → `{ can, granted, scope, loading, role, roleLabel }`; `usePermission(key)`, `useBranchScope()`, `useWarehouseScope()`, `useInvalidateTenantSettings()` |
+
+Aturan yang dijamin resolver (dan diuji di `src/lib/permission-matrix.test.ts` +
+`src/config/roles.test.ts`):
+
+1. **Urutan gabung**: default bawaan < `settings.role_permissions[peran]` < permission role
+   kustom sendiri (di atas default `clone_of`-nya). Gabung, bukan ganti — kunci yang baru
+   dikirim setelah seorang owner menekan Simpan tetap memakai defaultnya, tidak hilang.
+2. **Hanya `true` yang mengizinkan.** `can(key)` memeriksa `permissions[key] === true`;
+   `false`, tidak ada, dan nilai bukan boolean semuanya menolak.
+3. **Gagal-tertutup.** Peran yang tidak ada di matriks (role kustom dihapus, string karier
+   lama, sesi tanpa peran) tidak mendapat grant apa pun.
+4. **Scope default `all`** untuk semua peran bawaan, jadi mempersempit lokasi selalu
+   keputusan owner yang disadari; scope parsial (`{branches: […]}` saja) tidak membuat sisi
+   lain jadi kosong.
+5. Baris **tanpa lokasi** tidak muncul untuk peran ber-scope sempit — "bagaimana stok di
+   tempat saya" tidak dijawab oleh angka tanpa cabang/gudang.
+
+Cara menambah izin baru: satu entri di `PERMISSION_CATALOG` (key, label, hint) + nilai default
+di `DEFAULT_ROLE_PERMISSIONS` untuk peran yang berhak. Guard route, sidebar, pratinjau role,
+dan tes katalog membaca dari sana, jadi tidak ada daftar kedua yang bisa tertinggal.
+
+Bentuk penyimpanan `role_permissions` / `custom_roles` / `role_scopes` dan batas
+`mergeTenantSettings` (satu level, last-write-wins) dijelaskan di
+[backend.md](backend.md) §pengaturan-tenant; endpoint tulisnya (`/api/admin/users`,
+`/api/admin/users/[id]`) juga di sana.
 

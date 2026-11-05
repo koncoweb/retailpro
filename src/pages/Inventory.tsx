@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/use-auth";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
@@ -69,7 +69,8 @@ import {
   receiveTransfer,
   transferStatusLabel,
 } from "@/lib/stock-movement";
-import { roleHasPermission } from "@/lib/branch-orders";
+import { usePermissions } from "@/hooks/use-permissions";
+import { warehouseInScope, type RoleScope } from "@/lib/permission-matrix";
 
 import { ProductUnit, type ProductFormPayload } from "@/components/inventory/AddProductModal";
 import {
@@ -368,12 +369,41 @@ function mapProductRows(
   });
 }
 
+/**
+ * The gudang rows a role may transact with.
+ *
+ * Module-level on purpose: the loaders below read the scope through a ref, so
+ * narrowing the list stays a filter on the data rather than a dependency that
+ * re-fetches the whole screen.
+ */
+const inScopeWarehouses = (
+  scope: RoleScope | undefined,
+  rows: WarehouseOption[]
+): WarehouseOption[] => rows.filter((row) => warehouseInScope(scope, row.id));
+
 export default function Inventory() {
   const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  // A shop asks the gudang for stock; a purchasing clerk does not.
-  const canRequestStock = roleHasPermission(user?.role, "request_stock");
+  // A shop asks the gudang for stock; a purchasing clerk does not. Read from
+  // the resolved matrix so switching it off in Settings really hides the button.
+  const { can, scope } = usePermissions();
+  const canRequestStock = can("request_stock");
+  /**
+   * Which gudang this role may transact with.
+   *
+   * An owner who scopes a role to one warehouse should not have to trust that
+   * the wrong warehouse is merely not preselected: every dropdown on this
+   * screen lists only the in-scope rows. `status = 'active'` still applies —
+   * scope narrows the list, it never resurrects a closed warehouse.
+   *
+   * Held in a ref rather than the loaders' dependency list, because the mount
+   * load is one batch of seven queries: a matrix edit made in another tab should
+   * narrow the list on the next load, not reload this screen underneath someone
+   * half-way through a stock-in.
+   */
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const [isLoading, setIsLoading] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [transfers, setTransfers] = useState<TransferRow[]>([]);
@@ -404,7 +434,7 @@ export default function Inventory() {
   const fetchWarehouses = async () => {
     try {
       const res = await query(WAREHOUSES_SQL);
-      setWarehouses(res.rows as unknown as WarehouseOption[]);
+      setWarehouses(inScopeWarehouses(scopeRef.current, res.rows as unknown as WarehouseOption[]));
     } catch (error) {
       console.error("Failed to fetch warehouses:", error);
     }
@@ -486,7 +516,9 @@ export default function Inventory() {
         mapProductRows(productRes.rows, variantRes.rows, unitRes.rows, stockRes.rows)
       );
       setTransfers(transferRes.rows as unknown as TransferRow[]);
-      setWarehouses(warehouseRes.rows as unknown as WarehouseOption[]);
+      setWarehouses(
+        inScopeWarehouses(scopeRef.current, warehouseRes.rows as unknown as WarehouseOption[])
+      );
       setSuppliers(supplierRes.rows as unknown as VendorOption[]);
     } catch (error) {
       console.error("Failed to load inventory:", error);
@@ -1036,8 +1068,9 @@ export default function Inventory() {
 
   /** Ships a queued transfer: the stock leaves the source warehouse here. */
   const handleApproveTransfer = async (transferId: string) => {
-    // RBAC Check
-    if (!user || !['store_manager', 'warehouse', 'tenant_admin', 'tenant_owner', 'platform_owner', 'admin'].includes(user.role)) {
+    // RBAC Check — shipping drains a gudang, so it is the `dispatch_stock`
+    // permission, not a list of roles remembered page by page.
+    if (!can("dispatch_stock")) {
       toast.error("Anda tidak memiliki akses untuk mengirim transfer");
       return;
     }
@@ -1640,7 +1673,7 @@ export default function Inventory() {
                         <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
                         <TableCell className="text-right">
                           {t.status === 'pending' && (
-                             (user?.role === 'store_manager' || user?.role === 'warehouse' || user?.role === 'tenant_admin' || user?.role === 'tenant_owner' || user?.role === 'platform_owner' || user?.role === 'admin') ? (
+                             can('dispatch_stock') ? (
                               <Button size="sm" onClick={() => handleApproveTransfer(t.id)}>
                                 Kirim
                               </Button>

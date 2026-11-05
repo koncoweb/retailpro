@@ -93,3 +93,60 @@ export async function deleteUserByEmail(email: string): Promise<void> {
     tenant.close();
   }
 }
+
+/** The tenant's settings document, parsed. Returns `{}` when nothing is stored. */
+async function readSettings(): Promise<Record<string, unknown>> {
+  const tenant = await tenantClient();
+  try {
+    const row = await tenant.execute('SELECT settings FROM tenants LIMIT 1');
+    const raw = row.rows[0]?.settings;
+    if (typeof raw !== 'string' || !raw) return {};
+    return JSON.parse(raw) as Record<string, unknown>;
+  } finally {
+    tenant.close();
+  }
+}
+
+/**
+ * The `cust_*` key a custom role was saved under, found by its label.
+ *
+ * The id is generated in the browser, so a test that creates a role through the
+ * Settings UI cannot know its key — it reads it back from the settings document
+ * the same save wrote.
+ */
+export async function findCustomRoleKeyByLabel(label: string): Promise<string | null> {
+  const settings = await readSettings();
+  const roles = (settings.custom_roles ?? {}) as Record<string, { label?: unknown }>;
+  for (const [key, value] of Object.entries(roles)) {
+    if (value?.label === label) return key;
+  }
+  return null;
+}
+
+/**
+ * Removes a custom role (and any scope row) straight from the settings document.
+ * Cleanup for the shared cloud tenant when a test cannot delete it through the
+ * UI because it is still assigned to a person.
+ */
+export async function deleteCustomRoleSetting(key: string): Promise<void> {
+  const tenant = await tenantClient();
+  try {
+    const row = await tenant.execute('SELECT id, settings FROM tenants LIMIT 1');
+    const current = row.rows[0];
+    if (!current) return;
+    const settings = JSON.parse(String(current.settings ?? '{}')) as Record<string, unknown>;
+    for (const bucket of ['custom_roles', 'role_scopes', 'role_permissions']) {
+      const map = settings[bucket];
+      if (map && typeof map === 'object' && key in (map as Record<string, unknown>)) {
+        delete (map as Record<string, unknown>)[key];
+        if (Object.keys(map as object).length === 0) delete settings[bucket];
+      }
+    }
+    await tenant.execute({
+      sql: 'UPDATE tenants SET settings = ? WHERE id = ?',
+      args: [JSON.stringify(settings), String(current.id)],
+    });
+  } finally {
+    tenant.close();
+  }
+}

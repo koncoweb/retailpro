@@ -51,6 +51,10 @@
 | KS-32 | 2026-10-31 | Model e2e menolak `responseFormat` → `agent.extract` gagal | Terbuka (batasan model) |
 | KS-33 | 2026-11-01 | `/api/storefront/marketplace` (publik) mengirim pesan error database apa adanya | Selesai |
 | KS-34 | 2026-11-01 | Bentuk URL produk berubah jadi `/product/$tenant/$slug`, tautan lama 404 | Selesai |
+| KS-35 | 2026-11-05 | Halaman Karyawan/Cabang menulis proyeksi tenant saja → perubahan peran tidak pernah berlaku | Selesai |
+| KS-36 | 2026-11-05 | Hapus karyawan hanya menghapus proyeksi → identitas tetap masuk & dapat token full-access | Selesai |
+| KS-37 | 2026-11-05 | Tiga mesin izin berbeda (hook, branch-orders, procurement) + daftar hard-coded → tidak sinkron | Selesai |
+| KS-38 | 2026-11-05 | Simpan matriks membekukan default semua role ke dokumen (snapshot) | Selesai |
 
 ---
 
@@ -459,6 +463,54 @@
 | **Solusi** | Route lama dipertahankan sebagai pengalihan (`tokoonline/src/routes/product.$slug.tsx`): slug dicari di seluruh marketplace, lalu `navigate(..., replace: true)` ke URL baru; slug yang sudah tidak ada sama sekali mendarat di `/katalog?q=<slug>` |
 | **Bukti** | Browser: `/product/chc-001` → `/product/thalia/chc-001` (h1 "Cokelat Bubuk Premium"); `/product/tidak-ada-xyz` → `/katalog?q=tidak-ada-xyz` dengan pesan "Tidak ada produk yang cocok" |
 | **Pelajaran** | Saat arti sebuah URL berubah, kirimkan juga penerjemahnya. Menghapus route lama tanpa pengalihan memindahkan biaya perbaikan ke setiap orang yang pernah menyimpan tautannya |
+
+## KS-35 · 2026-11-05 · Halaman menulis proyeksi tenant saja, perubahan peran tidak berlaku — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Mengubah peran/cabang karyawan dari `Employees.tsx` dan `Branches.tsx` menampilkan toast sukses, tapi login berikutnya orang itu masih peran lama. `useAuth()` membaca `user.role` dari sesi Better Auth (control plane), sedangkan halaman hanya menulis `users.role` di database tenant (proyeksi) |
+| **Akar masalah** | Ada dua salinan "orang ini siapa" dan tidak ada penulis yang menyatukan keduanya; control plane adalah sumber kebenaran sesi, proyeksi hanya cermin untuk query tenant |
+| **Solusi** | Satu endpoint `PATCH /api/admin/users/[id]` (`api/admin/users/[id].ts`) menulis control DB lebih dulu lalu mencerminkan ke proyeksi lewat `withTenantClient`; halaman memanggil endpoint, bukan SQL proyeksi langsung |
+| **Bukti** | `src/pages/Employees.tsx`, `src/pages/Branches.tsx`, `src/components/branches/BranchDetailModal.tsx` memanggil `/api/admin/users/[id]`; validasi `server/roles.ts` |
+| **Pelajaran** | Kalau dua tempat menyimpan fakta yang sama dan hanya satu yang dibaca saat login, menulis ke yang lain adalah ilusi. Pilih satu sumber kebenaran dan paksa semua penulis melewatinya |
+
+---
+
+## KS-36 · 2026-11-05 · Identitas tetap hidup setelah karyawan dihapus — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | `handleDeleteEmployee` menghapus baris `users` tenant saja. Orang itu masih bisa masuk, dan `api/tenant/bootstrap` tetap memberi token full-access ke database perusahaannya |
+| **Akar masalah** | Delete hanya menyentuh proyeksi; baris `user`/`account`/`session` di control tidak dihapus, dan bootstrap tidak memeriksa apakah orang itu masih aktif |
+| **Solusi** | `DELETE /api/admin/users/[id]` menghapus `session → account → user` (urutan yang terbukti perlu karena kopling FK) lalu baris proyeksi; bootstrap kini membaca proyeksi dan `403 account_inactive` saat tidak ada/`is_active=0`. `PATCH {active:false}` set `status=inactive` + `banned=1` sehingga Better Auth menolak login |
+| **Bukti** | `api/admin/users/[id].ts`, `api/tenant/bootstrap.ts`; pola penghapusan mengikuti `tests/support/db.ts` |
+| **Pelajaran** | Menghapus data tampilan bukan menghapus akses. Selama ada identitas yang bisa menghasilkan token, penghapusan belum selesai |
+
+---
+
+## KS-37 · 2026-11-05 · Tiga mesin izin yang saling tidak setuju — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | `usePermissions()` menghormati override `tenants.settings.role_permissions`, tetapi `roleHasPermission()` (branch-orders) dan `roleHasPurchasePermission()` (procurement) hanya membaca `DEFAULT_ROLE_PERMISSIONS`; sebagian layar memakai daftar peran hard-coded yang melewati keduanya. Owner mengubah matriks, sebagian UI berubah dan sebagian tidak |
+| **Akar masalah** | Tidak ada satu pun jalur baca izin; tiap modul memutuskan sendiri dari mana jawaban datang |
+| **Solusi** | Satu katalog (`PERMISSION_CATALOG`) → satu resolver murni (`src/lib/permission-matrix.ts`) → satu hook (`use-permissions` via TanStack Query). Modul bisnis menerima `PermissionCheck` (`can`) alih-alih string peran; daftar hard-coded diganti panggilan `can(...)` |
+| **Bukti** | `src/lib/branch-orders.ts`, `src/lib/procurement.ts`, `src/pages/{Inventory,BranchTransfers,POS}.tsx`; test `src/lib/permission-matrix.test.ts` |
+| **Pelajaran** | Otorisasi yang diduplikasi cepat menghasilkan tiga kebenaran. Satu resolver yang bisa diuji tanpa React membuat perubahan owner berarti di seluruh aplikasi sekaligus |
+
+---
+
+## KS-38 · 2026-11-05 · Simpan matriks membekukan default semua role — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Menyimpan satu role di `EmployeeRoleSettings` menulis snapshot `DEFAULT_ROLE_PERMISSIONS` SEMUA role ke `role_permissions`. Setelah itu menambah izin baru di kode tidak lagi muncul untuk role-role itu (dokumen sudah berisi nilai lama) |
+| **Akar masalah** | Loop save membekukan default ke dalam dokumen; `role_permissions` seharusnya hanya menyimpan penyimpangan, bukan salinan penuh |
+| **Solusi** | Save hanya menulis override role yang diedit (`setTenantSetting('role_permissions', {...existing, [role]: changed})`); resolver menggabungkan default < override < custom, jadi kunci yang muncul belakangan tetap berlaku untuk role yang tidak pernah disentuh |
+| **Bukti** | `src/components/settings/EmployeeRoleSettings.tsx`; `src/lib/permission-matrix.ts` (merge order); test merge-order di `permission-matrix.test.ts` |
+| **Pelajaran** | Dokumen konfigurasi harus menyimpan niat (deviasi), bukan hasil evaluasi. Membekukan default ke penyimpanan mengubah data turunan menjadi sampah usang begitu kode tumbuh |
+
+---
 
 ## Pelajaran umum (ringkas)
 

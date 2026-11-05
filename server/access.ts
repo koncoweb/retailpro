@@ -118,6 +118,20 @@ const warehouse = ac.newRole({
   report: ['read'],
 });
 
+/**
+ * Purchasing desk: raises orders and books what arrived, never approves its own
+ * order and never touches a till. Mirrors the `purchasing` column of the
+ * permission matrix (`docs/spec-purchase-order.md` §8) so the identity plane and
+ * the business plane describe the same job.
+ */
+const purchasing = ac.newRole({
+  product: ['read', 'update'],
+  inventory: ['read', 'adjust', 'transfer', 'purchase'],
+  supplier: ['create', 'read', 'update'],
+  expense: ['create', 'read'],
+  report: ['read'],
+});
+
 /** Default role: read-only visibility, as before. */
 const staff = ac.newRole(READ_ALL);
 
@@ -128,6 +142,7 @@ export const roles = {
   store_manager: storeManager,
   cashier,
   warehouse,
+  purchasing,
   staff,
 };
 

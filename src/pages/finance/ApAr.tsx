@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -376,9 +377,11 @@ export default function ApAr() {
             <h1 className="text-2xl font-bold">Hutang & Piutang</h1>
             <p className="text-muted-foreground">Manajemen tagihan supplier dan piutang pelanggan</p>
           </div>
-          <Button variant="outline" className="gap-2" onClick={handleExport}>
-            <Download className="h-4 w-4" /> Export Excel
-          </Button>
+          <PermissionGate permission="export_reports">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="h-4 w-4" /> Export Excel
+            </Button>
+          </PermissionGate>
         </div>
 
         <Tabs defaultValue="ar" className="space-y-4">

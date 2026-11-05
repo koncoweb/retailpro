@@ -14,8 +14,7 @@
  *
  * Design notes: `docs/spec-purchase-order.md`.
  */
-import { DEFAULT_ROLE_PERMISSIONS, type RoleValue } from "@/config/roles";
-import type { UserRole } from "@/types";
+import type { PermissionCheck } from "@/lib/permission-matrix";
 import type { Transaction } from "@/lib/db";
 
 /** Floating-point slack for REAL quantities (`0.1 + 0.2 !== 0.3`). */
@@ -153,28 +152,13 @@ const ACTION_ORDER: PurchaseOrderAction[] = [
   "view",
 ];
 
-/** The legacy `admin` role has no entry in the permission matrix. */
-function permissionRole(role: UserRole | RoleValue | null | undefined): RoleValue | null {
-  if (!role) return null;
-  if (role === "admin") return "tenant_admin";
-  return role as RoleValue;
-}
-
 /**
- * Whether a role holds a purchase permission by *default*. A tenant may
- * override this in Settings -> Role; `usePermissions()` layers that on top.
+ * Predicate the screens pass in — always `usePermissions().can`, never a role
+ * string. The companion check this replaced (`roleHasPurchasePermission`) read
+ * the shipped defaults only, so an owner revoking `approve_po` in Settings changed
+ * nothing here while changing everything on the Role screen.
  */
-export function roleHasPurchasePermission(
-  role: UserRole | RoleValue | null | undefined,
-  permission: PurchaseOrderPermission
-): boolean {
-  const key = permissionRole(role);
-  if (!key) return false;
-  return DEFAULT_ROLE_PERMISSIONS[key]?.[permission] === true;
-}
-
-/** Predicate the screens pass in, typically `usePermissions().can`. */
-export type PermissionCheck = (permission: string) => boolean;
+export type { PermissionCheck } from "@/lib/permission-matrix";
 
 export function canPerformPurchaseAction(
   status: PurchaseOrderStatus,
@@ -199,16 +183,21 @@ export function actionsForPurchaseOrder(
  * Who may approve a purchase order.
  *
  * Returns `null` when the approval is allowed, otherwise the message to show.
- * A solo owner has to be able to sign their own order or the feature is
- * unusable; staff may never do it.
+ * Two independent questions, asked in order: does this role hold `approve_po`
+ * at all, and is the order somebody else's? A solo owner has to be able to sign
+ * their own order or the feature is unusable; staff may never do it.
  */
 export function checkApprovalRights(params: {
-  role: UserRole | RoleValue | null | undefined;
+  role: string | null | undefined;
   actorId: string | null | undefined;
   createdBy: string | null | undefined;
+  can: PermissionCheck;
 }): string | null {
-  const { role, actorId, createdBy } = params;
+  const { role, actorId, createdBy, can } = params;
   if (!actorId) return "Sesi tidak dikenali, muat ulang halaman";
+  if (!can("approve_po")) {
+    return "Role Anda tidak punya izin Setujui Purchase Order. Hubungi owner.";
+  }
   if (!createdBy || createdBy === actorId) {
     const isOwner = role === "tenant_owner" || role === "platform_owner";
     if (!isOwner) {

@@ -289,11 +289,32 @@ export function BranchDetailModal({
         toast.success("Password berhasil diganti");
       }
 
-      // 2. Update Application User Data
-      await query(
-        `UPDATE users SET role = $1, is_active = $2, name = $3 WHERE id = $4`,
-        [editRole, editIsActive, editName, selectedEmployee.id]
+      // 2. Identity change goes through the one writer: `/api/admin/users/[id]`
+      //    updates the control-plane user (what the session and every route guard
+      //    read) and mirrors this tenant's `users` projection. The inline
+      //    `UPDATE users` used to change only the projection, so the person kept
+      //    signing in with their old role while this screen said "tersimpan".
+      const patchResponse = await fetch(
+        `${apiBase}/api/admin/users/${encodeURIComponent(selectedEmployee.id)}`,
+        {
+          method: "PATCH",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: editName,
+            role: editRole,
+            // The branch this modal is showing is the person's branch; sending it
+            // explicitly keeps the projection's assignment from being cleared.
+            branchId: branch.id,
+            active: editIsActive,
+          }),
+        }
       );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const patchPayload: any = await patchResponse.json().catch(() => ({}));
+      if (!patchResponse.ok) {
+        throw new Error(patchPayload?.message || "Gagal memperbarui data karyawan");
+      }
 
       // Refresh employees list
       await fetchBranchDetails(branch.id);

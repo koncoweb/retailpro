@@ -27,6 +27,7 @@ export const ACCOUNTS: readonly TestAccount[] = [
   { session: 'admin', label: 'tenant admin', credential: 'admin' },
   { session: 'kasir', label: 'cashier', credential: 'kasir' },
   { session: 'gudang', label: 'warehouse staff', credential: 'gudang' },
+  { session: 'purchasing', label: 'purchasing desk', credential: 'purchasing' },
 ];
 
 /**

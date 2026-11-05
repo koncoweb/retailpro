@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { query } from "@/lib/db";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/use-auth";
-import { roleHasPermission } from "@/lib/branch-orders";
+import { usePermissions } from "@/hooks/use-permissions";
 
 interface LowStockItem {
   id: string;
@@ -29,8 +29,9 @@ export function LowStockAlert() {
   const [lowStockItems, setLowStockItems] = useState<LowStockItem[]>([]);
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { can } = usePermissions();
   // Only the shop side asks the gudang for goods.
-  const canRequest = roleHasPermission(user?.role, "request_stock");
+  const canRequest = can("request_stock");
 
   useEffect(() => {
     const fetchLowStock = async () => {

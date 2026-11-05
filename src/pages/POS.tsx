@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/use-auth";
+import { useBranchScope, usePermissions } from "@/hooks/use-permissions";
 import { useTenant } from "@/contexts/TenantContext";
 import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
@@ -47,6 +48,7 @@ function formatCurrency(value: number) {
 
 export default function POS() {
   const { user } = useAuth();
+  const { can } = usePermissions();
   // Branch scoping comes from the verified tenant session, not from row order.
   // The previous `res.rows[0].id` fallback quietly rang sales up against
   // whichever branch sorted first, which became a real risk once the database
@@ -82,10 +84,18 @@ export default function POS() {
     [branches, currentBranchId]
   );
   
-  /** Company-level roles may ring up any branch; staff are scoped to theirs. */
-  const canSwitchBranch = useMemo(
-    () => ["platform_owner", "tenant_owner", "tenant_admin", "admin"].includes(user?.role ?? ""),
-    [user?.role]
+  /**
+   * Whose branches may be rung up here.
+   *
+   * This used to be a list of company-level roles. It is now the role's branch
+   * scope: a person tied to one gudang of shops cannot hop to another, and an
+   * owner who gives a role two branches gets a two-item picker for free.
+   */
+  const { branchIds } = useBranchScope();
+  const canSwitchBranch = branchIds === null || branchIds.length > 1;
+  const visibleBranches = useMemo(
+    () => (branchIds ? branches.filter((b) => branchIds.includes(b.id)) : branches),
+    [branches, branchIds]
   );
 
   const fetchBranches = async () => {
@@ -98,9 +108,14 @@ export default function POS() {
         // then this person's assigned branch, and only then the first branch —
         // which is the owner case, where every branch is in scope.
         const rows = res.rows as Branch[];
+        // Precedence: the branch on the tenant session (resolved at sign-in),
+        // then this person's assigned branch, then the first branch their role
+        // is allowed to see — an owner with no scope left is the last case.
+        const inScope = (b: Branch) => !branchIds || branchIds.includes(b.id);
         const preferred =
-          rows.find((b) => b.id === tenantSession?.branchId) ??
-          rows.find((b) => b.id === user?.assigned_branch_id) ??
+          rows.find((b) => b.id === tenantSession?.branchId && inScope(b)) ??
+          rows.find((b) => b.id === user?.assigned_branch_id && inScope(b)) ??
+          rows.find(inScope) ??
           rows[0];
         setCurrentBranchId(preferred.id);
     } catch (error) {
@@ -835,7 +850,7 @@ export default function POS() {
                       <SelectValue placeholder="Pilih cabang" />
                     </SelectTrigger>
                     <SelectContent>
-                      {branches.map((branch) => (
+                      {visibleBranches.map((branch) => (
                         <SelectItem key={branch.id} value={branch.id}>
                           {branch.name}
                         </SelectItem>
@@ -963,7 +978,7 @@ export default function POS() {
             ))}
           </div>
           <div className="border-t p-3 md:p-4 space-y-3 md:space-y-4">
-            <div className="flex items-center gap-2"><Button variant="outline" size="sm" className="gap-1"><User className="w-4 h-4" />Member</Button><Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button></div>
+            <div className="flex items-center gap-2"><Button variant="outline" size="sm" className="gap-1"><User className="w-4 h-4" />Member</Button>{can("apply_discount") && <Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button>}</div>
             <div className="space-y-2 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(subtotal)}</span></div>{discount > 0 && <div className="flex justify-between text-success"><span>Diskon ({discount}%)</span><span>-{formatCurrency(discountAmount)}</span></div>}<div className="flex justify-between text-lg font-bold pt-2 border-t"><span>Total</span><span className="text-primary">{formatCurrency(total)}</span></div></div>
             <div className="grid grid-cols-3 gap-2"><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Banknote className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Tunai</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><CreditCard className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Kartu</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Wallet className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">E-Wallet</span></Button></div>
             <Button variant="posPayment" size="xl" className="w-full" disabled={cart.length === 0 || !isShiftActive} onClick={() => setIsPaymentOpen(true)}>Bayar {formatCurrency(total)}</Button>

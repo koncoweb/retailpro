@@ -45,6 +45,10 @@ const routes: Route[] = [
     pattern: /^\/api\/admin\/users\/([^/]+)\/password\/?$/,
     load: () => import('../api/admin/users/[id]/password.js'),
   },
+  {
+    pattern: /^\/api\/admin\/users\/([^/]+)\/?$/,
+    load: () => import('../api/admin/users/[id].js'),
+  },
 ];
 
 const server = createServer(async (req, res) => {
@@ -62,6 +66,10 @@ const server = createServer(async (req, res) => {
   // Mirror what the platform provides: `req.query` populated from the URL.
   const request = req as IncomingMessage & { query?: Record<string, string | string[]> };
   request.query = url.query as Record<string, string | string[]>;
+  // Vercel hands a dynamic segment to `req.query.id`; the handlers fall back to
+  // parsing the path, but populating it here keeps local and production alike.
+  const dynamic = pathname.match(/^\/api\/admin\/users\/([^/]+)(?:\/password)?\/?$/);
+  if (dynamic) request.query.id = decodeURIComponent(dynamic[1]);
 
   try {
     const module = await route.load();

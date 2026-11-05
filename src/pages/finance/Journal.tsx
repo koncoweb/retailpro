@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -167,10 +168,12 @@ export default function Journal() {
             <h1 className="text-2xl font-bold">Jurnal Umum</h1>
             <p className="text-muted-foreground">Catatan transaksi debit dan kredit</p>
           </div>
-          <Button onClick={handleExport} variant="outline" className="gap-2">
-            <FileSpreadsheet className="h-4 w-4" />
-            Export Excel
-          </Button>
+          <PermissionGate permission="export_reports">
+            <Button onClick={handleExport} variant="outline" className="gap-2">
+              <FileSpreadsheet className="h-4 w-4" />
+              Export Excel
+            </Button>
+          </PermissionGate>
         </div>
 
         <Card>

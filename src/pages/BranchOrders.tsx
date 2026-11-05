@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { useSearchParams } from "react-router-dom";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
@@ -36,6 +37,7 @@ import * as XLSX from "xlsx";
 import { batchQuery, query, runTransaction } from "@/lib/db";
 import { logAuditTx } from "@/lib/audit";
 import { useAuth } from "@/hooks/use-auth";
+import { useBranchScope, usePermissions } from "@/hooks/use-permissions";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
 import { WAREHOUSES_SQL, resolveSupplyWarehouse, type WarehouseOption } from "@/lib/warehouse";
 import {
@@ -51,12 +53,12 @@ import {
   canPerform,
   nextOrderNumber,
   orderNumberPrefix,
-  roleHasPermission,
   summarizeOrder,
   validateApproval,
   validateDispatch,
   validateReceipt,
   STOCK_REQUEST_PRIORITY_LABEL,
+  STOCK_REQUEST_SOURCE_LABEL,
   STOCK_REQUEST_STATUS_LABEL,
   type StockRequestStatus,
 } from "@/lib/branch-orders";
@@ -204,6 +206,10 @@ export default function BranchOrders() {
   const [activeTab, setActiveTab] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [branchFilter, setBranchFilter] = useState("all");
+  // The list holds the whole archive; the period narrows it to the question
+  // being asked ("what did the shops request last month?").
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [page, setPage] = useState(1);
 
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -211,11 +217,13 @@ export default function BranchOrders() {
   const [detail, setDetail] = useState<OrderDetail | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
-  // A store manager only ever works for one shop: the queue, the filter and the
-  // create form are all locked to it.
-  const lockedBranchId =
-    user?.role === "store_manager" ? user?.assigned_branch_id ?? null : null;
-  const role = user?.role;
+  // Whoever works for one branch only ever works for that branch. The lock used
+  // to be written as `role === "store_manager"`; it is now "the branches my role
+  // is scoped to", so an owner can give a role two branches or none without a
+  // code change. A single-branch scope keeps the old one-branch behaviour.
+  const { branchIds } = useBranchScope();
+  const lockedBranchId = branchIds && branchIds.length === 1 ? branchIds[0] : null;
+  const { can } = usePermissions();
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -700,6 +708,9 @@ export default function BranchOrders() {
       if (lockedBranchId && order.branch_id !== lockedBranchId) return false;
       if (branchFilter !== "all" && order.branch_id !== branchFilter) return false;
       if (tab?.statuses && !tab.statuses.includes(order.status)) return false;
+      const day = order.created_at.slice(0, 10);
+      if (fromDate && day < fromDate) return false;
+      if (toDate && day > toDate) return false;
       if (!query) return true;
       return (
         order.request_number.toLowerCase().includes(query) ||
@@ -707,14 +718,14 @@ export default function BranchOrders() {
         (order.transfer_number ?? "").toLowerCase().includes(query)
       );
     });
-  }, [orders, activeTab, searchQuery, branchFilter, lockedBranchId]);
+  }, [orders, activeTab, searchQuery, branchFilter, lockedBranchId, fromDate, toDate]);
 
   const pageCount = Math.max(1, Math.ceil(visibleOrders.length / PAGE_SIZE));
   const pageRows = visibleOrders.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   useEffect(() => {
     setPage(1);
-  }, [activeTab, searchQuery, branchFilter]);
+  }, [activeTab, searchQuery, branchFilter, fromDate, toDate]);
 
   const stats = useMemo(() => {
     const forMe = orders.filter((order) => !lockedBranchId || order.branch_id === lockedBranchId);
@@ -736,6 +747,7 @@ export default function BranchOrders() {
       "No. Pesanan": order.request_number,
       Cabang: order.branch_name ?? "-",
       Gudang: order.warehouse_name ?? "-",
+      Sumber: STOCK_REQUEST_SOURCE_LABEL[order.source] ?? order.source,
       Status: STOCK_REQUEST_STATUS_LABEL[order.status],
       Prioritas: STOCK_REQUEST_PRIORITY_LABEL[order.priority] ?? order.priority,
       "Jumlah Baris": order.items_count,
@@ -749,6 +761,7 @@ export default function BranchOrders() {
       { wch: 26 },
       { wch: 20 },
       { wch: 20 },
+      { wch: 16 },
       { wch: 20 },
       { wch: 12 },
       { wch: 12 },
@@ -762,9 +775,9 @@ export default function BranchOrders() {
     toast.success("Berhasil export pesanan cabang");
   };
 
-  const canCreate = roleHasPermission(role, "request_stock");
-  const branchOptions = lockedBranchId
-    ? branches.filter((branch) => branch.id === lockedBranchId)
+  const canCreate = can("request_stock");
+  const branchOptions = branchIds
+    ? branches.filter((branch) => branchIds.includes(branch.id))
     : branches;
 
   return (
@@ -778,10 +791,12 @@ export default function BranchOrders() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="gap-2" onClick={handleExport}>
-              <Download className="w-4 h-4" />
-              Export
-            </Button>
+            <PermissionGate permission="export_reports">
+              <Button variant="outline" className="gap-2" onClick={handleExport}>
+                <Download className="w-4 h-4" />
+                Export
+              </Button>
+            </PermissionGate>
             {canCreate && (
               <Button
                 className="gap-2"
@@ -843,6 +858,22 @@ export default function BranchOrders() {
               </SelectContent>
             </Select>
           )}
+          <Input
+            type="date"
+            className="w-[170px]"
+            value={fromDate}
+            onChange={(event) => setFromDate(event.target.value)}
+            aria-label="Dari tanggal"
+            title="Dari tanggal"
+          />
+          <Input
+            type="date"
+            className="w-[170px]"
+            value={toDate}
+            onChange={(event) => setToDate(event.target.value)}
+            aria-label="Sampai tanggal"
+            title="Sampai tanggal"
+          />
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -862,6 +893,7 @@ export default function BranchOrders() {
                 <TableHead>No. Pesanan</TableHead>
                 <TableHead>Cabang</TableHead>
                 <TableHead>Gudang</TableHead>
+                <TableHead className="text-center">Sumber</TableHead>
                 <TableHead className="text-center">Baris</TableHead>
                 <TableHead className="text-center">Prioritas</TableHead>
                 <TableHead className="text-center">Status</TableHead>
@@ -872,13 +904,13 @@ export default function BranchOrders() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-24 text-center">
+                  <TableCell colSpan={9} className="h-24 text-center">
                     <Loader2 className="w-6 h-6 animate-spin text-primary mx-auto" />
                   </TableCell>
                 </TableRow>
               ) : pageRows.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="h-24 text-center text-muted-foreground">
+                  <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
                     Belum ada pesanan
                   </TableCell>
                 </TableRow>
@@ -895,6 +927,11 @@ export default function BranchOrders() {
                     </TableCell>
                     <TableCell>{order.branch_name ?? "-"}</TableCell>
                     <TableCell>{order.warehouse_name ?? "-"}</TableCell>
+                    <TableCell className="text-center">
+                      <Badge variant="outline">
+                        {STOCK_REQUEST_SOURCE_LABEL[order.source] ?? order.source}
+                      </Badge>
+                    </TableCell>
                     <TableCell className="text-center">{order.items_count}</TableCell>
                     <TableCell className="text-center">
                       <Badge variant={order.priority === "urgent" ? "destructive" : "secondary"}>
@@ -970,7 +1007,7 @@ export default function BranchOrders() {
             if (!open) setDetail(null);
           }}
           order={detail}
-          role={role}
+          can={can}
           onApprove={handleApprove}
           onReject={handleReject}
           onDispatch={handleDispatch}

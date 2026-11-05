@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Building2, Users, Package } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { query } from "@/lib/db";
+import { useBranchScope } from "@/hooks/use-permissions";
 
 interface BranchData {
   id: string;
@@ -24,6 +25,10 @@ function formatCurrency(value: number) {
 
 export function BranchPerformance() {
   const [branches, setBranches] = useState<BranchData[]>([]);
+  // The card ranks every branch in the company, which is exactly the number a
+  // role scoped to one location must not see. Filtered here rather than in SQL
+  // because the list is a handful of rows and the scope is already resolved.
+  const { branchIds, restricted } = useBranchScope();
 
   useEffect(() => {
     const fetchData = async () => {
@@ -89,14 +94,14 @@ export function BranchPerformance() {
           };
         });
 
-        setBranches(data);
+        setBranches(restricted ? data.filter((row) => branchIds?.includes(row.id)) : data);
       } catch (error) {
         console.error("Failed to fetch branch performance:", error);
       }
     };
 
     fetchData();
-  }, []);
+  }, [restricted, branchIds]);
 
   return (
     <div className="bg-card rounded-xl border p-5 animate-fade-in">

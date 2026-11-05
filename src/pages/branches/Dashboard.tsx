@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { batchQuery } from "@/lib/db";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -154,10 +155,12 @@ export default function BranchDashboard() {
             Ringkasan performa dan statistik seluruh cabang bulan ini.
           </p>
         </div>
-        <Button variant="outline" className="gap-2" onClick={handleExport}>
-          <Download className="w-4 h-4" />
-          Export
-        </Button>
+        <PermissionGate permission="export_reports">
+          <Button variant="outline" className="gap-2" onClick={handleExport}>
+            <Download className="w-4 h-4" />
+            Export
+          </Button>
+        </PermissionGate>
       </div>
 
       {/* Stats Grid */}

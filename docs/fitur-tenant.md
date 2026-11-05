@@ -183,6 +183,18 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-11-01 | `6cd3e9b` | API | `GET /api/storefront/marketplace` tidak lagi mengirim pesan error database ke pengunjung: tenant yang gagal masuk `skipped[]` sebagai `{slug, reason:"unavailable"}` dan detailnya hanya ke log server — lihat KS-33 | Ubah |
 | 2026-11-01 | — (working tree) | Toko Online | Banner beranda memakai **gambar** yang disiapkan untuk etalase (`public/slider/`): dua banner TokoBahanKue 16:9, tiap banner menaut ke `/katalog`, teksnya sudah ada di dalam gambar sehingga tidak ada lapisan teks tambahan. Tiga slide teks lama (jumlah toko, jumlah produk, asal gudang) dihapus; angka yang sama tetap tampil di strip penjual dan grid produk | Ubah |
 
+### 2026-11-05 — sistem role & izin (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-05 | — (working tree) | Akses | **Satu identitas, satu penulis**: perubahan peran/cabang/aktif karyawan ditulis ke control DB lalu dicerminkan ke proyeksi tenant lewat endpoint `PATCH`/`DELETE /api/admin/users/[id]`; halaman Karyawan/Cabang tidak lagi menulis proyeksi secara langsung sehingga perubahan benar-benar berlaku saat login berikutnya | Perbaikan |
+| 2026-11-05 | — (working tree) | Akses | Karyawan nonaktif/terhapus tidak lagi menerima token: `api/tenant/bootstrap` membaca proyeksi dan menolak `403 account_inactive`, dan `PATCH {active:false}` set `status=inactive` + `banned=1` agar Better Auth menolak login | Baru |
+| 2026-11-05 | — (working tree) | Izin | **Satu katalog & satu resolver**: `PERMISSION_CATALOG` (kunci + label + hint) di `src/config/roles.ts` dan `src/lib/permission-matrix.ts` menggantikan tiga mesin izin yang berbeda; guard rute memakai kunci izin (`can(...)`), bukan daftar peran | Baru |
+| 2026-11-05 | — (working tree) | Izin | `usePermissions()` dibaca lewat TanStack Query (kunci `['tenant-settings']`), di-seed dari bootstrap agar render pertama tidak berkedip, dan di-invalidasi tiap matriks disimpan | Ubah |
+| 2026-11-05 | — (working tree) | Pengaturan | **Role custom + scope lokasi** milik owner disimpan di dokumen `tenants.settings` (`custom_roles`, `role_scopes`) tanpa migrasi skema: buat/duplikat/hapus role, editor matriks master/detail dengan pencarian izin, dan penerapan "dimana" (cabang/gudang) di Dashboard, Pesanan Cabang, Inventori, POS, dan badge | Baru |
+| 2026-11-05 | — (working tree) | UI/UX | Editor matriks dan halaman Karyawan responsif (kartu di layar kecil, tabel di `md`+), target sentuh `min-h-11`, primitif `permission-row` dan varian tombol `touch`, serta panel "Hubungi owner" saat tak ada layar yang bisa dibuka | Baru |
+| 2026-11-05 | — (working tree) | Akses | Peran `purchasing` kini benar-benar bisa dibuat dan punya kartu mode-select serta akses `/backoffice/inventory/po` (selama ini dideklarasikan tapi tak bisa dibuat) | Perbaikan |
+
 ### Riwayat commit (aplikasi sebelum migrasi)
 
 | Waktu | Ref | Modul | Perubahan | Status |
@@ -364,8 +376,11 @@ Data berasal dari back office setiap tenant yang berstatus `active`.
 
 ## 3. Peran dan akses menu
 
-Sumber: `src/App.tsx` (`allowedRoles`), `src/config/roles.ts`, dan `allowedRoles` per item di
-`src/components/layout/BackOfficeLayout.tsx`.
+Sumber: kunci izin per rute di `src/App.tsx` (`guarded`/`guardedAny`), nilai bawaan
+`DEFAULT_ROLE_PERMISSIONS` di `src/config/roles.ts`, dan kunci `permission` tiap item di
+`src/components/layout/nav-items.ts`. Guard tidak lagi membaca daftar peran; peran custom dan
+override owner dihormati lewat resolver `src/lib/permission-matrix.ts`. Tabel di bawah adalah
+*jangkauan keluaran* (bukan konfigurasi), dijaga identik dengan `tests/rbac.e2e.ts`.
 
 | Menu | platform_owner | tenant_owner | tenant_admin | store_manager | cashier | warehouse | staff |
 |---|---|---|---|---|---|---|---|
@@ -387,11 +402,11 @@ Sumber: `src/App.tsx` (`allowedRoles`), `src/config/roles.ts`, dan `allowedRoles
 | Pengaturan | ✓ | ✓ | ✓ | – | – | – | – |
 
 Catatan:
-- `admin` masih diterima di beberapa guard sebagai nama peran lama; peran resmi yang dipakai hari
-  ini adalah tujuh di atas.
-- **warehouse** mendapat potongan back office khusus dokumen stok. Karena `/backoffice` tetap
-  manager-only, entri back office untuk peran ini diarahkan ke **Pesanan Cabang**
-  (`src/pages/ModeSelect.tsx`); menu lain tidak ditampilkan agar tidak ada tautan yang berujung
-  pengalihan.
-- Transfer stok dan opname dijaga `STOCK_DOCS` (manager + warehouse), sedangkan stok masuk dan PO
-  tetap `BACK_OFFICE` — staf gudang menerima barang lewat pesanan cabang, bukan lewat PO.
+- `admin` adalah alias lama untuk `tenant_admin` yang dipetakan resolver (`src/lib/permission-matrix.ts`),
+  bukan peran terpisah; tujuh peran resmi di atas adalah kunci katalog yang sebenarnya.
+- **warehouse** memakai `view_inventory` untuk dokumen stok dan diarahkan ke **Pesanan Cabang** di
+  layar mode-select, karena `/backoffice` menuntut `view_analytics` yang tidak dipegang peran ini; menu
+  tanpa kuncinya tidak ditampilkan agar tidak ada tautan yang berujung pengalihan.
+- Transfer stok, opname, gudang, produk, dan PO dijaga `view_inventory`; stok masuk dijaga
+  `add_stock` dan hanya tampil untuk peran yang memegangnya — staf gudang menerima barang lewat
+  pesanan cabang, bukan lewat PO.

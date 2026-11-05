@@ -10,8 +10,7 @@
  * the checkout of an approval and the demo seed cannot drift apart. No SQL, no
  * React — only statuses, guards and numbering.
  */
-import { DEFAULT_ROLE_PERMISSIONS, type RoleValue } from "@/config/roles";
-import type { UserRole } from "@/types";
+import type { PermissionCheck } from "@/lib/permission-matrix";
 
 export type StockRequestStatus =
   | "draft"
@@ -64,6 +63,16 @@ export const STOCK_REQUEST_PRIORITY_LABEL: Record<string, string> = {
   urgent: "Mendesak",
 };
 
+/**
+ * Where the demand came from: a shop raising a request, or the web channel
+ * ordering stock it never holds. The column exists so a warehouse queue can be
+ * read without guessing which orders are a shop and which are a customer.
+ */
+export const STOCK_REQUEST_SOURCE_LABEL: Record<string, string> = {
+  branch: "Cabang",
+  online: "Toko Online",
+};
+
 export interface RequestActionRule {
   /** Statuses the action may be taken from. */
   from: StockRequestStatus[];
@@ -101,36 +110,26 @@ export function actionsForStatus(status: StockRequestStatus): StockRequestAction
   return order.filter((action) => REQUEST_ACTIONS[action].from.includes(status));
 }
 
-/** The legacy `admin` role has no entry in the permission matrix. */
-function permissionRole(role: UserRole | RoleValue | null | undefined): RoleValue | null {
-  if (!role) return null;
-  if (role === "admin") return "tenant_admin";
-  return role as RoleValue;
-}
-
-export function roleHasPermission(
-  role: UserRole | RoleValue | null | undefined,
-  permission: StockRequestPermission
-): boolean {
-  const key = permissionRole(role);
-  if (!key) return false;
-  return DEFAULT_ROLE_PERMISSIONS[key]?.[permission] === true;
-}
-
 /**
- * Whether this role may run `action` on a request in `status`.
+ * Whether this permission set may run `action` on a request in `status`.
  *
- * The branch matters: a store manager may confirm receipt for their own shop,
- * but the guard against acting on someone else's branch is applied by the page,
- * which knows the user's `assigned_branch_id`.
+ * It takes the resolved `can()` predicate rather than a role string on purpose:
+ * the copy of this check that read `DEFAULT_ROLE_PERMISSIONS` directly ignored
+ * whatever the owner had switched on or off in Settings -> Role, so a revoked
+ * permission still let its button through. Every caller now hands it
+ * `usePermissions().can`.
+ *
+ * The branch still matters: a store manager may confirm receipt for their own
+ * shop, but the guard against acting on someone else's branch is applied by the
+ * page, which knows the user's `assigned_branch_id` and role scope.
  */
 export function canPerform(
-  role: UserRole | RoleValue | null | undefined,
+  can: PermissionCheck,
   status: StockRequestStatus,
   action: StockRequestAction
 ): boolean {
   const rule = REQUEST_ACTIONS[action];
-  return rule.from.includes(status) && roleHasPermission(role, rule.permission);
+  return rule.from.includes(status) && can(rule.permission);
 }
 
 /** `REQ/<yyyymmdd>-<branchCode>-`: what every number of that branch and day shares. */

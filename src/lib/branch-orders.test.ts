@@ -6,7 +6,6 @@ import {
   formatOrderNumber,
   nextOrderNumber,
   nextStatuses,
-  roleHasPermission,
   STOCK_REQUEST_STATUS_LABEL,
   STOCK_REQUEST_STATUSES,
   summarizeOrder,
@@ -14,6 +13,24 @@ import {
   validateDispatch,
   validateReceipt,
 } from './branch-orders';
+import {
+  buildGrants,
+  grantForRole,
+  makeChecker,
+  permissionRole,
+  type PermissionCheck,
+} from './permission-matrix';
+
+/**
+ * A `can()` for a role of an untouched tenant.
+ *
+ * These tests used to call `roleHasPermission()`, which read
+ * `DEFAULT_ROLE_PERMISSIONS` directly and therefore could not express what an
+ * owner configured. Going through `buildGrants()` means the guard is tested
+ * against the same resolver the buttons use.
+ */
+const asRole = (role: string | null): PermissionCheck =>
+  makeChecker(grantForRole(buildGrants(null), role));
 
 describe('branch orders: status machine', () => {
   it('walks the happy path and nothing else', () => {
@@ -47,26 +64,52 @@ describe('branch orders: status machine', () => {
 
 describe('branch orders: permissions', () => {
   it('separates asking from approving and shipping', () => {
-    expect(roleHasPermission('store_manager', 'request_stock')).toBe(true);
-    expect(roleHasPermission('store_manager', 'approve_stock_request')).toBe(false);
-    expect(roleHasPermission('store_manager', 'dispatch_stock')).toBe(false);
-    expect(roleHasPermission('warehouse', 'approve_stock_request')).toBe(true);
-    expect(roleHasPermission('warehouse', 'dispatch_stock')).toBe(true);
-    expect(roleHasPermission('tenant_owner', 'approve_stock_request')).toBe(true);
-    expect(roleHasPermission('cashier', 'request_stock')).toBe(false);
-    expect(roleHasPermission(null, 'request_stock')).toBe(false);
+    const shop = asRole('store_manager');
+    const gudang = asRole('warehouse');
+    const owner = asRole('tenant_owner');
+    expect(shop('request_stock')).toBe(true);
+    expect(shop('approve_stock_request')).toBe(false);
+    expect(shop('dispatch_stock')).toBe(false);
+    expect(gudang('approve_stock_request')).toBe(true);
+    expect(gudang('dispatch_stock')).toBe(true);
+    expect(owner('approve_stock_request')).toBe(true);
+    expect(asRole('cashier')('request_stock')).toBe(false);
+  });
+
+  it('fails closed for a role the matrix does not know', () => {
+    // A custom role deleted while somebody still used it resolves to no grant.
+    const orphan = asRole('cust_gone');
+    expect(orphan('request_stock')).toBe(false);
+    expect(asRole(null)('request_stock')).toBe(false);
+    expect(canPerform(orphan, 'submitted', 'approve')).toBe(false);
   });
 
   it('treats the legacy admin role as tenant_admin', () => {
-    expect(roleHasPermission('admin', 'approve_stock_request')).toBe(true);
-    expect(canPerform('admin', 'submitted', 'approve')).toBe(true);
+    expect(permissionRole('admin')).toBe('tenant_admin');
+    expect(asRole('admin')('approve_stock_request')).toBe(true);
+    expect(canPerform(asRole('admin'), 'submitted', 'approve')).toBe(true);
   });
 
-  it('combines the status and the role', () => {
-    expect(canPerform('warehouse', 'submitted', 'approve')).toBe(true);
-    expect(canPerform('warehouse', 'submitted', 'dispatch')).toBe(false);
-    expect(canPerform('store_manager', 'submitted', 'approve')).toBe(false);
-    expect(canPerform('store_manager', 'in_transit', 'receive')).toBe(true);
+  it('combines the status and the permission', () => {
+    expect(canPerform(asRole('warehouse'), 'submitted', 'approve')).toBe(true);
+    expect(canPerform(asRole('warehouse'), 'submitted', 'dispatch')).toBe(false);
+    expect(canPerform(asRole('store_manager'), 'submitted', 'approve')).toBe(false);
+    expect(canPerform(asRole('store_manager'), 'in_transit', 'receive')).toBe(true);
+  });
+
+  it('follows an override the owner saved', () => {
+    // The whole point of one resolver: switch the shop's approval right on in
+    // Settings and the state machine hands it over without a code change.
+    const grants = buildGrants({
+      role_permissions: { store_manager: { approve_stock_request: true } },
+    });
+    const shop = makeChecker(grants['store_manager']);
+    expect(canPerform(shop, 'submitted', 'approve')).toBe(true);
+    // An owner turning the warehouse's dispatch off really closes the step.
+    const limited = buildGrants({
+      role_permissions: { warehouse: { dispatch_stock: false } },
+    });
+    expect(canPerform(makeChecker(limited['warehouse']), 'approved', 'dispatch')).toBe(false);
   });
 });
 

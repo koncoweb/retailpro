@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -212,9 +213,11 @@ export default function Expenses() {
             <p className="text-muted-foreground">Catat dan pantau pengeluaran operasional</p>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" className="gap-2" onClick={handleExport}>
-              <Download className="h-4 w-4" /> Export Excel
-            </Button>
+            <PermissionGate permission="export_reports">
+              <Button variant="outline" className="gap-2" onClick={handleExport}>
+                <Download className="h-4 w-4" /> Export Excel
+              </Button>
+            </PermissionGate>
             <Dialog open={isAddOpen} onOpenChange={setIsAddOpen}>
               <DialogTrigger asChild>
                 <Button className="gap-2">

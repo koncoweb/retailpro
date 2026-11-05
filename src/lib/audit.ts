@@ -32,6 +32,10 @@ export type AuditAction =
   | "refund"
   | "create_employee"
   | "update_employee"
+  // Identity changes made through `/api/admin/users/[id]` are auditable events
+  // of their own: a reset password is not "update_employee", and the audit log
+  // is how an owner traces who could sign in as whom.
+  | "reset_employee_password"
   | "create_expense"
   | "create_payment";
 

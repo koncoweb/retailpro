@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { useLocation, useNavigate } from "react-router-dom";
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isWeekend, getDay } from "date-fns";
 import { id } from "date-fns/locale";
@@ -558,9 +559,11 @@ export default function EmployeeReports() {
             <Button variant="outline" className="gap-2" onClick={() => setIsAddLeaveOpen(true)}>
                 <Plus className="w-4 h-4" /> Cuti
             </Button>
-            <Button className="gap-2" onClick={handleExport}>
-                <Download className="w-4 h-4" /> Export
-            </Button>
+            <PermissionGate permission="export_reports">
+              <Button className="gap-2" onClick={handleExport}>
+                  <Download className="w-4 h-4" /> Export
+              </Button>
+            </PermissionGate>
           </div>
         </div>
 

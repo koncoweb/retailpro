@@ -28,7 +28,7 @@ import {
   summarizeOrder,
   type StockRequestStatus,
 } from "@/lib/branch-orders";
-import type { UserRole } from "@/types";
+import type { PermissionCheck } from "@/lib/permission-matrix";
 
 export interface OrderDetailLine {
   id: string;
@@ -72,8 +72,8 @@ interface BranchOrderDetailModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   order: OrderDetail | null;
-  /** Current user's role; decides which buttons render. */
-  role: UserRole | null | undefined;
+  /** The viewer's resolved permissions; decides which buttons render. */
+  can: PermissionCheck;
   onApprove: (approved: Record<string, number>) => void;
   onReject: (reason: string) => void;
   onDispatch: () => void;
@@ -104,7 +104,7 @@ export function BranchOrderDetailModal({
   open,
   onOpenChange,
   order,
-  role,
+  can,
   onApprove,
   onReject,
   onDispatch,
@@ -140,11 +140,11 @@ export function BranchOrderDetailModal({
   if (!order) return null;
 
   const summary = summarizeOrder(order.items);
-  const canApprove = canPerform(role, order.status, "approve");
-  const canReject = canPerform(role, order.status, "reject");
-  const canDispatch = canPerform(role, order.status, "dispatch");
-  const canReceive = canPerform(role, order.status, "receive");
-  const canCancel = canPerform(role, order.status, "cancel");
+  const canApprove = canPerform(can, order.status, "approve");
+  const canReject = canPerform(can, order.status, "reject");
+  const canDispatch = canPerform(can, order.status, "dispatch");
+  const canReceive = canPerform(can, order.status, "receive");
+  const canCancel = canPerform(can, order.status, "cancel");
 
   const timeline = [
     { label: "Dibuat", who: order.requested_by_name, when: order.created_at },

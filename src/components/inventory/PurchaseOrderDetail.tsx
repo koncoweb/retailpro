@@ -42,8 +42,19 @@ export interface PurchaseOrderRow {
   notes: string | null;
   payment_terms_days: number;
   created_by: string | null;
+  created_by_name: string | null;
+  submitted_by: string | null;
+  submitted_by_name: string | null;
   submitted_at: string | null;
+  approved_by: string | null;
+  approved_by_name: string | null;
   approved_at: string | null;
+  rejected_by: string | null;
+  rejected_by_name: string | null;
+  rejected_at: string | null;
+  cancelled_by: string | null;
+  cancelled_by_name: string | null;
+  cancelled_at: string | null;
   rejection_reason: string | null;
   cancel_reason: string | null;
   /** `SUM(goods_receipts.total_amount)` — what has actually arrived. */
@@ -74,6 +85,8 @@ export interface PurchaseOrderReceipt {
   received_at: string;
   total_amount: number;
   supplier_document: string | null;
+  /** Who booked the delivery; null on rows written before the actor was kept. */
+  received_by_name: string | null;
   line_count: number;
 }
 
@@ -101,6 +114,14 @@ function formatDate(value: string | null | undefined): string {
   return parsed.toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" });
 }
 
+/** Timestamps in the trail carry the hour: two approvals on one day must read apart. */
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "-";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" });
+}
+
 function quantity(value: number): string {
   return Number(Number(value ?? 0).toFixed(3)).toLocaleString("id-ID");
 }
@@ -122,6 +143,26 @@ export function PurchaseOrderDetail({
   onAction,
 }: PurchaseOrderDetailProps) {
   const footerActions = actions.filter((action) => action !== "view");
+
+  /**
+   * The document trail: each transition that actually happened, with the person
+   * the schema recorded for it. `received_at` is the header timestamp while the
+   * who-else sits on the receipt, so the last step reads from both.
+   */
+  const trail = order
+    ? [
+        { label: "Dibuat", who: order.created_by_name, at: order.created_at },
+        { label: "Diajukan", who: order.submitted_by_name, at: order.submitted_at },
+        { label: "Disetujui", who: order.approved_by_name, at: order.approved_at },
+        { label: "Ditolak", who: order.rejected_by_name, at: order.rejected_at },
+        { label: "Dibatalkan", who: order.cancelled_by_name, at: order.cancelled_at },
+        {
+          label: "Diterima",
+          who: order.receipts[0]?.received_by_name ?? null,
+          at: order.received_at,
+        },
+      ].filter((step) => step.at)
+    : [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -152,12 +193,22 @@ export function PurchaseOrderDetail({
               >
                 {PO_STATUS_LABEL[order.status]}
               </span>
-              <span className="text-sm text-muted-foreground">
-                Dibuat {formatDate(order.created_at)}
-                {order.approved_at ? ` · disetujui ${formatDate(order.approved_at)}` : ""}
-                {order.received_at ? ` · diterima ${formatDate(order.received_at)}` : ""}
-              </span>
             </div>
+
+            {trail.length > 0 && (
+              <div className="rounded-md border p-3">
+                <p className="text-xs font-medium text-muted-foreground mb-2">Riwayat dokumen</p>
+                <ul className="space-y-1.5 text-sm">
+                  {trail.map((step) => (
+                    <li key={step.label} className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="w-24 shrink-0 text-muted-foreground">{step.label}</span>
+                      <span className="font-medium">{step.who ?? "-"}</span>
+                      <span className="text-muted-foreground">{formatDateTime(step.at)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
               <div>
@@ -266,6 +317,7 @@ export function PurchaseOrderDetail({
                       <TableRow>
                         <TableHead>No. Penerimaan</TableHead>
                         <TableHead>Tanggal</TableHead>
+                        <TableHead>Diterima Oleh</TableHead>
                         <TableHead>Dok. Vendor</TableHead>
                         <TableHead className="text-right">Baris</TableHead>
                         <TableHead className="text-right">Nilai</TableHead>
@@ -276,6 +328,7 @@ export function PurchaseOrderDetail({
                         <TableRow key={receipt.id}>
                           <TableCell className="font-medium">{receipt.grn_number}</TableCell>
                           <TableCell>{formatDate(receipt.received_at)}</TableCell>
+                          <TableCell>{receipt.received_by_name ?? "-"}</TableCell>
                           <TableCell>{receipt.supplier_document ?? "-"}</TableCell>
                           <TableCell className="text-right">{Number(receipt.line_count)}</TableCell>
                           <TableCell className="text-right">

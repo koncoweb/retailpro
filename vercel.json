@@ -9,6 +9,10 @@
       "destination": "/api/admin/users/[id]/password"
     },
     {
+      "source": "/api/admin/users/([^/]+)",
+      "destination": "/api/admin/users/[id]"
+    },
+    {
       "source": "/((?!api/).*)",
       "destination": "/index.html"
     }

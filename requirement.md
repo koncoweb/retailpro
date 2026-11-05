@@ -22,6 +22,7 @@
 | 2026-10-28 | Deployment nyata: **dua proyek Vercel** + control DB dan DB tenant di **Turso cloud** (grup `ap-southeast-2`); runbook di `docs/deployment.md` |
 | 2026-11-01 | Aplikasi kedua naik dari etalase satu tenant menjadi **marketplace lintas tenant**: `GET /api/storefront/marketplace` menggabungkan katalog semua tenant `active`, produk membawa `tenant`/`seller`, dan `/api/storefront/catalog` turun menjadi kontrak untuk klien satu toko. Merek etalase **Toko Bahan Kue / Marketplace** dengan aksen rose |
 | 2026-11-01 | Satu pesanan boleh berisi barang beberapa penjual: satu keranjang, satu ongkir, satu pembayaran (platform sebagai merchant of record), dan ringkasan checkout/pesanan dikelompokkan per toko. Pesanan tetap tersimpan di perangkat |
+| 2026-11-05 | **Sistem role & izin**: satu katalog → satu resolver → satu identitas runtime. Owner dapat mengatur *apa* yang boleh dilakukan tiap peran dan *di mana* (scope cabang/gudang), plus membuat **role custom** — semuanya disimpan di dokumen `tenants.settings` tanpa migrasi skema. Perubahan peran/keaktifan karyawan kini ditulis lewat endpoint (`api/admin/users/[id]`) dan ditegakkan server-side di bootstrap; guard rute memakai kunci izin, bukan daftar peran. Lihat `docs/kendala-solusi.md` KS-35 s.d. KS-38 |
 
 ---
 

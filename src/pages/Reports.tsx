@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,9 +32,13 @@ import {
   DollarSign,
   Package,
   Users,
+  Truck,
+  ArrowRight,
   Loader2,
+  type LucideIcon,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { usePermissions } from "@/hooks/use-permissions";
 import { query } from "@/lib/db";
 import { getPeriodRange, sqliteTzModifier, startOfMonthOffset } from "@/lib/date-range";
 import * as XLSX from 'xlsx';
@@ -52,7 +57,18 @@ function formatCurrency(value: number) {
   return `Rp ${value.toLocaleString()}`;
 }
 
-const reportTypes = [
+interface ReportTypeCard {
+  title: string;
+  description: string;
+  icon: LucideIcon;
+  color: string;
+  type: string;
+  path: string;
+  /** `false` when the card only opens its own screen, which owns the export. */
+  exportable?: boolean;
+}
+
+const reportTypes: ReportTypeCard[] = [
   {
     title: "Laporan Penjualan",
     description: "Ringkasan penjualan per cabang dan periode",
@@ -85,10 +101,24 @@ const reportTypes = [
     type: "finance",
     path: "/backoffice/reports/finance"
   },
+  {
+    title: "Laporan Pengadaan",
+    description: "Purchase order vendor dan permintaan cabang ke pusat",
+    icon: Truck,
+    color: "info",
+    type: "procurement",
+    path: "/backoffice/reports/procurement",
+    exportable: false
+  },
 ];
 
 export default function Reports() {
   const navigate = useNavigate();
+  // `view_reports` opens this screen (the route guard asks it); `export_reports`
+  // decides whether the data may leave it. A role without the export still gets
+  // the cards, because each one is also a link to a report screen.
+  const { can: canReport } = usePermissions();
+  const canExport = canReport("export_reports");
   const [period, setPeriod] = useState("thismonth");
   /**
    * `all` is not a branch id — it means "aggregate every branch". Read-side
@@ -387,16 +417,20 @@ export default function Reports() {
                 <SelectItem value="thisyear">Tahun Ini</SelectItem>
               </SelectContent>
             </Select>
-            <Button variant="outline" className="gap-2" onClick={() => handleExport()}>
-                <Download className="w-4 h-4" />
-                Export Semua
-            </Button>
+            <PermissionGate permission="export_reports">
+              <Button variant="outline" className="gap-2" onClick={() => handleExport()}>
+                  <Download className="w-4 h-4" />
+                  Export Semua
+              </Button>
+            </PermissionGate>
           </div>
         </div>
 
         {/* Quick Export Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {reportTypes.map((report) => (
+          {reportTypes.map((report) => {
+            const opensOnly = report.exportable === false || !canExport;
+            return (
             <Card 
               key={report.title} 
               className="hover:shadow-lg transition-all cursor-pointer group"
@@ -424,15 +458,24 @@ export default function Reports() {
                   className="w-full mt-4 justify-between"
                   onClick={(e) => {
                     e.stopPropagation();
+                    if (opensOnly) {
+                      navigate(report.path);
+                      return;
+                    }
                     handleExport(report.type);
                   }}
                 >
-                  Quick Export
-                  <Download className="h-4 w-4 ml-2" />
+                  {opensOnly ? "Buka Laporan" : "Quick Export"}
+                  {opensOnly ? (
+                    <ArrowRight className="h-4 w-4 ml-2" />
+                  ) : (
+                    <Download className="h-4 w-4 ml-2" />
+                  )}
                 </Button>
               </CardContent>
             </Card>
-          ))}
+            );
+          })}
         </div>
 
         {isLoading ? (
@@ -548,10 +591,12 @@ export default function Reports() {
                     <CardTitle>Penjualan per Cabang</CardTitle>
                     <CardDescription>Perbandingan penjualan semua cabang</CardDescription>
                     </div>
-                    <Button variant="outline" className="gap-2" onClick={() => handleExport('sales')}>
-                    <Download className="w-4 h-4" />
-                    Export
-                    </Button>
+                    <PermissionGate permission="export_reports">
+                      <Button variant="outline" className="gap-2" onClick={() => handleExport('sales')}>
+                      <Download className="w-4 h-4" />
+                      Export
+                      </Button>
+                    </PermissionGate>
                 </CardHeader>
                 <CardContent>
                     <div className="h-[350px]">

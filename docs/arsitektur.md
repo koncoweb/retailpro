@@ -210,9 +210,9 @@ bisa menampilkan produk yang berbeda untuk tenant yang sama.
 | Aspek | Implementasi saat ini |
 |---|---|
 | Isolasi data | Database terpisah per tenant; `db/schema/tenant.sql` tidak punya `tenant_id` dan test skema memastikannya |
-| Identitas | Better Auth di control DB; `role`, `tenantId`, `branchId` adalah `additionalFields` sehingga selalu ada di session |
-| Otorisasi UI | `RoleBasedRoute` gagal-tertutup + daftar `allowedRoles` eksplisit per route di `src/App.tsx` |
-| Otorisasi server | `requireAdminSession` pada endpoint admin; peran yang boleh diberikan dibatasi `ASSIGNABLE_ROLES` |
+| Identitas | Better Auth di control DB; `role`, `tenantId`, `branchId` adalah `additionalFields` sehingga selalu ada di session. **Peran di session adalah identitas runtime** — baris `users` di DB tenant hanya proyeksi, dan keduanya ditulis dari satu endpoint (`/api/admin/users/[id]`) |
+| Otorisasi UI | Satu katalog izin (`src/config/roles.ts`) → satu resolver murni (`src/lib/permission-matrix.ts`) → satu hook (`usePermissions()` di atas TanStack Query). `RoleBasedRoute`, entri sidebar, dan kartu `ModeSelect` menuntut **kunci izin**, bukan daftar peran; peran yang tidak dikenal matriks gagal-tertutup |
+| Otorisasi server | `requireAdminSession` pada endpoint admin; `ASSIGNABLE_ROLES` lama diganti `server/roles.ts` (bawaan ∪ `settings.custom_roles`, owner ditolak); `/api/tenant/bootstrap` membaca baris proyeksi sebelum mencetak token sehingga orang yang dihapus/dinonaktifkan tidak lagi dapat akses database |
 | Kredensial DB | Tidak ada di bundle. Token 60 menit diterbitkan server, disimpan di memori, tidak di storage |
 | Rahasia server | Hanya `server/` dan `api/`; `src/` tidak boleh mengimpornya (aturan tertulis di `server/env.ts`) |
 | Audit | `audit_logs` di DB tenant: checkout, produk, stok, transfer, PO, pengeluaran, karyawan, pengaturan |
@@ -220,6 +220,13 @@ bisa menampilkan produk yang berbeda untuk tenant yang sama.
 **Batas kepercayaan yang jujur:** siapa pun yang memegang token tenant dapat menjalankan SQL apa
 pun di database **perusahaannya** selama ≤ 60 menit. Karena itu token sengaja pendek, per-database,
 dan tidak pernah dipersist. Endpoint admin tetap mengandalkan sesi, bukan token.
+
+Konsekuensinya, dan ini sengaja dipertahankan apa adanya: **matriks izin adalah lapis UX untuk
+data bisnis, bukan batas keamanan.** Yang ditegakkan di server adalah *identitas* (siapa boleh
+masuk, peran apa yang melekat, akun mana yang masih hidup); pintuan aksi (`can('approve_po')`)
+mengatur apa yang ditawarkan aplikasi kepada orang tersebut, bukan apa yang secara teknis bisa ia
+lakukan dengan tokennya. Memindahkan setiap mutasi bisnis ke endpoint server adalah pekerjaan
+terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase-order.md) §15.
 
 ---
 

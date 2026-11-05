@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +33,7 @@ import {
   AlertTriangle,
   ClipboardList,
   Clock,
+  Download,
   Loader2,
   Plus,
   RefreshCw,
@@ -39,12 +41,13 @@ import {
   Wallet,
 } from "lucide-react";
 import { toast } from "sonner";
+import * as XLSX from "xlsx";
 import { batchQuery, query, runTransaction } from "@/lib/db";
 import { logAuditTx } from "@/lib/audit";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
 import { useAuth } from "@/hooks/use-auth";
-import { usePermissions } from "@/hooks/use-permissions";
+import { usePermissions, useWarehouseScope } from "@/hooks/use-permissions";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
 import {
   activeWarehouses,
@@ -95,16 +98,36 @@ const PAGE_SIZE = 20;
  *
  * `received_amount` is a correlated subquery rather than a join + GROUP BY so a
  * PO with two deliveries still reads as one row.
+ *
+ * Every transition is attributed to a person in the schema, so the projection
+ * also resolves each actor id to a name: "who approved this" is the first
+ * question an owner asks of the history.
  */
+const PO_ACTOR_COLUMNS = `
+         po.submitted_by, po.approved_by, po.rejected_by, po.cancelled_by,
+         po.rejected_at, po.cancelled_at,
+         cu.name AS created_by_name, su.name AS submitted_by_name,
+         au.name AS approved_by_name, ru.name AS rejected_by_name,
+         xu.name AS cancelled_by_name,
+`;
+
+const PO_ACTOR_JOINS = `
+    LEFT JOIN users cu ON cu.id = po.created_by
+    LEFT JOIN users su ON su.id = po.submitted_by
+    LEFT JOIN users au ON au.id = po.approved_by
+    LEFT JOIN users ru ON ru.id = po.rejected_by
+    LEFT JOIN users xu ON xu.id = po.cancelled_by
+`;
+
 const PO_LIST_SQL = `
   SELECT po.id, po.po_number, po.status, po.supplier_id, po.supplier_name, po.branch_id,
          po.warehouse_id, po.total_amount, po.expected_date, po.created_at, po.received_at,
          po.notes, po.payment_terms_days, po.created_by, po.submitted_at, po.approved_at,
-         po.rejection_reason, po.cancel_reason,
+         po.rejection_reason, po.cancel_reason,${PO_ACTOR_COLUMNS}
          COALESCE((SELECT SUM(gr.total_amount) FROM goods_receipts gr
                     WHERE gr.purchase_order_id = po.id), 0) AS received_amount,
          (SELECT COUNT(*) FROM goods_receipts gr WHERE gr.purchase_order_id = po.id) AS receipt_count
-    FROM purchase_orders po
+    FROM purchase_orders po${PO_ACTOR_JOINS}
    ORDER BY po.created_at DESC
 `;
 
@@ -113,11 +136,11 @@ const PO_HEADER_SQL = `
   SELECT po.id, po.po_number, po.status, po.supplier_id, po.supplier_name, po.branch_id,
          po.warehouse_id, po.total_amount, po.expected_date, po.created_at, po.received_at,
          po.notes, po.payment_terms_days, po.created_by, po.submitted_at, po.approved_at,
-         po.rejection_reason, po.cancel_reason,
+         po.rejection_reason, po.cancel_reason,${PO_ACTOR_COLUMNS}
          COALESCE((SELECT SUM(gr.total_amount) FROM goods_receipts gr
                     WHERE gr.purchase_order_id = po.id), 0) AS received_amount,
          (SELECT COUNT(*) FROM goods_receipts gr WHERE gr.purchase_order_id = po.id) AS receipt_count
-    FROM purchase_orders po
+    FROM purchase_orders po${PO_ACTOR_JOINS}
    WHERE po.id = $1
 `;
 
@@ -136,8 +159,10 @@ const PO_LINES_SQL = `
 
 const PO_RECEIPTS_SQL = `
   SELECT gr.id, gr.grn_number, gr.received_at, gr.total_amount, gr.supplier_document,
+         ru.name AS received_by_name,
          (SELECT COUNT(*) FROM goods_receipt_items i WHERE i.goods_receipt_id = gr.id) AS line_count
     FROM goods_receipts gr
+    LEFT JOIN users ru ON ru.id = gr.received_by
    WHERE gr.purchase_order_id = $1
    ORDER BY gr.received_at DESC
 `;
@@ -187,6 +212,7 @@ export function PurchaseOrderPanel({
 }: PurchaseOrderPanelProps) {
   const { user } = useAuth();
   const { can } = usePermissions();
+  const { warehouseIds } = useWarehouseScope();
   // Another screen (the vendor detail) links here with `?po=<id>` to open one
   // order; the panel stays the only place that can act on it.
   const [searchParams, setSearchParams] = useSearchParams();
@@ -196,7 +222,9 @@ export function PurchaseOrderPanel({
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
-  const [statusFilter, setStatusFilter] = useState<string>("open");
+  // Owners arrive here to read history, so the list opens on every status;
+  // "Perlu tindakan" is one click away as the working queue.
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [vendorFilter, setVendorFilter] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -299,12 +327,28 @@ export function PurchaseOrderPanel({
     loadOrders();
   }, [loadOrders]);
 
-  // The gudang a branch orders from, not its own rack (spec §6.2, fix 7).
+  // The gudang a branch orders from, not its own rack (spec §6.2, fix 7). A
+  // scoped role may only book an order into a gudang it can see, so the
+  // suggestion falls back to the first in-scope one when the assigned branch
+  // supplies a gudang outside the scope.
+  const visibleWarehouses = useMemo(
+    () =>
+      activeWarehouses(warehouses).filter(
+        (warehouse) => !warehouseIds || warehouseIds.includes(warehouse.id)
+      ),
+    [warehouses, warehouseIds]
+  );
+
   useEffect(() => {
     let cancelled = false;
     resolveSupplyWarehouse(user?.assigned_branch_id ?? null)
       .then((id) => {
-        if (!cancelled) setDefaultWarehouseId(id);
+        if (cancelled) return;
+        if (id && warehouseIds && !warehouseIds.includes(id)) {
+          setDefaultWarehouseId(visibleWarehouses[0]?.id ?? null);
+          return;
+        }
+        setDefaultWarehouseId(id);
       })
       .catch(() => {
         if (!cancelled) setDefaultWarehouseId(null);
@@ -312,7 +356,7 @@ export function PurchaseOrderPanel({
     return () => {
       cancelled = true;
     };
-  }, [user?.assigned_branch_id]);
+  }, [user?.assigned_branch_id, warehouseIds, visibleWarehouses]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -563,6 +607,7 @@ export function PurchaseOrderPanel({
       role: user?.role,
       actorId: user?.id,
       createdBy: order.created_by,
+      can,
     });
     if (refusal) {
       toast.error(refusal);
@@ -904,6 +949,48 @@ export function PurchaseOrderPanel({
   const actionsFor = (order: PurchaseOrderRow) =>
     actionsForPurchaseOrder(order.status, can).filter((action) => action !== "view");
 
+  /**
+   * Exports what the filters currently show, not the whole table: the file has
+   * to match the screen or the numbers cannot be reconciled afterwards.
+   */
+  const handleExport = () => {
+    if (filtered.length === 0) {
+      toast.error("Tidak ada purchase order untuk diexport");
+      return;
+    }
+
+    const rows = filtered.map((order) => ({
+      "No. PO": order.po_number,
+      Vendor: order.supplier_name ?? "-",
+      Tujuan: warehouseName(order.warehouse_id),
+      Tanggal: order.created_at.slice(0, 10),
+      Diharapkan: order.expected_date ?? "-",
+      Status: PO_STATUS_LABEL[order.status],
+      "Nilai PO": Number(order.total_amount),
+      Diterima: effectiveReceivedAmount(order),
+      "Diajukan Oleh": order.submitted_by_name ?? "-",
+      "Disetujui Oleh": order.approved_by_name ?? "-",
+    }));
+
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    sheet["!cols"] = [
+      { wch: 22 },
+      { wch: 24 },
+      { wch: 22 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 20 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 20 },
+      { wch: 20 },
+    ];
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, sheet, "Purchase Order");
+    XLSX.writeFile(book, `Purchase_Order_${new Date().toISOString().split("T")[0]}.xlsx`);
+    toast.success("Berhasil export purchase order");
+  };
+
   // ---- render ---------------------------------------------------------------
 
   return (
@@ -950,8 +1037,8 @@ export function PurchaseOrderPanel({
             <SelectValue placeholder="Status" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="open">Perlu tindakan</SelectItem>
             <SelectItem value="all">Semua status</SelectItem>
+            <SelectItem value="open">Perlu tindakan</SelectItem>
             {PURCHASE_ORDER_STATUSES.map((status) => (
               <SelectItem key={status} value={status}>
                 {PO_STATUS_LABEL[status]}
@@ -984,6 +1071,11 @@ export function PurchaseOrderPanel({
           value={toDate}
           onChange={(event) => setToDate(event.target.value)}
         />
+        <PermissionGate permission="export_reports">
+          <Button variant="outline" size="icon" onClick={handleExport} title="Export ke Excel">
+            <Download className="w-4 h-4" />
+          </Button>
+        </PermissionGate>
         <Button variant="outline" size="icon" onClick={() => loadOrders()} title="Muat ulang">
           <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
         </Button>
@@ -1110,7 +1202,7 @@ export function PurchaseOrderPanel({
         open={editorOpen}
         onOpenChange={setEditorOpen}
         products={products}
-        warehouses={activeWarehouses(warehouses)}
+        warehouses={visibleWarehouses}
         vendors={vendors}
         defaultWarehouseId={defaultWarehouseId}
         initialDraft={editorDraft}

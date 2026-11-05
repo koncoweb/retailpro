@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -42,9 +44,6 @@ import {
   transferStatusLabel,
 } from "@/lib/stock-movement";
 
-/** Who may ship a queued transfer and confirm its receipt. */
-const MOVEMENT_ROLES = ['store_manager', 'warehouse', 'tenant_admin', 'tenant_owner', 'platform_owner', 'admin'];
-
 // Extended interface for Transfer to include item details if needed
 interface Transfer {
   id: string;
@@ -67,6 +66,11 @@ interface Transfer {
 
 export default function BranchTransfers() {
   const { user } = useAuth();
+  // Who may move stock, as permissions rather than as a list of roles. Raising
+  // or confirming a move is `transfer_stock`; taking goods *out* of a gudang is
+  // `dispatch_stock`, which the shop side deliberately does not hold — the same
+  // separation the branch-order approval queue already enforces.
+  const { can } = usePermissions();
   const [isLoading, setIsLoading] = useState(false);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
@@ -221,7 +225,7 @@ export default function BranchTransfers() {
    * batch per source leg, keeping cost and expiry.
    */
   const handleDispatchTransfer = async (transferId: string) => {
-    if (!MOVEMENT_ROLES.includes(user?.role ?? '')) {
+    if (!can("dispatch_stock")) {
       toast.error("Anda tidak memiliki akses untuk mengirim transfer");
       return;
     }
@@ -262,7 +266,7 @@ export default function BranchTransfers() {
 
   /** Receipt only confirms arrival: the stock already left the source warehouse. */
   const handleReceiveTransfer = async (transferId: string) => {
-    if (!MOVEMENT_ROLES.includes(user?.role ?? '')) {
+    if (!can("transfer_stock")) {
       toast.error("Anda tidak memiliki akses untuk menerima transfer");
       return;
     }
@@ -371,10 +375,12 @@ export default function BranchTransfers() {
             </p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="gap-2" onClick={handleExport}>
-              <Download className="w-4 h-4" />
-              Export
-            </Button>
+            <PermissionGate permission="export_reports">
+              <Button variant="outline" className="gap-2" onClick={handleExport}>
+                <Download className="w-4 h-4" />
+                Export
+              </Button>
+            </PermissionGate>
             <Button onClick={() => setIsTransferOpen(true)} className="gap-2">
               <Plus className="w-4 h-4" />
               Buat Transfer Baru

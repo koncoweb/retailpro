@@ -41,6 +41,7 @@ export default {
     admin: { username: 'e2e.admin@tokobahankue.com', password: staffPassword },
     kasir: { username: 'e2e.kasir@tokobahankue.com', password: staffPassword },
     gudang: { username: 'e2e.gudang@tokobahankue.com', password: staffPassword },
+    purchasing: { username: 'e2e.purchasing@tokobahankue.com', password: staffPassword },
   },
   agents: {
     default: {

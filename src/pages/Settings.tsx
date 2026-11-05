@@ -11,20 +11,56 @@ import { EmployeeRoleSettings } from "@/components/settings/EmployeeRoleSettings
 import { TaxDiscountSettings } from "@/components/settings/TaxDiscountSettings";
 import { InventorySettings } from "@/components/settings/InventorySettings";
 import { useTheme } from "@/hooks/use-theme";
+import { usePermissions } from "@/hooks/use-permissions";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertCircle } from "lucide-react";
+import type { ReactNode } from "react";
 import { Settings as SettingsIcon, Building2, Bell, Shield, Database, Globe, Palette, Users, Package } from "lucide-react";
+
+/**
+ * Blocks a whole tab when the role may look but not write.
+ *
+ * `view_settings` opens this page (the route guard asks it) and `edit_settings`
+ * decides whether the settings that persist to the tenant document may be
+ * changed. Applied per tab rather than to the page because the *Tampilan*
+ * switches (theme, sidebar) are local preferences and stay usable by anybody.
+ */
+function EditableSection({ editable, children }: { editable: boolean; children: ReactNode }) {
+  if (editable) return <>{children}</>;
+  return (
+    <div className="pointer-events-none space-y-4 select-none opacity-70 md:space-y-6" aria-disabled="true">
+      {children}
+    </div>
+  );
+}
 
 export default function Settings() {
   const { theme, toggleTheme } = useTheme();
+  const { can } = usePermissions();
+  const editable = can("edit_settings");
   return (
     <BackOfficeLayout>
       <div className="space-y-4 md:space-y-6">
         <div><h1 className="text-xl md:text-2xl lg:text-3xl font-bold">Pengaturan</h1><p className="text-muted-foreground text-sm md:text-base mt-1">Konfigurasi sistem dan preferensi aplikasi</p></div>
 
+        {!editable && (
+          <Alert>
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Hanya baca</AlertTitle>
+            <AlertDescription>
+              Role Anda belum punya izin &ldquo;Edit Pengaturan&rdquo;, jadi nilai yang tersimpan
+              tidak dapat diubah di layar ini.
+            </AlertDescription>
+          </Alert>
+        )}
+
         <Tabs defaultValue="general" className="space-y-4 md:space-y-6">
           <TabsList className="bg-muted/50 p-1 flex-wrap h-auto">
             <TabsTrigger value="general" className="gap-2 text-xs md:text-sm"><SettingsIcon className="w-4 h-4" /><span className="hidden sm:inline">Umum</span></TabsTrigger>
             <TabsTrigger value="company" className="gap-2 text-xs md:text-sm"><Building2 className="w-4 h-4" /><span className="hidden sm:inline">Perusahaan</span></TabsTrigger>
-            <TabsTrigger value="employees" className="gap-2 text-xs md:text-sm"><Users className="w-4 h-4" /><span className="hidden sm:inline">Karyawan & Role</span></TabsTrigger>
+            {can("manage_roles") && (
+              <TabsTrigger value="employees" className="gap-2 text-xs md:text-sm"><Users className="w-4 h-4" /><span className="hidden sm:inline">Karyawan & Role</span></TabsTrigger>
+            )}
             <TabsTrigger value="inventory" className="gap-2 text-xs md:text-sm"><Package className="w-4 h-4" /><span className="hidden sm:inline">Inventori</span></TabsTrigger>
             <TabsTrigger value="notifications" className="gap-2 text-xs md:text-sm"><Bell className="w-4 h-4" /><span className="hidden sm:inline">Notifikasi</span></TabsTrigger>
             <TabsTrigger value="security" className="gap-2 text-xs md:text-sm"><Shield className="w-4 h-4" /><span className="hidden sm:inline">Keamanan</span></TabsTrigger>
@@ -51,6 +87,7 @@ export default function Settings() {
           </TabsContent>
 
           <TabsContent value="company" className="space-y-4 md:space-y-6">
+            <EditableSection editable={editable}>
             <div className="bg-card rounded-xl border p-4 md:p-6 space-y-4 md:space-y-6 animate-fade-in">
               <div className="flex items-center gap-3 pb-4 border-b"><div className="p-2.5 rounded-lg bg-primary/10"><Building2 className="w-5 h-5 text-primary" /></div><div><h3 className="font-semibold">Informasi Perusahaan</h3><p className="text-sm text-muted-foreground">Data profil perusahaan</p></div></div>
               <div className="grid gap-4 md:gap-6 md:grid-cols-2">
@@ -64,11 +101,18 @@ export default function Settings() {
             <ReceiptSettings />
             <TaxDiscountSettings />
             <BankSettings />
+            </EditableSection>
           </TabsContent>
 
-          <TabsContent value="employees" className="space-y-4 md:space-y-6"><EmployeeRoleSettings /></TabsContent>
+          {can("manage_roles") && (
+            <TabsContent value="employees" className="space-y-4 md:space-y-6"><EmployeeRoleSettings /></TabsContent>
+          )}
 
-          <TabsContent value="inventory" className="space-y-4 md:space-y-6"><InventorySettings /></TabsContent>
+          <TabsContent value="inventory" className="space-y-4 md:space-y-6">
+            <EditableSection editable={editable}>
+              <InventorySettings />
+            </EditableSection>
+          </TabsContent>
 
           <TabsContent value="notifications" className="space-y-4 md:space-y-6">
             <div className="bg-card rounded-xl border p-4 md:p-6 space-y-4 md:space-y-6 animate-fade-in">

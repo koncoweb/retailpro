@@ -1,5 +1,12 @@
-import type { UserRole } from "@/types";
-
+/**
+ * The role vocabulary of the app.
+ *
+ * A custom role created by an owner (`cust_*`, see `src/lib/permission-matrix.ts`)
+ * is *not* listed here: it lives in the tenant's settings document and never
+ * needs a code change. That absence is the point — adding a role used to mean
+ * four coordinated edits across `types`, the admin API and the access-control
+ * plugin, which is how `purchasing` ended up declared but un-creatable.
+ */
 export const ROLES = [
   { value: "platform_owner", label: "Platform Owner", description: "Akses penuh ke seluruh sistem" },
   { value: "tenant_owner", label: "Owner", description: "Pemilik usaha, akses penuh ke tenant" },
@@ -13,129 +20,230 @@ export const ROLES = [
 
 export type RoleValue = typeof ROLES[number]["value"];
 
-/**
- * Route guards, in one place.
- *
- * `App.tsx` hands these lists to `RoleBasedRoute`, and every screen that offers
- * a link to a guarded page must use the same list. Two copies of "who may open
- * the vendor directory" is how the mode chooser ended up sending gudang staff
- * to a page that bounced them straight back.
- */
-export const ALL_ROLE_VALUES: UserRole[] = [
-  "platform_owner",
-  "tenant_owner",
+/** Builtin roles an owner may hand out from the Employees screen. */
+export const BUILTIN_ASSIGNABLE_ROLES: RoleValue[] = [
   "tenant_admin",
   "store_manager",
   "cashier",
   "warehouse",
   "purchasing",
   "staff",
-  "admin",
 ];
-
-export const MANAGER_ROLES: UserRole[] = [
-  "platform_owner",
-  "tenant_owner",
-  "tenant_admin",
-  "store_manager",
-  "admin",
-];
-
-/** The till: cashiers and whoever else rings up a sale. */
-export const FRONT_OFFICE_ROLES: UserRole[] = [
-  "platform_owner",
-  "tenant_owner",
-  "tenant_admin",
-  "store_manager",
-  "cashier",
-  "admin",
-];
-
-export const BACK_OFFICE_ROLES: UserRole[] = MANAGER_ROLES;
 
 /**
- * Stock documents only: the manager roles plus warehouse staff.
+ * Every permission, declared exactly once.
  *
- * The `warehouse` role runs the gudang side of a replenishment order (approve,
- * ship) and counts stock, so it needs a narrow slice of the back office and
- * nothing else — no finance, no HR, no settings. `BACK_OFFICE_ROLES` stays
- * untouched so no other screen widens with it.
+ * A key, the Indonesian label a novice reads, and the sentence explaining what
+ * it actually unlocks used to live in three separate objects, so a key added to
+ * one list could sit invisible in the other two. `PERMISSION_GROUPS`,
+ * `PERMISSION_LABELS` and `PERMISSION_HINTS` below are all *derived* from this
+ * catalog; nothing may be hand-written there again.
  */
-export const STOCK_DOC_ROLES: UserRole[] = [...MANAGER_ROLES, "warehouse"];
+export interface PermissionEntry {
+  key: string;
+  label: string;
+  hint: string;
+}
 
-/**
- * Procurement screens: the managers, the gudang that receives the delivery,
- * and the purchasing desk that raises the order. Approval itself is gated by
- * the `approve_po` permission, not by this list — a store manager may open the
- * screen and still must not sign off their own order.
- */
-export const PROCUREMENT_ROLES: UserRole[] = [...MANAGER_ROLES, "warehouse", "purchasing"];
-
-export const HR_ROLES: UserRole[] = ["platform_owner", "tenant_owner", "tenant_admin", "admin"];
-
-export const PERMISSION_GROUPS = {
-  dashboard: ["view_dashboard", "view_analytics"],
-  pos: ["access_pos", "apply_discount", "void_transaction"],
-  inventory: [
-    "view_inventory",
-    "add_stock",
-    "transfer_stock",
-    "stock_opname",
-    "request_stock",
-    "approve_stock_request",
-    "dispatch_stock",
-    // Procurement. Creating and approving an order are separate permissions on
-    // purpose: one person may commit money, another must agree to it.
-    "create_po",
-    "approve_po",
-    "receive_po",
-    "cancel_po",
-    // Variants and prices stay with the owner. Separate from `create_po` on
-    // purpose: whoever raises an order must not also decide its agreed price.
-    "manage_variants",
-    "manage_vendor_prices",
-    "manage_sell_prices",
+export const PERMISSION_CATALOG = {
+  dashboard: [
+    {
+      key: "view_dashboard",
+      label: "Lihat Dashboard",
+      hint: "Membuka halaman depan berisi ringkasan penjualan dan stok hari ini.",
+    },
+    {
+      key: "view_analytics",
+      label: "Lihat Analitik",
+      hint: "Melihat grafik tren penjualan dan laporan analitik. Tanpa izin ini, menu Back Office tidak terbuka.",
+    },
   ],
-  employees: ["view_employees", "add_employee", "edit_employee", "delete_employee"],
-  reports: ["view_reports", "export_reports"],
-  settings: ["view_settings", "edit_settings", "manage_roles"],
-};
+  pos: [
+    {
+      key: "access_pos",
+      label: "Akses POS",
+      hint: "Membuka layar kasir untuk melayani penjualan.",
+    },
+    {
+      key: "apply_discount",
+      label: "Berikan Diskon",
+      hint: "Mengurangi harga pada keranjang saat transaksi. Kasir biasa tidak boleh.",
+    },
+    {
+      key: "void_transaction",
+      label: "Void Transaksi",
+      hint: "Membatalkan transaksi yang sudah dibayar. Stok kembali dan jejaknya tercatat.",
+    },
+  ],
+  inventory: [
+    {
+      key: "view_inventory",
+      label: "Lihat Inventory",
+      hint: "Membuka daftar produk dan stok. Membuka juga halaman gudang, pesanan cabang, dan transfer.",
+    },
+    {
+      key: "add_stock",
+      label: "Tambah Stok",
+      hint: "Mencatat barang masuk ke gudang.",
+    },
+    {
+      key: "transfer_stock",
+      label: "Transfer Stok",
+      hint: "Memindahkan stok antar gudang atau antar cabang.",
+    },
+    {
+      key: "stock_opname",
+      label: "Stock Opname",
+      hint: "Menghitung stok fisik dan menyesuaikan selisihnya.",
+    },
+    {
+      key: "request_stock",
+      label: "Pesan Stok ke Gudang",
+      hint: "Membuat permintaan barang ke gudang pusat. Tidak termasuk menyetujuinya.",
+    },
+    {
+      key: "approve_stock_request",
+      label: "Setujui Pesanan Cabang",
+      hint: "Menyetujui atau menolak permintaan barang yang dibuat cabang.",
+    },
+    {
+      key: "dispatch_stock",
+      label: "Kirim Barang dari Gudang",
+      hint: "Melepas stok gudang untuk pesanan yang sudah disetujui.",
+    },
+    {
+      key: "create_po",
+      label: "Buat & Ajukan Purchase Order",
+      hint: "Membuat order pembelian ke vendor. Order belum sah sampai disetujui pemegang izin Setujui PO.",
+    },
+    {
+      key: "approve_po",
+      label: "Setujui Purchase Order",
+      hint: "Menyetujui order yang dibuat orang lain. Owner boleh menyetujui order buatannya sendiri.",
+    },
+    {
+      key: "receive_po",
+      label: "Terima Barang Datang",
+      hint: "Mencatat barang dari vendor yang benar-benar tiba, dan memasukkannya ke gudang.",
+    },
+    {
+      key: "cancel_po",
+      label: "Batalkan Purchase Order",
+      hint: "Menghentikan order yang belum diterima seluruhnya.",
+    },
+    {
+      key: "manage_variants",
+      label: "Kelola Varian Produk",
+      hint: "Menambah atau mengubah varian (ukuran, rasa) beserta satuannya.",
+    },
+    {
+      key: "manage_vendor_prices",
+      label: "Kelola Harga Beli Vendor",
+      hint: "Menentukan harga modal dari vendor. Pisahkan dari izin pembuat order.",
+    },
+    {
+      key: "manage_sell_prices",
+      label: "Kelola Harga Jual",
+      hint: "Menentukan harga jual di rak dan di kasir.",
+    },
+  ],
+  employees: [
+    {
+      key: "view_employees",
+      label: "Lihat Karyawan",
+      hint: "Membuka daftar karyawan, termasuk gaji dan cabang tempat bekerja.",
+    },
+    {
+      key: "add_employee",
+      label: "Tambah Karyawan",
+      hint: "Membuat akun karyawan baru beserta kata sandi awalnya.",
+    },
+    {
+      key: "edit_employee",
+      label: "Edit Karyawan",
+      hint: "Mengubah nama, cabang, role, dan status aktif karyawan.",
+    },
+    {
+      key: "delete_employee",
+      label: "Hapus Karyawan",
+      hint: "Menghapus akun karyawan. Yang sudah dihapus tidak bisa masuk lagi.",
+    },
+  ],
+  reports: [
+    {
+      key: "view_reports",
+      label: "Lihat Laporan",
+      hint: "Membuka halaman Laporan & Analitik beserta seluruh laporan per modul.",
+    },
+    {
+      key: "export_reports",
+      label: "Export Laporan",
+      hint: "Mengunduh data ke Excel atau PDF, termasuk daftar produk dan karyawan.",
+    },
+    {
+      key: "view_finance",
+      label: "Lihat Keuangan & Vendor",
+      hint: "Membuka jurnal, hutang piutang, arus kas, pengeluaran, data vendor, dan pelanggan.",
+    },
+  ],
+  settings: [
+    {
+      key: "view_settings",
+      label: "Lihat Pengaturan",
+      hint: "Membuka halaman Pengaturan perusahaan.",
+    },
+    {
+      key: "edit_settings",
+      label: "Edit Pengaturan",
+      hint: "Menyimpan perubahan pengaturan, termasuk pajak, receipt, dan gaji.",
+    },
+    {
+      key: "manage_roles",
+      label: "Kelola Role",
+      hint: "Mengatur hak akses tiap role dan membuat role kustom sendiri.",
+    },
+    {
+      key: "manage_branches",
+      label: "Kelola Cabang",
+      hint: "Menambah cabang, mengatur gudang miliknya, dan menentukan kepala cabang.",
+    },
+  ],
+} as const satisfies Record<string, readonly PermissionEntry[]>;
 
-export const PERMISSION_LABELS: Record<string, string> = {
-  view_dashboard: "Lihat Dashboard",
-  view_analytics: "Lihat Analitik",
-  access_pos: "Akses POS",
-  apply_discount: "Berikan Diskon",
-  void_transaction: "Void Transaksi",
-  view_inventory: "Lihat Inventory",
-  add_stock: "Tambah Stok",
-  transfer_stock: "Transfer Stok",
-  stock_opname: "Stock Opname",
-  request_stock: "Pesan Stok ke Gudang",
-  approve_stock_request: "Setujui Pesanan Cabang",
-  dispatch_stock: "Kirim Barang dari Gudang",
-  create_po: "Buat & Ajukan Purchase Order",
-  approve_po: "Setujui Purchase Order",
-  receive_po: "Terima Barang Datang",
-  cancel_po: "Batalkan Purchase Order",
-  manage_variants: "Kelola Varian Produk",
-  manage_vendor_prices: "Kelola Harga Beli Vendor",
-  manage_sell_prices: "Kelola Harga Jual",
-  view_employees: "Lihat Karyawan",
-  add_employee: "Tambah Karyawan",
-  edit_employee: "Edit Karyawan",
-  delete_employee: "Hapus Karyawan",
-  view_reports: "Lihat Laporan",
-  export_reports: "Export Laporan",
-  view_settings: "Lihat Pengaturan",
-  edit_settings: "Edit Pengaturan",
-  manage_roles: "Kelola Role",
-};
+export type PermissionGroupName = keyof typeof PERMISSION_CATALOG;
+
+/** Group -> key list, the shape the Role screen accordion and older importers use. */
+export const PERMISSION_GROUPS: Record<PermissionGroupName, string[]> = Object.fromEntries(
+  Object.entries(PERMISSION_CATALOG).map(([group, entries]) => [group, entries.map((e) => e.key)])
+) as Record<PermissionGroupName, string[]>;
+
+export const PERMISSION_LABELS: Record<string, string> = Object.fromEntries(
+  Object.values(PERMISSION_CATALOG)
+    .flat()
+    .map((entry) => [entry.key, entry.label])
+);
+
+/** Plain-language explanation rendered under every switch in the matrix. */
+export const PERMISSION_HINTS: Record<string, string> = Object.fromEntries(
+  Object.values(PERMISSION_CATALOG)
+    .flat()
+    .map((entry) => [entry.key, entry.hint])
+);
+
+/** Flattened key list — used by the route guards, the resolver, and the tests. */
+export const ALL_PERMISSION_KEYS: string[] = Object.values(PERMISSION_GROUPS).flat();
+
+/** Owner-tier roles: everything the catalog holds, by definition. */
+const grantedToOwners = ALL_PERMISSION_KEYS;
+
+function ownerPermissions(): Record<string, boolean> {
+  return Object.fromEntries(grantedToOwners.map((p) => [p, true]));
+}
 
 export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>> = {
-  platform_owner: Object.fromEntries(Object.values(PERMISSION_GROUPS).flat().map((p) => [p, true])),
-  tenant_owner: Object.fromEntries(Object.values(PERMISSION_GROUPS).flat().map((p) => [p, true])),
-  tenant_admin: Object.fromEntries(Object.values(PERMISSION_GROUPS).flat().map((p) => [p, true])),
+  platform_owner: ownerPermissions(),
+  tenant_owner: ownerPermissions(),
+  tenant_admin: ownerPermissions(),
   store_manager: {
     view_dashboard: true,
     view_analytics: true,
@@ -155,6 +263,10 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     view_employees: true,
     view_reports: true,
     export_reports: true,
+    // A manager runs money screens and their own branch network; they still
+    // cannot open Settings or decide roles.
+    view_finance: true,
+    manage_branches: true,
     // ...others false
   },
   cashier: {
@@ -212,3 +324,13 @@ export function resolveRolePermissions(
   }
   return merged;
 }
+
+/* ------------------------------------------------------------------------- *
+ * There used to be role lists here — `ALL_ROLE_VALUES`, `MANAGER_ROLES`,
+ * `FRONT_OFFICE_ROLES`, `BACK_OFFICE_ROLES`, `STOCK_DOC_ROLES`,
+ * `PROCUREMENT_ROLES`, `HR_ROLES` — one per screen family. They are gone: every
+ * route guard, sidebar entry and mode card now asks a permission key of
+ * `src/lib/permission-matrix.ts`, which is the only way an owner's edit (and a
+ * custom role) can reach the navigation at all.
+ * ------------------------------------------------------------------------- */
+

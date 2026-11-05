@@ -29,8 +29,10 @@ server/env.ts             Akses env (server-only), MissingEnvError
 server/http.ts            HttpError, sendJson, readJsonBody, withErrors, methodNotAllowed
 server/control-db.ts      Kysely + libsql untuk control DB
 server/auth.ts            Better Auth (admin plugin, additionalFields role/tenantId/branchId)
-server/access.ts          Access control Better Auth: statement + 7 role
+server/access.ts          Access control Better Auth: statement + 8 role (termasuk `purchasing`)
 server/auth-helpers.ts    getSession, requireTenantSession, requireAdminSession
+server/roles.ts           Peran yang boleh diberikan: bawaan ∪ `settings.custom_roles`, tolak owner
+server/tenant-client.ts   `withTenantClient(tenant, fn)` — baca/tulis DB tenant dari server (token 1 menit)
 server/turso-platform.ts  Klien Turso Platform API (create/delete/list DB & grup, createToken, getUsage)
 server/provision.ts       Provisioning tenant, render seed, mint token, registry access
 server/storefront-catalog.ts  Pembaca katalog per tenant (dipakai catalog & marketplace)
@@ -43,6 +45,7 @@ api/tenant/bootstrap.ts   GET   /api/tenant/bootstrap
 api/tenant/token.ts       POST  /api/tenant/token
 api/tenant/provision.ts   POST  /api/tenant/provision
 api/admin/users.ts        POST  /api/admin/users
+api/admin/users/[id].ts   PATCH / DELETE /api/admin/users/<id>  (satu-satunya penulis identitas karyawan)
 api/admin/users/[id]/password.ts  POST reset password
 api/storefront/catalog.ts GET   /api/storefront/catalog  (publik, satu tenant; kontrak lama)
 api/storefront/marketplace.ts GET /api/storefront/marketplace  (publik, gabungan semua tenant — dipakai tokoonline/)
@@ -51,6 +54,7 @@ scripts/bootstrap-control.mjs   Membuat/menyiapkan control DB
 scripts/apply-schema-all.mjs    Terapkan migrasi tertunda + tenant.sql (cek schema_version)
 scripts/audit-sql.mjs           Putar ulang literal SQL src/ terhadap skema tenant
 scripts/seed-demo-tenant.ts     Seed tenant contoh ke file/URL/tenant terdaftar
+scripts/provision-e2e-users.ts  Buat akun e2e (owner/admin/kasir/gudang/purchasing) di control + proyeksi tenant
 scripts/setup-local-demo.ts     Data plane lokal lengkap (control + shim + tenant demo)
 scripts/setup-cloud-demo.ts     Data plane cloud: buat control + tenant DB, seed, tulis env
 scripts/dev-db-server.mjs       Shim Hrana loopback (:8090) untuk CONTROL_DB_URL file:
@@ -105,10 +109,12 @@ yang juga hanya membaca `.env` — kunci model e2e harus ada di sana, bukan di `
 | GET | `/api/storefront/catalog` | – (publik) | Katalog cabang online **satu** tenant. Query `?slug=` (default `STOREFRONT_TENANT_SLUG`, lalu `thalia`). Tidak dipakai etalase lagi — etalase memakai `/marketplace` — tetapi dipertahankan sebagai kontrak untuk klien yang memang satu toko | 404 `tenant_not_found`, 409 `tenant_inactive`/`tenant_not_seeded` |
 | GET | `/api/storefront/marketplace` | – (publik) | Gabungan katalog **semua** tenant `active`: `{shops, categories, products, tenants:{total,live}, skipped, syncedAt}`. Produk membawa `tenant`/`seller`/`branch` dan `id` berprefiks slug tenant supaya tidak bertabrakan. Tenant yang gagal dibaca masuk `skipped[]` (`{slug, reason:"unavailable"}`) tanpa menggagalkan permintaan; **pesan error asli hanya ke log server** (`[storefront] tenant … skipped:`) karena respons ini publik — lihat KS-33 | 200 selalu bila control DB terbaca |
 | ANY | `/api/auth/*` | – | Handler Better Auth (login, logout, session, admin) | Sesuai Better Auth |
-| GET | `/api/tenant/bootstrap` | Sesi + registry | `{dbUrl, token, expiresAt, tenant{id,name,slug}, user{id,name,email,role,branchId}}` | 401 tanpa sesi, 404 tanpa tenant |
+| GET | `/api/tenant/bootstrap` | Sesi + registry | `{dbUrl, token, expiresAt, tenant{id,name,slug}, user{id,name,email,role,branchId,active}, grants}`. `grants` adalah matriks izin hasil resolusi (`buildGrants(settings)`) supaya paint pertama SPA sudah tahu apa yang boleh dilakukan orang ini. **Sebelum** token dicetak, baris proyeksi `users` pemanggil dibaca: tidak ada / `is_active = 0` ⇒ tolak | 401 tanpa sesi, 404 tanpa tenant, **403 `account_inactive`**, 502 `tenant_unreachable` |
 | POST | `/api/tenant/token` | Sesi + registry | Mint token baru untuk database tenant pemanggil | 401, 404 |
 | POST | `/api/tenant/provision` | Sesi | Buat DB + skema + seed + registry. Body `{companyName, slug?, branchName?, branchAddress?}` | 400 `invalid_company_name`/`invalid_slug`, 401, 409 `tenant_exists`/`slug_taken`/`slug_reserved`, 429 `tenant_limit_reached`, 502 `turso_error`/`turso_no_hostname` |
-| POST | `/api/admin/users` | Sesi admin | Buat user Better Auth di tenant pemanggil; `password` yang dikirim admin dipakai apa adanya (minimal 8 karakter) dan hanya diacak bila tidak dikirim | 400 `invalid_email`/`invalid_name`/`invalid_role`/`weak_password`, 401, 409 `email_taken` |
+| POST | `/api/admin/users` | Sesi admin | Buat user Better Auth di tenant pemanggil; `password` yang dikirim admin dipakai apa adanya (minimal 8 karakter) dan hanya diacak bila tidak dikirim. Peran divalidasi ke `server/roles.ts` (bawaan ∪ `custom_roles`); peran kustom dibuat dengan `auth_tier`-nya lalu `user.role` ditimpa ke key `cust_*` karena plugin Better Auth memeriksa terhadap daftar statis | 400 `invalid_email`/`invalid_name`/`invalid_role`/`cannot_assign_owner`/`weak_password`, 401, 409 `email_taken` |
+| PATCH | `/api/admin/users/[id]` | Sesi admin | **Satu-satunya penulis identitas karyawan.** Body `{name?, role?, branchId?, active?}`: validasi → tulis control plane (`role`, `branchId`, `name`, `status`, `banned`, `updatedAt`) → cermin ke proyeksi tenant (`INSERT … ON CONFLICT (id) DO UPDATE`). `active:false` memasang `status='inactive'` **dan** `banned=1` supaya Better Auth sendiri menolak login berikutnya. Respons `{userId, role, branchId, active}` | 400 `invalid_name`/`invalid_role`/`cannot_reassign_owner`/`cannot_remove_yourself`, 401, 403, 404 `user_not_found`, 502 `tenant_unreachable` |
+| DELETE | `/api/admin/users/[id]` | Sesi admin | Hapus identitas: `session` → `account` → `user` (urutan itu; baris sesi yang selamat akan tetap dapat token tenant), lalu baris `users` proyeksi | 400 `cannot_remove_yourself`/`cannot_reassign_owner`, 401, 403, 404 `user_not_found`, 502 `tenant_unreachable` |
 | POST | `/api/admin/users/[id]/password` | Sesi admin | Reset password user; mengembalikan password sementara sekali | 401, 403, 404 |
 
 Semua handler dibungkus `withErrors()` (memetakan `HttpError` → JSON `{error, message}`, sisanya
@@ -120,17 +126,21 @@ samping field dan diimpor `api/admin/users.ts` lewat jalur relatif berekstensi `
 penjaga terakhir bila endpoint dipanggil tanpa melewati form.
 
 **Routing di Vercel.** Fungsi standalone tidak mengenal nama berkas bracket, sehingga
-`api/auth/[...all].ts` dan `api/admin/users/[id]/password.ts` diakses lewat `rewrites` di
-`vercel.json`:
+`api/auth/[...all].ts`, `api/admin/users/[id].ts` dan `api/admin/users/[id]/password.ts` diakses
+lewat `rewrites` di `vercel.json`:
 
 | Permintaan publik | Fungsi |
 |---|---|
 | `/api/auth/*` | `/api/auth/[...all]` |
 | `/api/admin/users/<id>/password` | `/api/admin/users/[id]/password` |
+| `/api/admin/users/<id>` | `/api/admin/users/[id]` |
 
-`req.url` tetap membawa path asli, jadi Better Auth tetap menemukan rute internalnya. Catch-all SPA
-`/((?!api/).*)` diletakkan **setelah** kedua rewrite itu. Lihat [deployment.md](deployment.md) §5.1
-dan KS-27.
+Aturan `/password` harus tetap **di depan** aturan `<id>` (rewrite pertama yang cocok menang);
+`([^/]+)` juga tidak bisa menyeberangi `/` sehingga tidak ada persaingan rute. Handler membaca id
+dari `req.query.id` dengan jatuh-balap parse `req.url`, jadi dev server lokal (`server/dev-api.ts`)
+mendapat perilaku yang sama. `req.url` tetap membawa path asli, jadi Better Auth tetap menemukan
+rute internalnya. Catch-all SPA `/((?!api/).*)` diletakkan **setelah** semua rewrite itu. Lihat
+[deployment.md](deployment.md) §5.1 dan KS-27.
 
 ### 3.1 Katalog storefront (publik)
 
@@ -166,8 +176,10 @@ dengan yang bisa dibaca pengunjung mana pun.
 | `http.ts` | `HttpError(status, code, message, extra)`, `withErrors`, `readJsonBody` (batas ukuran) |
 | `control-db.ts` | `getControlDb()` singleton Kysely + libsql; tipe `TenantDatabaseRow` |
 | `auth.ts` | `betterAuth` + `admin()` plugin; `additionalFields` `tenantId`, `branchId`, `status`; `ADMIN_ROLES = [platform_owner, tenant_owner, tenant_admin]` |
-| `access.ts` | `statement` (product, inventory, transaction, shift, customer, supplier, expense, employee, branch, report, settings, audit) + 7 role; `AppRole` |
+| `access.ts` | `statement` (product, inventory, transaction, shift, customer, supplier, expense, employee, branch, report, settings, audit) + 8 role (termasuk `purchasing`); `AppRole` |
 | `auth-helpers.ts` | `getSession(headers)`, `requireTenantSession(headers)` (sesi → baris registry), `requireAdminSession(headers)` |
+| `roles.ts` | Set peran yang boleh diberikan (`BUILTIN_ASSIGNABLE_ROLES` ∪ key `settings.custom_roles`), `assertAssignableRole`, `authTierFor`, tulis/baca/hapus proyeksi `users`, `readTenantGrants` — memakai resolver yang sama dengan browser (`src/lib/permission-matrix.ts`) |
+| `tenant-client.ts` | `tenantConnection(tenant)` (loopback → `LOCAL_DEV_TOKEN`, selain itu token full-access 1 menit) dan `withTenantClient(tenant, fn)` yang selalu menutup client; kegagalan koneksi jadi `502 tenant_unreachable` |
 | `turso-platform.ts` | `createDatabase`, `deleteDatabase`, `listDatabases`, `getUsage`, `createToken`, `browserDbUrl(hostname)` → `https://<host>` |
 | `provision.ts` | `loadSchemaFile` (cache + fallback cwd), `renderSeed` (tolak token tak dikenal), `slugify`, `buildDatabaseName` (`rp-<slug>-<5 acak>`, maks 64), `assertUsableSlug`, `countTenantDatabases`, `findTenantByOwner/ById`, `resolveTenantForUser`, `mintTenantToken`, `applyTenantSchema`, `provisionTenant` |
 | `demo/catalog.ts` | Data katalog Thalia (murni data, tanpa SQL) |
@@ -197,7 +209,7 @@ dengan yang bisa dibaca pengunjung mana pun.
 | Tabel | Kolom |
 |---|---|
 | `schema_version` | `id` (selalu 1), `version` (**6**), `applied_at` |
-| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `payroll_config`, `receipt`, `tax`, `bank`, `inventory` → `{stock_issue_method}`), `created_at` |
+| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `payroll_config`, `receipt`, `tax`, `bank`, `inventory` → `{stock_issue_method}`), `created_at` |
 | `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `created_at` |
 | `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `created_at` |
 | `branch_warehouses` | `branch_id`, `warehouse_id`, `is_default`, `priority` — PK `(branch_id, warehouse_id)`; peta "gudang mana melayani cabang mana" |
@@ -357,6 +369,48 @@ cabang buat permintaan (stock_requests, draft → submitted)
 tiba; penerimaan hanya mencatat konfirmasi dan selisih. Konsekuensinya barang bisa terjual beberapa
 jam sebelum fisiknya sampai di rak.
 
+### 5.11 Dokumen `tenants.settings` untuk izin
+
+Role kustom dan scope lokasi sengaja **tidak** diberi tabel sendiri. `users.role` (tenant) dan
+`user.role` (control) keduanya `TEXT NOT NULL` tanpa CHECK, jadi key `cust_*` tidak butuh DDL;
+menambah tabel berarti `schema_version` 7 + migrasi + reseed tenant demo + `npm run e2e:users`,
+blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen JSON.
+
+```jsonc
+{
+  // override per peran bawaan: HANYA key yang berbeda dari default shipped
+  "role_permissions": { "store_manager": { "approve_po": false } },
+
+  "custom_roles": {
+    "cust_7k2m9q": {
+      "label": "Supervisor Toko",
+      "description": "Buka toko sehari-hari",
+      "clone_of": "store_manager",   // default awal + fallback kunci yang dikirim belakangan
+      "auth_tier": "staff",          // peran yang dilihat Better Auth saat createUser
+      "permissions": { "approve_stock_request": true },  // selisih dari clone_of
+      "scope": { "branches": ["<id>"], "warehouses": "all" },
+      "created_at": "2026-11-05T02:00:00.000Z"
+    }
+  },
+
+  // scope untuk peran bawaan (peran kustom menyimpan scope-nya sendiri)
+  "role_scopes": { "warehouse": { "branches": "all", "warehouses": ["<id>"] } }
+}
+```
+
+| Aturan | Dijaga oleh |
+|---|---|
+| Peran hanya boleh salah satu dari bawaan ∪ `custom_roles`, dan owner tidak pernah bisa diberikan | `assertAssignableRole()` di `server/roles.ts` (dipakai `POST /api/admin/users` dan `PATCH /api/admin/users/[id]`) |
+| Key `cust_*` tidak bisa melewati validasi daftar statis Better Auth | peran itu dibuat dengan `auth_tier`, lalu `user.role` ditimpa langsung oleh endpoint yang sama |
+| `label` boleh diganti, **id tidak** | dua baris `users` (control + tenant) menyimpan id-nya; editor role hanya mengirim `label`/`description` |
+| Role kustom yang masih dipakai tidak bisa dihapus | layar Role menghitung `COUNT(*) FROM users WHERE role = ?` dan menolak dengan daftar namanya |
+| Scope default `"all"` di kedua sisi | `normalizeScope()` di `src/lib/permission-matrix.ts`; nilai yang sama dengan default dihapus dari dokumen, tidak disimpan sebagai "semua" eksplisit |
+| Peran tidak dikenal ⇒ tanpa izin | `grantForRole()` mengembalikan `undefined`, `makeChecker()` menolak semua key (gagal-tertutup) |
+
+Perubahan matriks di simulator lokal: `npm run dev:api` adalah `tsx` **tanpa watcher** — port 3000
+harus di-restart sebelum menguji endpoint baru, jika tidak proses lama yang menjawab (mis. 201 di
+saat guard baru seharusnya 400).
+
 ---
 
 ## 6. Skema control DB (`db/schema/control.sql`)
@@ -452,6 +506,17 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 12. `quantity_requested ≥ quantity_approved ≥ quantity_dispatched ≥ quantity_received` pada setiap
     baris `stock_request_items`; `stock_requests.transfer_id` hanya terisi bila barang berpindah ke
     sebuah rak (kanal tanpa rak memakai `shipOutOfStock()` dan `transfer_id` tetap NULL).
+13. **Identitas karyawan punya satu penulis: `/api/admin/users/[id]`.** Tidak ada halaman yang
+    boleh `UPDATE users SET role…` atau `DELETE FROM users` untuk mengubah peran/status/orang —
+    baris tenant itu hanya proyeksi. Control plane ditulis lebih dulu, lalu
+    `writeUserProjection()`/`deleteUserProjection()` mencerminkan, dan
+    `/api/tenant/bootstrap` membaca baris proyeksi sebelum mau mencetak token.
+14. **`settings.role_permissions` menyimpan selisih, bukan salinan.** Yang ditulis ke dokumen
+    hanyalah kunci yang berbeda dari `DEFAULT_ROLE_PERMISSIONS`; peran yang kembali ke default
+    kehilangan key-nya lewat `replaceTenantSetting(key, undefined)`. `mergeTenantSettings()`
+    menggabung **satu level** dan bersifat last-write-wins: ia bisa menimpa satu key peran, tetapi
+    tidak bisa menghapus key, dan dua simpanan bersamaan yang menyentuh key sama akan saling
+    menimpa (yang terakhir menang).
 
 ---
 

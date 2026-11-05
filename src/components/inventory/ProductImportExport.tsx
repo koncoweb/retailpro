@@ -1,4 +1,5 @@
 import { useState, useRef } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -204,10 +205,18 @@ export function ProductImportExport({ products, onImport }: ProductImportExportP
           <Upload className="w-4 h-4" />
           Import
         </Button>
-        <Button variant="outline" className="gap-2" onClick={handleExport}>
-          <Download className="w-4 h-4" />
-          Export
-        </Button>
+        <PermissionGate permission="export_reports">
+          <Button variant="outline" className="gap-2" onClick={handleExport}>
+            <Download className="w-4 h-4" />
+            Export
+          </Button>
+        </PermissionGate>
+        {/*
+         * The blank template is deliberately *not* gated: it carries sample
+         * rows only, and a staff member who is allowed to import must be able
+         * to see the column format. The real export, which contains the
+         * catalogue, is behind `export_reports`.
+         */}
         <Button variant="ghost" size="sm" className="gap-1 text-muted-foreground" onClick={handleExportTemplate}>
           <FileSpreadsheet className="w-4 h-4" />
           Template

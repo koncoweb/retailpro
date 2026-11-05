@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -173,9 +174,11 @@ export default function SalesReport() {
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={handleExport} className="gap-2">
-            <Download className="w-4 h-4" /> Export Excel
-          </Button>
+          <PermissionGate permission="export_reports">
+            <Button onClick={handleExport} className="gap-2">
+              <Download className="w-4 h-4" /> Export Excel
+            </Button>
+          </PermissionGate>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

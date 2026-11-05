@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -415,29 +416,53 @@ export default function Branches() {
 
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const created: any = await response.json().catch(() => ({}));
-          if (!response.ok) {
+          let managerId: string | undefined = created?.userId;
+
+          if (!response.ok && response.status === 409) {
+            // The person already has an account. Linking them to this branch is
+            // the *same* change the Employees screen makes, so it goes through
+            // the same endpoint instead of a page-local `UPDATE users` — that
+            // one only touched the projection and left the session role alone.
+            const existing = await query<{ id: string }>(
+              `SELECT id FROM users WHERE email = $1 LIMIT 1`,
+              [formData.managerEmail]
+            );
+            managerId = existing.rows[0]?.id;
+          } else if (!response.ok) {
             throw new Error(created?.message || "Gagal membuat akun manager");
           }
 
-          const managerId: string | undefined = created?.userId;
           if (!managerId) {
             throw new Error("Gagal mendapatkan User ID dari server auth");
           }
 
-          // 2. Mirror into the tenant `users` table. `ON CONFLICT (email)` with a
-          //    `WHERE` guard is not valid SQLite, so reassignment is an explicit
-          //    UPDATE that leaves owner-level roles untouched.
-          await query(
-            `INSERT INTO users (id, email, role, assigned_branch_id, is_active)
-             VALUES ($1, $2, 'store_manager', $3, 1)
-             ON CONFLICT (id) DO UPDATE SET assigned_branch_id = $3, role = 'store_manager'`,
-            [managerId, formData.managerEmail, editingBranch.id]
-          );
-          await query(
-            `UPDATE users SET assigned_branch_id = $1, role = 'store_manager'
-             WHERE email = $2 AND role NOT IN ('platform_owner', 'tenant_owner')`,
-            [editingBranch.id, formData.managerEmail]
-          );
+          if (created?.userId) {
+            // A brand new identity still needs its projection row, which is what
+            // the branch queries join against.
+            await query(
+              `INSERT INTO users (id, email, role, assigned_branch_id, is_active)
+               VALUES ($1, $2, 'store_manager', $3, 1)
+               ON CONFLICT (id) DO UPDATE SET assigned_branch_id = $3, role = 'store_manager'`,
+              [managerId, formData.managerEmail, editingBranch.id]
+            );
+          } else {
+            // Existing account: the endpoint writes the identity and mirrors the
+            // projection, and it is the one that refuses to reassign an owner.
+            const patch = await fetch(
+              `${apiBase}/api/admin/users/${encodeURIComponent(managerId)}`,
+              {
+                method: "PATCH",
+                credentials: "include",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ branchId: editingBranch.id, role: "store_manager" }),
+              }
+            );
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const patchPayload: any = await patch.json().catch(() => ({}));
+            if (!patch.ok) {
+              throw new Error(patchPayload?.message || "Gagal menugaskan manager ke cabang ini");
+            }
+          }
 
           setGeneratedCredentials({
             email: formData.managerEmail,
@@ -475,10 +500,12 @@ export default function Branches() {
             <p className="text-muted-foreground text-sm md:text-base mt-1">Kelola semua cabang dan pantau performanya</p>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" className="gap-2" onClick={handleExport}>
-              <Download className="w-4 h-4" />
-              Export
-            </Button>
+            <PermissionGate permission="export_reports">
+              <Button variant="outline" className="gap-2" onClick={handleExport}>
+                <Download className="w-4 h-4" />
+                Export
+              </Button>
+            </PermissionGate>
             <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
               <DialogTrigger asChild>
                 <Button className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" />Tambah Cabang</Button>

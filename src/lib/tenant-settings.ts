@@ -5,6 +5,7 @@ import {
   STOCK_ISSUE_SETTING_KEY,
   type StockIssueMethod,
 } from "@/lib/stock-issue";
+import type { RoleSettings } from "@/lib/permission-matrix";
 
 /**
  * Tenant settings live in a single JSON column (`tenants.settings`).
@@ -68,11 +69,70 @@ export async function setTenantSetting(key: string, value: unknown): Promise<voi
   await mergeTenantSettings({ [key]: value });
 }
 
+/**
+ * Write one top-level key *verbatim*, deleting it when the value is `undefined`.
+ *
+ * `mergeTenantSettings` cannot express a removal: its one-level merge spreads the
+ * existing object, so a `custom_roles` patch that leaves out a key keeps the
+ * stored role exactly where it was. Deleting a role, or resetting a scope to
+ * "semua", needs the replaced value instead.
+ */
+export async function replaceTenantSetting(key: string, value: unknown): Promise<void> {
+  await runTransaction(async (tx) => {
+    const res = await tx.query<{ id: string; settings: string | null }>(
+      `SELECT id, settings FROM tenants LIMIT 1`
+    );
+    const row = res.rows[0];
+    if (!row) return;
+
+    const merged = parseJson<TenantSettings>(row.settings, {});
+    if (value === undefined) {
+      delete merged[key];
+    } else {
+      merged[key] = value;
+    }
+
+    await tx.execute(`UPDATE tenants SET settings = $1 WHERE id = $2`, [
+      JSON.stringify(merged),
+      row.id,
+    ]);
+  });
+}
+
 /** Convenience: read one top-level key with a typed fallback. */
 export async function readTenantSetting<T>(key: string, fallback: T): Promise<T> {
   const settings = await readTenantSettings();
   const value = settings[key];
   return (value === undefined || value === null ? fallback : value) as T;
+}
+
+/** The three keys the permission matrix owns. Nothing else reads them raw. */
+export const ROLE_SETTING_KEYS = [
+  "role_permissions",
+  "custom_roles",
+  "role_scopes",
+] as const;
+
+/**
+ * The role slice of the settings document, on its own.
+ *
+ * `usePermissions()` caches exactly this, and `/api/tenant/bootstrap` returns
+ * the same three keys, so the cached value is never a half-read of a document
+ * that also carries payroll or receipt data.
+ */
+export function pickRoleSettings(settings: TenantSettings): RoleSettings {
+  const picked: Record<string, unknown> = {};
+  for (const key of ROLE_SETTING_KEYS) {
+    const value = settings[key];
+    if (value !== undefined && value !== null) picked[key] = value;
+  }
+  // The keys are the only three `RoleSettings` declares; `buildGrants()` sorts
+  // out whatever shapes they actually hold, so nothing is trusted here.
+  return picked as RoleSettings;
+}
+
+export async function readTenantRoleSettings(): Promise<RoleSettings> {
+  return pickRoleSettings(await readTenantSettings());
 }
 
 /**

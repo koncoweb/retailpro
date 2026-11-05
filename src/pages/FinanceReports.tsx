@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -109,9 +110,11 @@ export default function FinanceReports() {
         </div>
 
         <div className="flex justify-end">
-             <Button onClick={handleExport} className="gap-2">
-                <Download className="w-4 h-4" /> Export Ringkasan
-            </Button>
+             <PermissionGate permission="export_reports">
+               <Button onClick={handleExport} className="gap-2">
+                  <Download className="w-4 h-4" /> Export Ringkasan
+              </Button>
+             </PermissionGate>
         </div>
 
         {/* Summary Cards */}

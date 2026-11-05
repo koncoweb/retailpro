@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { PermissionGate } from "@/components/auth/PermissionGate";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -157,10 +158,12 @@ export default function Cashflow() {
             <h1 className="text-2xl font-bold">Cash Flow</h1>
             <p className="text-muted-foreground">Analisis arus kas masuk dan keluar</p>
           </div>
-          <Button variant="outline" className="gap-2" onClick={handleExport}>
-            <Download className="w-4 h-4" />
-            Export Excel
-          </Button>
+          <PermissionGate permission="export_reports">
+            <Button variant="outline" className="gap-2" onClick={handleExport}>
+              <Download className="w-4 h-4" />
+              Export Excel
+            </Button>
+          </PermissionGate>
         </div>
 
         {/* Summary Cards */}
