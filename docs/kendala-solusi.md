@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/kendala-solusi.md` |
-| Terakhir diperbarui | **2026-11-01** |
+| Terakhir diperbarui | **2026-11-05** |
 | Isi | Masalah, bug, error, dan ketidaksesuaian yang benar-benar dihadapi — beserta cara mengatasi dan pelajarannya |
 
 ## Cara memakai log ini
@@ -55,6 +55,7 @@
 | KS-36 | 2026-11-05 | Hapus karyawan hanya menghapus proyeksi → identitas tetap masuk & dapat token full-access | Selesai |
 | KS-37 | 2026-11-05 | Tiga mesin izin berbeda (hook, branch-orders, procurement) + daftar hard-coded → tidak sinkron | Selesai |
 | KS-38 | 2026-11-05 | Simpan matriks membekukan default semua role ke dokumen (snapshot) | Selesai |
+| KS-39 | 2026-11-05 | `/api/tenant/bootstrap` 500 di produksi: modul src yang dijangkau server memakai alias `@/` | Selesai |
 
 ---
 
@@ -509,6 +510,18 @@
 | **Solusi** | Save hanya menulis override role yang diedit (`setTenantSetting('role_permissions', {...existing, [role]: changed})`); resolver menggabungkan default < override < custom, jadi kunci yang muncul belakangan tetap berlaku untuk role yang tidak pernah disentuh |
 | **Bukti** | `src/components/settings/EmployeeRoleSettings.tsx`; `src/lib/permission-matrix.ts` (merge order); test merge-order di `permission-matrix.test.ts` |
 | **Pelajaran** | Dokumen konfigurasi harus menyimpan niat (deviasi), bukan hasil evaluasi. Membekukan default ke penyimpanan mengubah data turunan menjadi sampah usang begitu kode tumbuh |
+
+---
+
+## KS-39 · 2026-11-05 · `/api/tenant/bootstrap` 500 di produksi karena alias `@/` di modul src terjangkau server — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Setelah perubahan Role & Permission di-deploy, owner tidak bisa login di produksi dengan toast "Terjadi kesalahan sistem saat mencoba login". `GET /api/tenant/bootstrap` membalas `500 FUNCTION_INVOCATION_FAILED` **bahkan tanpa sesi**, padahal di mesin lokal endpoint yang sama membalas `401` dan login owner berjalan normal |
+| **Akar masalah** | `src/lib/permission-matrix.ts` mengimpor katalog dengan alias `@/config/roles`. Modul itu dijangkau `api/tenant/bootstrap.ts` lewat `server/roles.ts`. Vite dan `tsx` menyelesaikan `@/` dari `tsconfig paths`, tetapi runtime Node serverless menyimpan specifier literal `@/config` dan melempar `ERR_MODULE_NOT_FOUND` saat memuat modul — fungsi mati sebelum cek sesi apa pun |
+| **Solusi** | Ganti ke impor relatif berekstensi `.js` (`from "../config/roles.js"`), bentuk yang sama dengan setiap modul src lain yang dijangkau server (`variants.js`, `password.js`). Vite tetap bisa menyelesaikannya untuk browser |
+| **Bukti** | `npx vercel logs <url> --json` menampilkan `Cannot find package '@/config' imported from /var/task/src/lib/permission-matrix.js`. Setelah perbaikan: bootstrap produksi `401` tanpa sesi, dan login owner nyata mendarat di `/mode-select` (`200`) |
+| **Pelajaran** | Hijau di lokal bukan bukti fungsi bisa dimuat di produksi: `tsx` menghormati alias `@/`, bundel serverless tidak. Aturan turunannya — setiap modul src yang dijangkau (transitif) dari `api/`/`server/` wajib memakai impor relatif `.js`, tidak pernah `@/`. Uji satu request ke endpoint ter-deploy setiap push, jangan percaya status "completed" (perluas KS-26) |
 
 ---
 

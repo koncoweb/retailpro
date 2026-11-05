@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/deployment.md` |
-| Terakhir diperbarui | **2026-11-01** |
+| Terakhir diperbarui | **2026-11-05** |
 | Cakupan | Cara aplikasi berjalan di produksi: dua proyek Vercel, dua database Turso cloud, variabel lingkungan, langkah deploy & verifikasi, serta aturan platform yang tidak boleh dilanggar |
-| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-34 |
+| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-39 |
 
 > Dokumen ini adalah **runbook**, bukan rencana. Setiap nilai di bawah diambil dari proyek yang
 > benar-benar sudah ter-deploy dan sudah diverifikasi lewat HTTP serta browser pada 2026-10-28.
@@ -215,6 +215,11 @@ curl -s https://retailpro-thalia.vercel.app/api/health
 # {"ok":true,"service":"retailpro-api","tursoOrg":"koncowebliberation",
 #  "group":"ap-southeast-2","controlDbConfigured":true,...}
 
+# 1b. Fungsi bootstrap ter-load (tanpa sesi harus 401, BUKAN 500)
+curl -s -o /dev/null -w "%{http_code}\n" https://retailpro-thalia.vercel.app/api/tenant/bootstrap
+# 401 = modul import & graph server/roles.ts -> src/lib/permission-matrix.js dimuat bersih;
+# 500 FUNCTION_INVOCATION_FAILED = ada import yang gagal di runtime (mis. alias `@/`, lihat §8 & KS-39)
+
 # 2. Control DB + token terbaca (katalog marketplace yang dipakai toko)
 curl -s https://retailpro-thalia.vercel.app/api/storefront/marketplace
 # shops:[{slug:"thalia",name:"Thalia Toko Bahan Kue",warehouse:"Gudang Pusat Depok",...}],
@@ -262,6 +267,7 @@ penerimaan barang, pengeluaran) jangan diarahkan ke tenant produksi — jalankan
 | Aturan | Konsekuensi bila dilanggar |
 |---|---|
 | **Import relatif di `api/` dan `server/` wajib berekstensi `.js`** (mis. `from '../server/http.js'`) | Vercel men-transpile tiap berkas fungsi secara terpisah dan membacanya sebagai ESM (`"type": "module"`); import tanpa ekstensi gagal saat runtime → `500 FUNCTION_INVOCATION_FAILED`. `tsx` lokal tetap menemukan `.ts`, jadi masalahnya hanya muncul di produksi (KS-26) |
+| **Modul `src/**` yang dijangkau (transitif) dari `api/`/`server/` tidak boleh memakai alias `@/`** — harus relatif berekstensi `.js` (mis. `../config/roles.js`) | Runtime Node serverless tidak menerapkan `tsconfig paths`, jadi specifier `@/config` dibiarkan literal dan melempar `ERR_MODULE_NOT_FOUND`. Ini yang membuat `/api/tenant/bootstrap` 500 dan login owner gagal di produksi padahal lokal hijau (`server/roles.ts` → `src/lib/permission-matrix.ts` → `@/config/roles`). Vite browser tetap menyelesaikan bentuk relatif (KS-39) |
 | **Route dinamis/catch-all harus lewat `rewrites`** | `api/auth/[...all].ts` dan `api/admin/users/[id]/password.ts` bukan nama rute yang valid untuk fungsi standalone → `404 NOT_FOUND` dari platform (KS-27) |
 | **`db/schema/**` harus ikut ke lambda** lewat `functions.includeFiles` | Provisioning gagal karena berkas SQL tidak ada di bundle fungsi |
 | **CSP harus mengizinkan host Turso** (`https://*.turso.io`, `wss://*.turso.io`) | Browser memblokir koneksi libSQL; halaman tampak "gagal memuat data" tanpa error server |
