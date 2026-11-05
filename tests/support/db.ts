@@ -73,14 +73,15 @@ export async function tenantClient(): Promise<Client> {
  */
 export async function deleteUserByEmail(email: string): Promise<void> {
   const control = controlClient();
+  let userId: string | undefined;
   try {
     const row = await control.execute({ sql: 'SELECT id FROM user WHERE email = ?', args: [email] });
-    const id = row.rows[0]?.id;
-    if (id) {
+    userId = row.rows[0]?.id as string | undefined;
+    if (userId) {
       for (const table of ['session', 'account']) {
-        await control.execute({ sql: `DELETE FROM ${table} WHERE userId = ?`, args: [id] });
+        await control.execute({ sql: `DELETE FROM ${table} WHERE userId = ?`, args: [userId] });
       }
-      await control.execute({ sql: 'DELETE FROM user WHERE id = ?', args: [id] });
+      await control.execute({ sql: 'DELETE FROM user WHERE id = ?', args: [userId] });
     }
   } finally {
     control.close();
@@ -89,6 +90,25 @@ export async function deleteUserByEmail(email: string): Promise<void> {
   const tenant = await tenantClient();
   try {
     await tenant.execute({ sql: 'DELETE FROM users WHERE email = ?', args: [email] });
+    // Per-employee exceptions live in the settings document, not the users row.
+    // The UI delete prunes them via the endpoint; a test that cleans up through
+    // this helper must do the same or the shared cloud tenant accumulates ids.
+    if (userId) {
+      const settingsRow = await tenant.execute('SELECT id, settings FROM tenants LIMIT 1');
+      const current = settingsRow.rows[0];
+      if (current) {
+        const settings = JSON.parse(String(current.settings ?? '{}')) as Record<string, unknown>;
+        const overrides = settings.user_permissions;
+        if (overrides && typeof overrides === 'object' && userId in (overrides as object)) {
+          delete (overrides as Record<string, unknown>)[userId];
+          if (Object.keys(overrides as object).length === 0) delete settings.user_permissions;
+          await tenant.execute({
+            sql: 'UPDATE tenants SET settings = ? WHERE id = ?',
+            args: [JSON.stringify(settings), String(current.id)],
+          });
+        }
+      }
+    }
   } finally {
     tenant.close();
   }
@@ -121,6 +141,23 @@ export async function findCustomRoleKeyByLabel(label: string): Promise<string | 
     if (value?.label === label) return key;
   }
   return null;
+}
+
+/**
+ * The stored per-employee permission exceptions for one user id.
+ *
+ * A test that narrows a person through the Employees screen reads the value
+ * back from the settings document the save wrote, so the assertion is about
+ * what the server would actually apply, not what the browser showed.
+ */
+export async function readUserPermissionOverrides(
+  userId: string
+): Promise<Record<string, boolean>> {
+  const settings = await readSettings();
+  const overrides = settings.user_permissions;
+  if (!overrides || typeof overrides !== 'object') return {};
+  const mine = (overrides as Record<string, unknown>)[userId];
+  return mine && typeof mine === 'object' ? (mine as Record<string, boolean>) : {};
 }
 
 /**

@@ -51,13 +51,24 @@ import {
   Mail,
   Loader2,
   KeyRound,
+  Shield,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { query } from "@/lib/db";
 import { logAudit } from "@/lib/audit";
 import { useAuth } from "@/hooks/use-auth";
-import { usePermissions, useBranchScope } from "@/hooks/use-permissions";
+import {
+  usePermissions,
+  useBranchScope,
+  useTenantUserPermissionsQuery,
+  useInvalidateTenantUserPermissions,
+} from "@/hooks/use-permissions";
 import { permissionLabel } from "@/lib/permission-matrix";
+import {
+  clearUserPermissionOverrides,
+  setUserPermissionOverrides,
+} from "@/lib/tenant-settings";
+import { IndividualPermissionEditor, type EmployeeRef } from "@/components/employees/IndividualPermissionEditor";
 import { toast } from "sonner";
 import { MIN_PASSWORD_LENGTH, passwordProblem } from "@/lib/password";
 
@@ -117,6 +128,12 @@ export default function Employees() {
   const { user } = useAuth();
   const { can, grants, loading: permissionsLoading } = usePermissions();
   const { branchIds } = useBranchScope();
+  const { data: userPermissions } = useTenantUserPermissionsQuery();
+  const invalidateUserPermissions = useInvalidateTenantUserPermissions();
+
+  /** How many permissions the owner has taken back from one person. */
+  const exceptionCount = (id: string): number =>
+    Object.values(userPermissions?.[id] ?? {}).filter((v) => v === false).length;
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -149,6 +166,10 @@ export default function Employees() {
 
   // Delete State
   const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  // Per-individual permission exceptions (a narrowing of the role, never an add-on)
+  const [permissionTarget, setPermissionTarget] = useState<Employee | null>(null);
+  const [permissionSaving, setPermissionSaving] = useState(false);
 
   // One-time password dialog (never a toast: it is the only copy of the password)
   const [generatedCredentials, setGeneratedCredentials] = useState<GeneratedCredentials | null>(null);
@@ -460,6 +481,9 @@ export default function Employees() {
     try {
         const removed = employees.find((emp) => emp.id === deleteId);
         await identityRequest(`/${deleteId}`, "DELETE");
+        // The identity is gone, so its per-individual exceptions must go too —
+        // otherwise the id would linger in the settings document forever.
+        await clearUserPermissionOverrides(deleteId);
         await logAudit({
             action: "delete",
             entity: "users",
@@ -492,6 +516,44 @@ export default function Employees() {
     } catch (error) {
       console.error("Failed to reset password:", error);
       toast.error(error instanceof Error ? error.message : "Gagal mengubah password");
+    }
+  };
+
+  /**
+   * Write one employee's permission exceptions.
+   *
+   * The payload is only ever `{ key: false }` (the editor cannot produce a
+   * `true`), and `setUserPermissionOverrides` prunes non-`false` values, so the
+   * restrict-only rule holds even if the UI were bypassed — the resolver ignores
+   * any `true` here anyway. This is the tenant settings document, the same
+   * place the Role screen writes; identity (role/branch/status) is untouched.
+   */
+  const handleSavePermissions = async (restrictions: Record<string, boolean>) => {
+    if (!permissionTarget) return;
+    setPermissionSaving(true);
+    try {
+      const before = userPermissions?.[permissionTarget.id] ?? {};
+      await setUserPermissionOverrides(permissionTarget.id, restrictions);
+      await logAudit({
+        action: "update_employee_permissions",
+        entity: "users",
+        entityId: permissionTarget.id,
+        userId: user?.id,
+        details: {
+          email: permissionTarget.email,
+          role: permissionTarget.role,
+          before,
+          after: restrictions,
+        },
+      });
+      invalidateUserPermissions();
+      toast.success("Pengecualian izin tersimpan");
+      setPermissionTarget(null);
+    } catch (error) {
+      console.error("Failed to save employee permissions:", error);
+      toast.error(error instanceof Error ? error.message : "Gagal menyimpan pengecualian izin");
+    } finally {
+      setPermissionSaving(false);
     }
   };
 
@@ -590,6 +652,20 @@ export default function Employees() {
             <Edit className="w-4 h-4" />
           </Button>
         )}
+        {can("edit_employee") && emp.id !== user?.id && (
+          <Button
+            variant="ghost"
+            size="iconTouch"
+            aria-label={`Izin khusus ${emp.name || emp.email}`}
+            title="Izin khusus (cabut sebagian izin role)"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPermissionTarget(emp);
+            }}
+          >
+            <Shield className="w-4 h-4" />
+          </Button>
+        )}
         {can("edit_employee") && (
           <Button
             variant="ghost"
@@ -654,16 +730,23 @@ export default function Employees() {
 
   const roleSummary = (emp: Employee) => {
     const grant = grants[emp.role];
-    const count = grant
-      ? Object.values(grant.permissions).filter(Boolean).length
-      : 0;
+    const roleCount = grant ? Object.values(grant.permissions).filter(Boolean).length : 0;
+    const exceptions = exceptionCount(emp.id);
+    const activeCount = Math.max(0, roleCount - exceptions);
     return (
       <div className="space-y-0.5">
-        <Badge variant="outline" className={grant && !grant.builtin ? "border-primary/60" : ""}>
-          {roleLabel(emp.role)}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge variant="outline" className={grant && !grant.builtin ? "border-primary/60" : ""}>
+            {roleLabel(emp.role)}
+          </Badge>
+          {exceptions > 0 && (
+            <Badge variant="secondary" className="text-[10px] font-normal" title="Izin role yang dicabut khusus untuk karyawan ini">
+              {exceptions} pengecualian
+            </Badge>
+          )}
+        </div>
         <p className="text-xs text-muted-foreground">
-          {grant ? `${count} izin aktif` : "Role tidak dikenal"}
+          {grant ? `${activeCount} izin aktif` : "Role tidak dikenal"}
         </p>
       </div>
     );
@@ -1149,6 +1232,29 @@ export default function Employees() {
             </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* Per-individual permission exceptions: only ever narrows the role. */}
+      <IndividualPermissionEditor
+        open={!!permissionTarget}
+        onOpenChange={(open) => {
+          if (!open) setPermissionTarget(null);
+        }}
+        employee={
+          permissionTarget
+            ? ({
+                id: permissionTarget.id,
+                name: permissionTarget.name,
+                email: permissionTarget.email,
+                role: permissionTarget.role,
+              } satisfies EmployeeRef)
+            : null
+        }
+        grant={permissionTarget ? grants[permissionTarget.role] : undefined}
+        roleLabel={permissionTarget ? roleLabel(permissionTarget.role) : ""}
+        restrictions={permissionTarget ? userPermissions?.[permissionTarget.id] ?? {} : {}}
+        canEdit={can("edit_employee")}
+        saving={permissionSaving}
+        onSave={(restrictions) => void handleSavePermissions(restrictions)}
+      />
     </BackOfficeLayout>
   );
 }

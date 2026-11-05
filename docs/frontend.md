@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/frontend.md` |
-| Terakhir diperbarui | **2026-11-05** |
+| Terakhir diperbarui | **2026-11-06** |
 | Stack | React 18 + Vite 5 + TypeScript, shadcn/ui, Tailwind, React Router 6 |
 | Bahasa UI | Indonesia (label, pesan, format Rupiah) |
 
@@ -165,11 +165,21 @@ menulis control plane lebih dulu lalu mencerminkan ke proyeksi, dan
 
 **Satu jalur baca izin.** `usePermissions()` (`src/hooks/use-permissions.ts`) membaca
 dokumen settings **satu kali** lewat TanStack Query (`queryKey: ['tenant-settings']`,
-`staleTime` 60 detik) dan mengembalikan `{ can, granted, scope, loading, role, roleLabel }`.
+`staleTime` 60 detik) dan mengembalikan `{ can, granted, scope, loading, role, roleLabel, roleGranted, removedKeys }`.
 Cache-nya disemai dari respons bootstrap sehingga paint pertama tidak berkedip `loading`,
 dan setiap simpanan di layar Role memanggil `useInvalidateTenantSettings()` sehingga edit
 matriks langsung berlaku tanpa reload. Nomor `SELECT settings FROM tenants LIMIT 1` per
 komponen yang dulu ada sudah hilang.
+
+**Pengecualian izin per karyawan (restrict-only).** Di samping cache matriks peran yang
+bentuknya tidak berubah, ada cache kembar `['tenant-user-permissions']` (`useTenantUserPermissionsQuery()`,
+disetel `staleTime` 60 detik dan disemai bootstrap dari slice `userPermissions` milik pemanggil
+saja) yang memuat pengecualian per orang, dipetai `userId → { permKey: false }`. `usePermissions()`
+menggabungkannya di resolver — `granted = effectiveUserPermissions(grant, restrictions[user.id])` —
+sehingga seorang karyawan bisa **dicabut** sebagian izin dari role-nya tetapi tidak pernah
+ditambah; hanya `false` yang berarti, dan aturan "hanya mengurangi" ditegakkan di resolver,
+bukan di UI (`roleGranted` = peta mentah peran, `removedKeys` = kunci yang sedang dikecualikan,
+dipakai editor individu). Setiap simpanan layar Karyawan memanggil `useInvalidateTenantUserPermissions()`.
 
 ---
 
@@ -222,7 +232,8 @@ Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 ba
 | Harga beli per pecahan | `lib/pricing.ts`, `AddProductModal`, `inventory/PurchaseOrderModal.tsx`, `vendors/VendorDetail.tsx` | Tabel varian × pecahan dengan harga beli **dan** harga jual; `resolveBuyPrice` mengambil pricelist vendor dulu; `packEconomics`/`priceIssues` memberi margin dan peringatan (hanya `cost_above_price` yang memblokir simpan) |
 | Audit | `lib/audit.ts` | `logAudit` (best effort) dan `logAuditTx` (ikut rollback) |
 | Notifikasi | `ui/toast`, `ui/sonner` | Dua jalur toast; pesan sukses/gagal berbahasa Indonesia |
-| Matriks izin | `settings/EmployeeRoleSettings.tsx` | Master/detail: daftar role di kiri, editor izin di kanan (di layar kecil jadi `Sheet` dari bawah). Kolom pencarian "Cari izin…", "Pilih semua / Kosongkan" per grup, tiap baris `min-h-11` dengan label + hint + Switch, bilah Simpan lengket dengan penanda "Belum disimpan", dan Pratinjau yang dirender dari `nav-items.ts` |
+| Matriks izin | `settings/EmployeeRoleSettings.tsx` | Editor detail: daftar role + editor izin. Tata letaknya responsif per lebar — **strip daftar role horizontal yang bisa digeser** di tablet/desktop kecil (`md`/`lg`, kartu `min-w` tetap, `overflow-x-auto`) supaya tidak menumpuk vertikal melewati tinggi layar pendek, dan **master/detail berdampingan** hanya di monitor besar (`xl`); editor lebar & `Sheet` layar penuh di ponsel tak berubah. Kolom pencarian "Cari izin…", "Pilih semua / Kosongkan" per grup, tiap baris `min-h-11` dengan label + hint + Switch, bilah Simpan lengket dengan penanda "Belum disimpan", dan Pratinjau yang dirender dari `nav-items.ts` |
+| Izin khusus per karyawan | `employees/IndividualPermissionEditor.tsx` + `pages/Employees.tsx` | Aksi baris "Izin khusus" (ikon Shield, hanya `can('edit_employee')` dan disembunyikan untuk akun sendiri). **Restrict-only**: hanya menampilkan kunci yang **role** berikan (digrup via `PERMISSION_GROUPS`), tiap baris default ON = mewarisi role, mematikannya menambah `false` ke `user_permissions`; kunci di luar role tidak ditawarkan sebagai Switch sama sekali (tidak bisa menambah), dengan catatan bahwa izin itu diatur di Pengaturan → Role. Ringkasan "X dari Y izin aktif, N dikecualikan" + "Kembalikan semua ke role"; dialog di desktop, `Sheet` layar penuh di mobile. Badge "N pengecualian" di daftar, dan hapus karyawan ikut membersihkan entri `user_permissions`-nya |
 | Role kustom | `settings/EmployeeRoleSettings.tsx` | Buat / duplikat / hapus (`cust_*`, disimpan di `settings.custom_roles`). Menghapus ditolak selama masih dipakai karyawan, dengan daftar namanya; id tidak pernah diganti, hanya label |
 | Scope lokasi | `settings/EmployeeRoleSettings.tsx` + `useBranchScope` / `useWarehouseScope` | "Terapkan di" Cabang/Gudang berupa chip; layar yang kena scope menampilkan kalimat penjelas ("Anda hanya melihat cabang: …") dan baris di luar scope **tidak ditampilkan**, bukan sekadar-disabled |
 | Tombol berizin | `auth/PermissionGate.tsx` | Pembungkus standar aksi yang butuh izin: tersembunyi saat `loading`, tersembunyi/`fallback` saat ditolak, supaya aturan "jangan tampilkan tombol yang pasti gagal" tidak ditulis ulang per halaman |
@@ -257,6 +268,7 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-11-06 | — (working tree) | **Izin khusus per karyawan (restrict-only) + tab Role responsif**. Resolver `permission-matrix.ts` menambah `effectiveUserPermissions(grant, restrictions)` dan `roleGrantedKeys()`; cache kembar `['tenant-user-permissions']` (`UserPermissionOverrides`, dipetai `userId→{key:false}`) di samping cache `grants` yang bentuknya tak berubah, sehingga seorang karyawan bisa dicabut sebagian izin role-nya tetapi **tidak pernah** ditambah (hanya `false` berarti, ditegakkan di resolver). Layar Karyawan: komponen `employees/IndividualPermissionEditor.tsx` + aksi baris "Izin khusus" (Shield, `can('edit_employee')`, disembunyikan untuk diri sendiri), badge "N pengecualian", hapus karyawan membersihkan entri via `clearUserPermissionOverrides`, audit `update_employee_permissions`. `bootstrap` kini memakai `readTenantAccess` (satu baca settings) dan mengembalikan slice `userPermissions` pemanggil; `TenantContext` men-seed query baru itu. Tab Role `EmployeeRoleSettings.tsx`: daftar role jadi **strip geser horizontal** di `md`/`lg` (satu kolom, tak lagi overflow vertikal di layar pendek), master/detail berdampingan tetap hanya di `xl`, `Sheet` mobile tak berubah. Uji: unit `effectiveUserPermissions` (5 kasus) + `tests/permissions.e2e.ts` "per-employee permission exceptions" |
 | 2026-11-05 | — (working tree) | **Absensi geolokasi & pengenal wajah (skema v8)**. Library baru: `src/lib/geolocation.ts` (`getCurrentCoords`, `haversineMeters`, `withinRadius`, `formatDistance`) dan `src/lib/face.ts` (`@vladmandic/face-api` dimuat lazy, `captureDescriptor`, encode/decode descriptor 128-float, `bestMatch`) + `src/lib/workplace.ts` (daftar cabang/gudang ber-koordinat). Layar baru: `/absen` (`AttendanceCheckIn.tsx`, self-service, hard-block di luar radius & wajah tak cocok, kartu "Absensi/Presensi" selalu tampil di `ModeSelect`), `/backoffice/hr/face` (`FaceEnrollment.tsx`, owner mendaftarkan 4 sampel wajah → descriptor, hapus data). Dialog Cabang & Gudang menambahkan input lat/lng + radius + tombol "Pakai GPS sekarang" + switch `require_geo`/`require_face`. `EmployeeReports.tsx` menampilkan kolom Sumber/Lokasi/Geo/Wajah (di tabel & ekspor XLSX) dan capture GPS opsional di jalur override owner. Kunci izin baru `manage_attendance`. Model face-api di-vendor ke `public/models/`. Jarak & kecocokan dihitung di perangkat (audit, bukan paksaan DB); kamera/GPS butuh secure context |
 | 2026-11-05 | — (working tree) | `EmployeeReports.tsx` (Absensi & Libur): field Tanggal modal Tambah Absensi dikunci read-only ke hari berjalan WIB (`attendanceToday()`, UTC+7 — sejalan dengan trigger `trg_attendance_today_only` di skema v7), dengan validasi ganda sebelum insert; tab Libur mengganti array statis 2026 dengan `src/lib/holidays.ts` (API Tanggal Merah per tahun + fallback bawaan) lewat TanStack Query, lengkap pemilih tahun, badge Libur Nasional/Cuti Bersama, dan banner saat fallback dipakai |
 | 2026-11-05 | — (working tree) | Sistem izin ditulis ulang jadi **satu katalog → satu resolver → satu identitas**. `config/roles.ts` menyimpan key+label+hint dalam satu `PERMISSION_CATALOG` (label/hint/grup diturunkan, bukan ditulis tangan lagi); `lib/permission-matrix.ts` yang baru menghitung grant per peran (default < override tenant < role kustom di atas `clone_of`) dan scope-nya; `usePermissions()` pindah ke TanStack Query satu baca per halaman. Semua guard route, entri sidebar, dan kartu `ModeSelect` menuntut kunci izin, bukan daftar peran — grup `ALL_ROLES`/`FRONT_OFFICE`/`BACK_OFFICE`/`MANAGERS`/`STOCK_DOCS`/`PROCUREMENT_ROLES`/`HR_ROLES` dihapus. Kunci yang dulu ada tetapi tidak menjaga apa pun kini ditegakkan (`apply_discount`, `void_transaction` di POS, `export_reports` di 21 tombol ekspor, `view_settings`/`edit_settings`/`manage_roles` di Pengaturan). Lihat §13 |
@@ -408,8 +420,8 @@ Tiga lapis, dan hanya tiga tempat yang boleh menjawab "boleh tidak orang ini":
 | Lapis | Berkas | Isi |
 |---|---|---|
 | Deklarasi | `src/config/roles.ts` | `PERMISSION_CATALOG` (key + label + hint per grup), `ROLES`, `BUILTIN_ASSIGNABLE_ROLES`, `DEFAULT_ROLE_PERMISSIONS`, `resolveRolePermissions()`. `PERMISSION_GROUPS` / `PERMISSION_LABELS` / `PERMISSION_HINTS` / `ALL_PERMISSION_KEYS` **diturunkan** dari katalog — tidak boleh ditulis tangan lagi |
-| Perhitungan | `src/lib/permission-matrix.ts` | murni (tanpa React, tanpa SQL; ikut dipakai `server/roles.ts`): `buildGrants(settings)`, `grantForRole`, `effectivePermissions`, `makeChecker`, `permissionRole` (alias `admin` → `tenant_admin`), `inScope`/`branchInScope`/`warehouseInScope`, `effectiveBranchScope`, `effectiveWarehouseScope` |
-| Pemakaian | `src/hooks/use-permissions.ts` | `usePermissions()` → `{ can, granted, scope, loading, role, roleLabel }`; `usePermission(key)`, `useBranchScope()`, `useWarehouseScope()`, `useInvalidateTenantSettings()` |
+| Perhitungan | `src/lib/permission-matrix.ts` | murni (tanpa React, tanpa SQL; ikut dipakai `server/roles.ts`): `buildGrants(settings)`, `grantForRole`, `effectivePermissions`, `effectiveUserPermissions(grant, restrictions)` (restrict-only per karyawan — hanya `false` mencabut, `true` disimpan diabaikan), `roleGrantedKeys(grant)`, `makeChecker`, `permissionRole` (alias `admin` → `tenant_admin`), `inScope`/`branchInScope`/`warehouseInScope`, `effectiveBranchScope`, `effectiveWarehouseScope` |
+| Pemakaian | `src/hooks/use-permissions.ts` | `usePermissions()` → `{ can, granted, scope, loading, role, roleLabel, roleGranted, removedKeys }`; `usePermission(key)`, `useBranchScope()`, `useWarehouseScope()`, `useTenantUserPermissionsQuery()`, `useInvalidateTenantSettings()`, `useInvalidateTenantUserPermissions()` |
 
 Aturan yang dijamin resolver (dan diuji di `src/lib/permission-matrix.test.ts` +
 `src/config/roles.test.ts`):

@@ -640,9 +640,16 @@ export function EmployeeRoleSettings() {
         </Alert>
       )}
 
-      <div className="grid gap-4 md:grid-cols-[minmax(260px,300px)_1fr] xl:grid-cols-[minmax(360px,420px)_1fr]">
-        {/* Role list: cards, never a table, so a phone does not scroll sideways */}
-        <div className="space-y-2 xl:grid xl:grid-cols-2 xl:gap-2 xl:space-y-0">
+      <div className="grid gap-4 xl:grid-cols-[minmax(360px,420px)_1fr]">
+        {/*
+         * Role list: cards, never a table, so a phone does not scroll sideways.
+         * On a short screen (tablet, small desktop) a vertical column of these
+         * runs past the viewport and hides the lower roles, so at md/lg they
+         * become a horizontal strip that scrolls sideways in one short band;
+         * only on a large monitor (xl) does the side-by-side master/detail
+         * return, where the tall column has room.
+         */}
+        <div className="space-y-2 md:flex md:gap-2 md:space-y-0 md:overflow-x-auto md:pb-2 xl:block xl:space-y-2 xl:overflow-visible xl:pb-0">
           {order.map((key) => {
             const draft = drafts[key];
             if (!draft) return null;
@@ -654,7 +661,7 @@ export function EmployeeRoleSettings() {
                 type="button"
                 onClick={() => selectRole(key)}
                 aria-pressed={isActive}
-                className={`flex min-h-11 w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors ${
+                className={`flex min-h-11 w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors md:w-[220px] md:shrink-0 xl:w-full ${
                   isActive
                     ? "border-primary bg-primary/5"
                     : "bg-card hover:bg-muted/60"

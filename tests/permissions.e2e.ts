@@ -6,6 +6,7 @@ import {
   deleteUserByEmail,
   findCustomRoleKeyByLabel,
   deleteCustomRoleSetting,
+  readUserPermissionOverrides,
 } from './support/db';
 import { APP_CONTEXT } from './support/context';
 
@@ -142,6 +143,62 @@ afterEach(async () => {
     await deleteCustomRoleSetting(pendingRoleKey);
     pendingRoleKey = null;
   }
+});
+
+/**
+ * The per-individual exception half of the system, proven through the real
+ * Employees screen and read back from the settings document the save wrote.
+ *
+ * Two things must hold, and both are the feature's whole promise: taking a
+ * permission back from one person lands in `user_permissions` as a `false`, and
+ * the editor can only ever lower the role — a permission the role does not
+ * grant is not offered as a switch at all, so there is nothing to turn on.
+ */
+describe('per-employee permission exceptions', { tags: ['permissions'], agentContext: APP_CONTEXT }, () => {
+  test('an owner takes a role permission back from one cashier', { session: 'owner' }, async ({ app, screen, browser }) => {
+    const name = `Kasir E2E ${Date.now()}`;
+    const email = newEmail('e2e.except');
+    identityCleanup.push(email);
+
+    // `createUser`/`patchUser` run `fetch` inside the page via browser.evaluate,
+    // so a page must already be open — same as the identity tests below.
+    await app.open('/mode-select');
+
+    // Create the identity, then PATCH to mirror the projection so the person
+    // actually appears in the Employees list.
+    const created = await createUser(browser, { email, name, role: 'cashier', password: PASSWORD });
+    expect(String(created.status)).toBe('201');
+    const userId = String(created.json.userId);
+    const patched = await patchUser(browser, userId, { role: 'cashier' });
+    expect(String(patched.status)).toBe('200');
+
+    await app.open('/backoffice/hr/employees');
+    await screen.getByPlaceholder('Cari nama atau email…').fill(email);
+
+    // Open the per-individual editor for this row.
+    await screen.getByRole('button', { name: new RegExp(`Izin khusus ${name}`) }).tap();
+    const dialog = screen.getByRole('dialog', { name: /Izin khusus/ });
+    await expect(dialog).toBeVisible();
+
+    // The role grants "Akses POS": its switch is there and on. Turn it off.
+    const posSwitch = dialog.getByRole('switch', { name: /Akses POS/ });
+    await expect(posSwitch).toBeVisible();
+    await posSwitch.tap();
+
+    // A permission the role does NOT grant (apply_discount for a cashier) is
+    // not offered as a switch here at all — the editor cannot add beyond role.
+    await expect(dialog.getByRole('switch', { name: /Berikan Diskon/ })).toBeHidden();
+
+    await dialog.getByRole('button', 'Simpan').tap();
+
+    // Read back what the server would actually apply: exactly one `false`.
+    const overrides = await pollDb(
+      () => readUserPermissionOverrides(userId),
+      (value) => Object.keys(value).length > 0,
+    );
+    expect(overrides.access_pos).toBe(false);
+    expect(Object.values(overrides).every((v) => v === false)).toBe(true);
+  });
 });
 
 describe('identity enforcement (server-side)', { tags: ['permissions'], agentContext: APP_CONTEXT }, () => {

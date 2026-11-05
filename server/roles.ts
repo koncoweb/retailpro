@@ -18,6 +18,7 @@ import type {
   CustomRoleDefinition,
   RoleGrant,
   RoleSettings,
+  UserPermissionOverrides,
 } from '../src/lib/permission-matrix.js';
 import { buildGrants, CUSTOM_ROLE_PREFIX } from '../src/lib/permission-matrix.js';
 
@@ -209,4 +210,24 @@ export async function readUserProjection(
 export async function readTenantGrants(tenant: TenantRef): Promise<Record<string, RoleGrant>> {
   const settings = await readRoleSettings(tenant);
   return buildGrants(settings);
+}
+
+/**
+ * Everything `/api/tenant/bootstrap` needs about access, in one settings read.
+ *
+ * The role matrix (`grants`) and the per-employee exceptions
+ * (`user_permissions`) live in the same document, so the bootstrap path reads
+ * it once and answers both rather than opening the tenant database twice for
+ * one sign-in. The exceptions are returned whole; the endpoint trims them to
+ * the caller before shipping, so nobody else's overrides cross the wire.
+ */
+export async function readTenantAccess(tenant: TenantRef): Promise<{
+  grants: Record<string, RoleGrant>;
+  userPermissions: UserPermissionOverrides;
+}> {
+  const settings = await readRoleSettings(tenant);
+  return {
+    grants: buildGrants(settings),
+    userPermissions: settings.user_permissions ?? {},
+  };
 }

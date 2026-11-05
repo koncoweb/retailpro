@@ -160,7 +160,7 @@ Project → Settings → Git.
 | `rewrites[0]` | `/api/auth/(.*)` → `/api/auth/[...all]` | Fungsi standalone tidak mengenal nama berkas bracket |
 | `rewrites[1]` | `/api/admin/users/([^/]+)/password` → `/api/admin/users/[id]/password` | idem untuk route dinamis |
 | `rewrites[2]` | `/((?!api/).*)` → `/index.html` | SPA fallback, dengan negative lookahead agar `/api/*` tidak tertelan |
-| `headers` | CSP + `X-Frame-Options` + `nosniff` + `Referrer-Policy` + `Permissions-Policy` | CSP mengizinkan `connect-src https://*.turso.io wss://*.turso.io` karena browser bicara langsung ke Turso |
+| `headers` | CSP + `X-Frame-Options` + `nosniff` + `Referrer-Policy` + `Permissions-Policy` | CSP mengizinkan `connect-src https://*.turso.io wss://*.turso.io` karena browser bicara langsung ke Turso, plus `https://tanggalmerah.upset.dev` untuk API hari libur dan `fonts.googleapis.com`/`fonts.gstatic.com` untuk font Plus Jakarta Sans. `Permissions-Policy: camera=(self), geolocation=(self)` — wajib untuk absensi v8 (getUserMedia + GPS); `microphone=()` tetap ditutup |
 | `functions["api/**/*.ts"].includeFiles` | `db/schema/**` | `server/provision.ts` membaca `tenant.sql` & `seed.sql` dari disk saat runtime |
 
 Urutan `rewrites` penting: catch-all harus **terakhir**, kalau tidak `/api/*` akan dijawab

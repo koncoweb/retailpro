@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/backend.md` |
-| Terakhir diperbarui | **2026-11-05** |
+| Terakhir diperbarui | **2026-11-06** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
 | Versi skema tenant | **8** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
@@ -109,7 +109,7 @@ yang juga hanya membaca `.env` — kunci model e2e harus ada di sana, bukan di `
 | GET | `/api/storefront/catalog` | – (publik) | Katalog cabang online **satu** tenant. Query `?slug=` (default `STOREFRONT_TENANT_SLUG`, lalu `thalia`). Tidak dipakai etalase lagi — etalase memakai `/marketplace` — tetapi dipertahankan sebagai kontrak untuk klien yang memang satu toko | 404 `tenant_not_found`, 409 `tenant_inactive`/`tenant_not_seeded` |
 | GET | `/api/storefront/marketplace` | – (publik) | Gabungan katalog **semua** tenant `active`: `{shops, categories, products, tenants:{total,live}, skipped, syncedAt}`. Produk membawa `tenant`/`seller`/`branch` dan `id` berprefiks slug tenant supaya tidak bertabrakan. Tenant yang gagal dibaca masuk `skipped[]` (`{slug, reason:"unavailable"}`) tanpa menggagalkan permintaan; **pesan error asli hanya ke log server** (`[storefront] tenant … skipped:`) karena respons ini publik — lihat KS-33 | 200 selalu bila control DB terbaca |
 | ANY | `/api/auth/*` | – | Handler Better Auth (login, logout, session, admin) | Sesuai Better Auth |
-| GET | `/api/tenant/bootstrap` | Sesi + registry | `{dbUrl, token, expiresAt, tenant{id,name,slug}, user{id,name,email,role,branchId,active}, grants}`. `grants` adalah matriks izin hasil resolusi (`buildGrants(settings)`) supaya paint pertama SPA sudah tahu apa yang boleh dilakukan orang ini. **Sebelum** token dicetak, baris proyeksi `users` pemanggil dibaca: tidak ada / `is_active = 0` ⇒ tolak | 401 tanpa sesi, 404 tanpa tenant, **403 `account_inactive`**, 502 `tenant_unreachable` |
+| GET | `/api/tenant/bootstrap` | Sesi + registry | `{dbUrl, token, expiresAt, tenant{id,name,slug}, user{id,name,email,role,branchId,active}, grants, userPermissions}`. `grants` adalah matriks izin hasil resolusi (`buildGrants(settings)`) supaya paint pertama SPA sudah tahu apa yang boleh dilakukan orang ini; `userPermissions` adalah **pengecualian izin per karyawan restrict-only** (`effectiveUserPermissions` memakai `settings.user_permissions`), dan hanya slice pemanggil `{ [user.id]: {...} }` yang dikirim supaya orang tidak tahu apa yang dicabut dari rekannya. `grants` + `userPermissions` dibaca **satu kali** lewat `readTenantAccess(tenant)`. **Sebelum** token dicetak, baris proyeksi `users` pemanggil dibaca: tidak ada / `is_active = 0` ⇒ tolak | 401 tanpa sesi, 404 tanpa tenant, **403 `account_inactive`**, 502 `tenant_unreachable` |
 | POST | `/api/tenant/token` | Sesi + registry | Mint token baru untuk database tenant pemanggil | 401, 404 |
 | POST | `/api/tenant/provision` | Sesi | Buat DB + skema + seed + registry. Body `{companyName, slug?, branchName?, branchAddress?}` | 400 `invalid_company_name`/`invalid_slug`, 401, 409 `tenant_exists`/`slug_taken`/`slug_reserved`, 429 `tenant_limit_reached`, 502 `turso_error`/`turso_no_hostname` |
 | POST | `/api/admin/users` | Sesi admin | Buat user Better Auth di tenant pemanggil; `password` yang dikirim admin dipakai apa adanya (minimal 8 karakter) dan hanya diacak bila tidak dikirim. Peran divalidasi ke `server/roles.ts` (bawaan ∪ `custom_roles`); peran kustom dibuat dengan `auth_tier`-nya lalu `user.role` ditimpa ke key `cust_*` karena plugin Better Auth memeriksa terhadap daftar statis | 400 `invalid_email`/`invalid_name`/`invalid_role`/`cannot_assign_owner`/`weak_password`, 401, 409 `email_taken` |
@@ -178,7 +178,7 @@ dengan yang bisa dibaca pengunjung mana pun.
 | `auth.ts` | `betterAuth` + `admin()` plugin; `additionalFields` `tenantId`, `branchId`, `status`; `ADMIN_ROLES = [platform_owner, tenant_owner, tenant_admin]` |
 | `access.ts` | `statement` (product, inventory, transaction, shift, customer, supplier, expense, employee, branch, report, settings, audit) + 8 role (termasuk `purchasing`); `AppRole` |
 | `auth-helpers.ts` | `getSession(headers)`, `requireTenantSession(headers)` (sesi → baris registry), `requireAdminSession(headers)` |
-| `roles.ts` | Set peran yang boleh diberikan (`BUILTIN_ASSIGNABLE_ROLES` ∪ key `settings.custom_roles`), `assertAssignableRole`, `authTierFor`, tulis/baca/hapus proyeksi `users`, `readTenantGrants` — memakai resolver yang sama dengan browser (`src/lib/permission-matrix.ts`) |
+| `roles.ts` | Set peran yang boleh diberikan (`BUILTIN_ASSIGNABLE_ROLES` ∪ key `settings.custom_roles`), `assertAssignableRole`, `authTierFor`, tulis/baca/hapus proyeksi `users`, `readTenantAccess` (satu `readRoleSettings` → `{grants, userPermissions}` untuk bootstrap; `readTenantGrants` tetap ada sebagai pembungkus grants-saja) — memakai resolver yang sama dengan browser (`src/lib/permission-matrix.ts`) |
 | `tenant-client.ts` | `tenantConnection(tenant)` (loopback → `LOCAL_DEV_TOKEN`, selain itu token full-access 1 menit) dan `withTenantClient(tenant, fn)` yang selalu menutup client; kegagalan koneksi jadi `502 tenant_unreachable` |
 | `turso-platform.ts` | `createDatabase`, `deleteDatabase`, `listDatabases`, `getUsage`, `createToken`, `browserDbUrl(hostname)` → `https://<host>` |
 | `provision.ts` | `loadSchemaFile` (cache + fallback cwd), `renderSeed` (tolak token tak dikenal), `slugify`, `buildDatabaseName` (`rp-<slug>-<5 acak>`, maks 64), `assertUsableSlug`, `countTenantDatabases`, `findTenantByOwner/ById`, `resolveTenantForUser`, `mintTenantToken`, `applyTenantSchema`, `provisionTenant` |
@@ -209,7 +209,7 @@ dengan yang bisa dibaca pengunjung mana pun.
 | Tabel | Kolom |
 |---|---|
 | `schema_version` | `id` (selalu 1), `version` (**8**), `applied_at` |
-| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `payroll_config`, `receipt`, `tax`, `bank`, `inventory` → `{stock_issue_method}`), `created_at` |
+| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `user_permissions` (pengecualian izin per karyawan, `userId → {permKey: false}`, restrict-only), `payroll_config`, `receipt`, `tax`, `bank`, `inventory` → `{stock_issue_method}`), `created_at` |
 | `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `latitude`, `longitude`, `geo_radius_m` (default 150), `require_geo`, `require_face` (v8 — titik & radius geofence tempat karyawan absen), `created_at` |
 | `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `latitude`, `longitude`, `geo_radius_m`, `require_geo`, `require_face` (v8), `created_at` |
 | `branch_warehouses` | `branch_id`, `warehouse_id`, `is_default`, `priority` — PK `(branch_id, warehouse_id)`; peta "gudang mana melayani cabang mana" |
@@ -406,7 +406,11 @@ blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen
   },
 
   // scope untuk peran bawaan (peran kustom menyimpan scope-nya sendiri)
-  "role_scopes": { "warehouse": { "branches": "all", "warehouses": ["<id>"] } }
+  "role_scopes": { "warehouse": { "branches": "all", "warehouses": ["<id>"] } },
+
+  // pengecualian izin per karyawan, restrict-only: HANYA `false` yang berarti
+  // (mencabut izin yang role berikan); `true` tidak pernah menambah di luar role
+  "user_permissions": { "<userId>": { "access_pos": false } }
 }
 ```
 
@@ -416,6 +420,7 @@ blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen
 | Key `cust_*` tidak bisa melewati validasi daftar statis Better Auth | peran itu dibuat dengan `auth_tier`, lalu `user.role` ditimpa langsung oleh endpoint yang sama |
 | `label` boleh diganti, **id tidak** | dua baris `users` (control + tenant) menyimpan id-nya; editor role hanya mengirim `label`/`description` |
 | Role kustom yang masih dipakai tidak bisa dihapus | layar Role menghitung `COUNT(*) FROM users WHERE role = ?` dan menolak dengan daftar namanya |
+| `user_permissions` hanya **mengurangi**, tidak pernah menambah di luar role | `effectiveUserPermissions(grant, restrictions)` di `src/lib/permission-matrix.ts` mengabaikan nilai `true` dan hanya memakai `false`; ditulis `setUserPermissionOverrides()` (screen Employees), dan entri user dibersihkan saat karyawan dihapus |
 | Scope default `"all"` di kedua sisi | `normalizeScope()` di `src/lib/permission-matrix.ts`; nilai yang sama dengan default dihapus dari dokumen, tidak disimpan sebagai "semua" eksplisit |
 | Peran tidak dikenal ⇒ tanpa izin | `grantForRole()` mengembalikan `undefined`, `makeChecker()` menolak semua key (gagal-tertutup) |
 

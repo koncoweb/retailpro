@@ -22,6 +22,7 @@ import {
   buildGrants,
   effectiveBranchScope,
   effectivePermissions,
+  effectiveUserPermissions,
   effectiveWarehouseScope,
   grantForRole,
   inScope,
@@ -30,6 +31,7 @@ import {
   makeChecker,
   permissionLabel,
   permissionRole,
+  roleGrantedKeys,
   scopeIds,
   warehouseInScope,
   type RoleScope,
@@ -282,5 +284,47 @@ describe('role key helpers', () => {
   it('hands the whole catalog to a UI that iterates it', () => {
     expect(allPermissionKeys()).toEqual(ALL_PERMISSION_KEYS);
     expect(allPermissionKeys()).toEqual(Object.values(PERMISSION_GROUPS).flat());
+  });
+});
+
+describe('effectiveUserPermissions: per-employee exceptions (restrict-only)', () => {
+  const grant = buildGrants(null).tenant_admin;
+  const onKeys = ALL_PERMISSION_KEYS.filter((k) => grant.permissions[k] === true);
+  const grantedKey = onKeys[0];
+  const otherGranted = onKeys[1];
+  const notGrantedKey = ALL_PERMISSION_KEYS.find((k) => grant.permissions[k] !== true)!;
+
+  it('a stored false takes a role permission back from one person', () => {
+    const eff = effectiveUserPermissions(grant, { [grantedKey]: false });
+
+    expect(eff[grantedKey]).toBe(false);
+    // The other keys the role grants are untouched.
+    expect(eff[otherGranted]).toBe(true);
+  });
+
+  it('a stored true never adds a permission the role does not grant', () => {
+    const eff = effectiveUserPermissions(grant, { [notGrantedKey]: true });
+
+    // The escalation path the role system exists to prevent, closed at the
+    // resolver rather than only in the UI: the key stays exactly as the role
+    // left it (absent or false), never `true`.
+    expect(eff[notGrantedKey]).toBe(grant.permissions[notGrantedKey]);
+    expect(eff[notGrantedKey] === true).toBe(false);
+    expect(eff[grantedKey]).toBe(true);
+  });
+
+  it('no exceptions means the role map exactly', () => {
+    expect(effectiveUserPermissions(grant, {})).toEqual(grant.permissions);
+    expect(effectiveUserPermissions(grant, null)).toEqual(grant.permissions);
+    expect(effectiveUserPermissions(grant, undefined)).toEqual(grant.permissions);
+  });
+
+  it('fails closed for an unknown grant; an exception cannot revive it', () => {
+    expect(effectiveUserPermissions(undefined, { view_reports: true })).toEqual({});
+  });
+
+  it('roleGrantedKeys lists exactly the keys the role turns on', () => {
+    expect(roleGrantedKeys(grant)).toEqual(onKeys);
+    expect(roleGrantedKeys(undefined)).toEqual([]);
   });
 });

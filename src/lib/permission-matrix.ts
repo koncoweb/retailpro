@@ -44,8 +44,28 @@ export const CUSTOM_ROLE_PREFIX = "cust_";
  */
 export const TENANT_SETTINGS_QUERY_KEY = ["tenant-settings"];
 
+/**
+ * TanStack Query key holding this tenant's per-employee permission exceptions.
+ *
+ * The sibling of `TENANT_SETTINGS_QUERY_KEY`: the role matrix answers "what may
+ * this role do", this answers "which of those did the owner take back from one
+ * person". Kept separate so a role-matrix save cannot invalidate (and re-read)
+ * the individual overrides and vice versa. Seeded by `/api/tenant/bootstrap`
+ * for the signed-in person, read whole by the Employees screen.
+ */
+export const TENANT_USER_PERMISSIONS_QUERY_KEY = ["tenant-user-permissions"];
+
 /** What the query holds: every role of the tenant, already resolved. */
 export type RoleGrants = Record<string, RoleGrant>;
+
+/**
+ * Per-employee permission exceptions: userId -> { permissionKey: false }.
+ *
+ * Restrict-only by contract: a stored `false` takes a permission the role grants
+ * back from that one person; a `true` is never meaningful and `effectiveUserPermissions`
+ * ignores it, so no write path can hand out a permission the role does not have.
+ */
+export type UserPermissionOverrides = Record<string, Record<string, boolean>>;
 
 export function isCustomRoleKey(key: string): boolean {
   return key.startsWith(CUSTOM_ROLE_PREFIX);
@@ -84,6 +104,8 @@ export interface RoleSettings {
   role_permissions?: Record<string, Record<string, boolean>> | null;
   custom_roles?: Record<string, CustomRoleDefinition> | null;
   role_scopes?: Record<string, Partial<RoleScope>> | null;
+  /** Per-employee exceptions; read by `effectiveUserPermissions`, not by `buildGrants`. */
+  user_permissions?: UserPermissionOverrides | null;
 }
 
 /** A role as the app actually experiences it. */
@@ -213,6 +235,33 @@ export function effectivePermissions(
   grant: RoleGrant | null | undefined
 ): Record<string, boolean> {
   return grant?.permissions ?? {};
+}
+
+/**
+ * The one place a per-employee exception is applied, so the rule "an individual
+ * can only ever have *less* than their role" cannot be bypassed by any caller.
+ *
+ * Starts from the role's granted map and, for every stored `false`, switches
+ * that key off. A stored `true` is deliberately ignored: it would be the
+ * escalation path the role system is meant to prevent. Fail-closed like
+ * `effectivePermissions` — an unknown grant is `{}`, and no exception can add
+ * permission back to that.
+ */
+export function effectiveUserPermissions(
+  grant: RoleGrant | null | undefined,
+  restrictions: Record<string, boolean> | null | undefined
+): Record<string, boolean> {
+  const out = { ...effectivePermissions(grant) };
+  for (const [key, value] of Object.entries(restrictions ?? {})) {
+    if (value === false) out[key] = false;
+  }
+  return out;
+}
+
+/** The keys a role grants, so an editor knows which switches a person may lower. */
+export function roleGrantedKeys(grant: RoleGrant | null | undefined): string[] {
+  const permissions = effectivePermissions(grant);
+  return ALL_PERMISSION_KEYS.filter((key) => permissions[key] === true);
 }
 
 /** A `can()` predicate, the signature `branch-orders.ts` and `procurement.ts` want. */

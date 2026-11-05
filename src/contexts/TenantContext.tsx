@@ -20,7 +20,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { resetClient } from '@/lib/db/client';
-import { TENANT_SETTINGS_QUERY_KEY, type RoleGrants } from '@/lib/permission-matrix';
+import {
+  TENANT_SETTINGS_QUERY_KEY,
+  TENANT_USER_PERMISSIONS_QUERY_KEY,
+  type RoleGrants,
+  type UserPermissionOverrides,
+} from '@/lib/permission-matrix';
 import {
   getTenantSession,
   setTenantSession,
@@ -65,6 +70,8 @@ interface BootstrapPayload {
   };
   /** Resolved by the same `buildGrants()` the browser would run. */
   grants?: RoleGrants;
+  /** Only the caller's own per-employee exceptions, keyed by their id. */
+  userPermissions?: UserPermissionOverrides;
 }
 
 export function TenantProvider({ children }: { children: ReactNode }) {
@@ -155,6 +162,13 @@ export function TenantProvider({ children }: { children: ReactNode }) {
       // query round-trip and then pop in.
       if (payload.grants) {
         queryClient.setQueryData(TENANT_SETTINGS_QUERY_KEY, payload.grants);
+      }
+      // The caller's own exceptions, seeded alongside the grants so a person
+      // the owner narrowed sees the reduced set on first paint, not the full
+      // role for one round-trip. The Employees screen reads the whole map via
+      // its own query; this slice is only ever this user's.
+      if (payload.userPermissions) {
+        queryClient.setQueryData(TENANT_USER_PERMISSIONS_QUERY_KEY, payload.userPermissions);
       }
 
       setTenantSession(next);

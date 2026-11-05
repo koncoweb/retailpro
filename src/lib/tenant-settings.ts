@@ -5,7 +5,7 @@ import {
   STOCK_ISSUE_SETTING_KEY,
   type StockIssueMethod,
 } from "@/lib/stock-issue";
-import type { RoleSettings } from "@/lib/permission-matrix";
+import type { RoleSettings, UserPermissionOverrides } from "@/lib/permission-matrix";
 
 /**
  * Tenant settings live in a single JSON column (`tenants.settings`).
@@ -106,18 +106,19 @@ export async function readTenantSetting<T>(key: string, fallback: T): Promise<T>
   return (value === undefined || value === null ? fallback : value) as T;
 }
 
-/** The three keys the permission matrix owns. Nothing else reads them raw. */
+/** The keys the permission matrix owns. Nothing else reads them raw. */
 export const ROLE_SETTING_KEYS = [
   "role_permissions",
   "custom_roles",
   "role_scopes",
+  "user_permissions",
 ] as const;
 
 /**
  * The role slice of the settings document, on its own.
  *
  * `usePermissions()` caches exactly this, and `/api/tenant/bootstrap` returns
- * the same three keys, so the cached value is never a half-read of a document
+ * the same keys, so the cached value is never a half-read of a document
  * that also carries payroll or receipt data.
  */
 export function pickRoleSettings(settings: TenantSettings): RoleSettings {
@@ -126,13 +127,66 @@ export function pickRoleSettings(settings: TenantSettings): RoleSettings {
     const value = settings[key];
     if (value !== undefined && value !== null) picked[key] = value;
   }
-  // The keys are the only three `RoleSettings` declares; `buildGrants()` sorts
+  // The keys are the only ones `RoleSettings` declares; `buildGrants()` sorts
   // out whatever shapes they actually hold, so nothing is trusted here.
   return picked as RoleSettings;
 }
 
 export async function readTenantRoleSettings(): Promise<RoleSettings> {
   return pickRoleSettings(await readTenantSettings());
+}
+
+/**
+ * The per-employee permission exceptions, as stored.
+ *
+ * Read whole (every user) so the Employees screen can show and edit any one
+ * person's overrides; `usePermissions()` picks out only the signed-in id. The
+ * shape is not trusted: `effectiveUserPermissions()` sorts out which values
+ * actually mean anything, and only `false` ever does.
+ */
+export async function readTenantUserPermissions(): Promise<UserPermissionOverrides> {
+  const settings = await readTenantSettings();
+  const value = settings.user_permissions;
+  return value && typeof value === "object" ? (value as UserPermissionOverrides) : {};
+}
+
+/**
+ * Replace one employee's exceptions, pruning the entry when it becomes empty.
+ *
+ * Read-modify-write of the whole `user_permissions` map through
+ * `replaceTenantSetting`, the same discipline the Role screen follows for
+ * `custom_roles`: an empty override set is deleted rather than stored as `{}`.
+ * The caller passes only the keys set to `false` (restrict-only); nothing here
+ * can express a permission the role does not already grant.
+ */
+export async function setUserPermissionOverrides(
+  userId: string,
+  restrictions: Record<string, boolean>
+): Promise<void> {
+  const all = await readTenantUserPermissions();
+  const kept = Object.fromEntries(
+    Object.entries(restrictions ?? {}).filter(([, value]) => value === false)
+  );
+  if (Object.keys(kept).length) {
+    all[userId] = kept;
+  } else {
+    delete all[userId];
+  }
+  await replaceTenantSetting(
+    "user_permissions",
+    Object.keys(all).length ? all : undefined
+  );
+}
+
+/** Drop an employee's exceptions when their account is deleted. */
+export async function clearUserPermissionOverrides(userId: string): Promise<void> {
+  const all = await readTenantUserPermissions();
+  if (!(userId in all)) return;
+  delete all[userId];
+  await replaceTenantSetting(
+    "user_permissions",
+    Object.keys(all).length ? all : undefined
+  );
 }
 
 /**

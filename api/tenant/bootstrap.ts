@@ -17,7 +17,7 @@
 import { requireTenantSession } from '../../server/auth-helpers.js';
 import { browserDbUrl } from '../../server/turso-platform.js';
 import { mintTenantToken } from '../../server/provision.js';
-import { readTenantGrants, readUserProjection } from '../../server/roles.js';
+import { readTenantAccess, readUserProjection } from '../../server/roles.js';
 import {
   HttpError,
   methodNotAllowed,
@@ -50,8 +50,10 @@ async function handler(req: ApiRequest, res: ApiResponse) {
   // The permission matrix, resolved by the same pure resolver the browser uses,
   // so the very first paint already knows what this person may do — no flash of
   // hidden buttons, and no second answer to compare against. `TenantContext`
-  // seeds `['tenant-settings']` with exactly this object.
-  const grants = await readTenantGrants(tenant);
+  // seeds `['tenant-settings']` with exactly this object. The per-employee
+  // exceptions come from the same read; only the caller's own slice ships, so a
+  // person never learns what was taken back from a colleague.
+  const { grants, userPermissions } = await readTenantAccess(tenant);
   const role = user.role ?? 'staff';
 
   sendJson(res, 200, {
@@ -72,6 +74,7 @@ async function handler(req: ApiRequest, res: ApiResponse) {
       active: true,
     },
     grants,
+    userPermissions: { [user.id]: userPermissions[user.id] ?? {} },
   });
 }
 

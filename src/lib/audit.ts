@@ -36,6 +36,10 @@ export type AuditAction =
   // of their own: a reset password is not "update_employee", and the audit log
   // is how an owner traces who could sign in as whom.
   | "reset_employee_password"
+  // Per-employee permission exceptions are a rights change of their own: an
+  // owner taking a permission back from one person is not "update_employee",
+  // and the before/after map is what makes the narrowing auditable.
+  | "update_employee_permissions"
   | "create_expense"
   | "create_payment";
 

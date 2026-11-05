@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-tenant.md` |
-| Terakhir diperbarui | **2026-11-05** |
+| Terakhir diperbarui | **2026-11-06** |
 | Cakupan | Semua fitur yang tersedia di dalam satu tenant (POS + back office) |
 
 ## Cara memakai log ini
@@ -201,6 +201,14 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-11-05 | — (working tree) | Karyawan | **Pendaftaran wajah oleh owner (`/backoffice/hr/face`, izin baru `manage_attendance`)**: 4 sampel sudut per karyawan, re-enroll menimpa, hapus data. Laporan absensi (`EmployeeReports`) menambah kolom Sumber/Lokasi/Geo/Wajah (tabel + ekspor XLSX) dan capture GPS opsional pada jalur override owner | Baru |
 | 2026-11-05 | — (working tree) | Cabang/Gudang | Pengaturan titik geofence per cabang & gudang: input lat/lng + radius meter + tombol "Pakai GPS sekarang" + switch `require_geo`/`require_face` pada dialog tambah/edit | Baru |
 
+### 2026-11-06 — pengecualian izin per karyawan & tab Role responsif (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-06 | — (working tree) | Karyawan/Izin | **Izin khusus per karyawan (hanya mengurangi / restrict-only)**: owner dapat **mencabut** sebagian izin yang role berikan kepada satu orang lewat aksi "Izin khusus" (ikon Shield) di `/backoffice/hr/employees` — misalnya seorang cashier kehilangan Akses POS sementara cashier lain tidak. Pengecualian disimpan di `tenants.settings.user_permissions` (peta `userId → { izin: false }`), tanpa migrasi skema. Sifatnya **hanya mengurangi**: izin yang tidak diberikan role tidak ditawarkan sama sekali, sehingga penugasan individu tidak pernah melangkahi sistem role general di Pengaturan → Role; aturan ini ditegakkan di resolver, bukan hanya UI |
+| 2026-11-06 | — (working tree) | Karyawan | Editor per individu merinci izin role per grup (dialog di desktop, `Sheet` layar penuh di ponsel), ringkasan "X dari Y izin role aktif, N dikecualikan" + "Kembalikan semua ke role"; daftar Karyawan menampilkan badge "N pengecualian", dan menghapus karyawan ikut membersihkan pengecualiannya. Setiap perubahan tercatat di audit (`update_employee_permissions`) |
+| 2026-11-06 | — (working tree) | Pengaturan | **Tab Role responsif**: daftar role yang semula menumpuk vertikal dan melewati tinggi layar pendek kini menjadi **strip geser horizontal** pada tablet/desktop kecil (`md`/`lg`); tata letak master-detail berdampingan tetap hanya di monitor besar (`xl`), dan `Sheet` layar penuh di ponsel tidak berubah |
+
 ### Riwayat commit (aplikasi sebelum migrasi)
 
 | Waktu | Ref | Modul | Perubahan | Status |
@@ -357,7 +365,8 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Struk (footer, logo) | Ada | Tersimpan di `tenants.settings.receipt` |
 | Pajak & diskon default | Ada | Belum dipakai otomatis di POS |
 | Rekening bank | Ada | Untuk tampilan di struk |
-| Matriks role & izin | Ada | Tersimpan di `settings.role_permissions`, dipakai sebagian |
+| Matriks role & izin | Ada | Tersimpan di `settings.role_permissions`, dipakai penuh sebagai satu-satunya tempat **memberi** izin |
+| Izin khusus per karyawan | Ada | **Hanya mengurangi** (restrict-only): owner mencabut sebagian izin role seorang karyawan di `/backoffice/hr/employees`, disimpan di `settings.user_permissions`; tidak bisa menambah di luar role |
 | Metode pengeluaran stok | Ada | Tab **Inventori**; `settings.inventory.stock_issue_method` (`fifo`/`lifo`/`fefo`) |
 | Profil perusahaan | Sebagian | Nama/slug tenant; alamat ada di cabang |
 | Audit log | Sebagian | Tercatat, tetapi belum ada layar penjelajah audit |
