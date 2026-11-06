@@ -3,7 +3,7 @@
 Semua perubahan penting pada RetailPro didokumentasikan di sini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [3cd1804] — 6 November 2026 — Sistem Cetak Struk & Z-Report
+## [1340350] — 6 November 2026 — Sistem Cetak Struk & Z-Report
 
 ### Added — Sistem Cetak Struk & Z-Report Thermal
 
