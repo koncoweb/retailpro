@@ -72,7 +72,9 @@ function guarded(element: React.ReactNode, permission: string) {
  * `/pos/transactions` is the till's own ledger (a cashier must reach it) and at
  * the same time the history a warehouse person checks when a stock movement
  * looks wrong. Asking for `anyOf` keeps both, where one key would silently take
- * the page away from whoever the second family is.
+ * the page away from whoever the second family is. `access_pos` is listed
+ * because the cashier default revoked `view_dashboard`: reading the book of
+ * one's own sales is transaction work, not back-office access.
  */
 function guardedAny(element: React.ReactNode, permissions: string[]) {
   return (
@@ -116,7 +118,7 @@ const App = () => (
               <Route path="/pos" element={guarded(<POS />, "access_pos")} />
               <Route
                 path="/pos/transactions"
-                element={guardedAny(<POSTransactions />, ["view_dashboard", "view_inventory"])}
+                element={guardedAny(<POSTransactions />, ["access_pos", "view_dashboard", "view_inventory"])}
               />
               <Route path="/pos/shifts" element={guarded(<POSShifts />, "access_pos")} />
 

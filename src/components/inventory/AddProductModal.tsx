@@ -59,6 +59,7 @@ import {
   type VariantAttributes,
 } from "@/lib/variants";
 import { readTenantSetting } from "@/lib/tenant-settings";
+import { unitLabel, unitNameOptions } from "@/lib/units";
 
 /**
  * One sellable pack of one variant (a "pecahan"): "Karton" holds 24 base units
@@ -122,6 +123,18 @@ interface AddProductModalProps {
   mode?: "add" | "edit";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   initialData?: any;
+  /**
+   * Whether this person may edit the variant/pack STRUCTURE (the "product
+   * template"). Defaults to true so existing callers stay writable; the page
+   * passes `can("manage_variants")`. When false the group, SKU, pack and buy
+   * price controls are disabled, leaving a read-only view of the template.
+   */
+  canManageVariants?: boolean;
+  /**
+   * Whether this person may edit the SELL price per pack. The page passes
+   * `can("manage_sell_prices")`; owners hold it, cashiers/warehouse do not.
+   */
+  canManageSellPrices?: boolean;
 }
 
 /** The one pack every product starts with: the base unit itself. */
@@ -181,7 +194,9 @@ export function AddProductModal({
   onAdd, 
   warehouses, 
   mode = "add", 
-  initialData 
+  initialData,
+  canManageVariants = true,
+  canManageSellPrices = true,
 }: AddProductModalProps) {
   const [formData, setFormData] = useState({
     sku: "",
@@ -849,7 +864,7 @@ export function AddProductModal({
                   Kosongkan bila produk tidak punya varian. Contoh: Rasa = Susu, Hitam.
                 </p>
               </div>
-              <Button size="sm" variant="outline" type="button" onClick={addGroup}>
+              <Button size="sm" variant="outline" type="button" onClick={addGroup} disabled={!canManageVariants}>
                 <Plus className="w-4 h-4 mr-2" />
                 Tambah Grup
               </Button>
@@ -868,6 +883,7 @@ export function AddProductModal({
                         value={group.name}
                         onChange={(e) => updateGroup(index, { name: e.target.value })}
                         placeholder="Rasa"
+                        disabled={!canManageVariants}
                       />
                     </div>
                     <div className="col-span-7">
@@ -876,6 +892,7 @@ export function AddProductModal({
                         value={group.values.join(", ")}
                         onChange={(e) => updateGroupValues(index, e.target.value)}
                         placeholder="Susu, Hitam"
+                        disabled={!canManageVariants}
                       />
                     </div>
                     <div className="col-span-1">
@@ -885,6 +902,7 @@ export function AddProductModal({
                         type="button"
                         className="text-destructive"
                         onClick={() => removeGroup(index)}
+                        disabled={!canManageVariants}
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -903,6 +921,13 @@ export function AddProductModal({
                 {variants.length} varian
               </span>
             </div>
+            {/* Canonical satuan offered as suggestions; free text stays allowed
+                so legacy rows and the vendor price list never break. */}
+            <datalist id="satuan-kanon">
+              {unitNameOptions().map((name) => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
             <div className="space-y-4">
               {variants.map((row) => {
                 const baseName =
@@ -921,6 +946,7 @@ export function AddProductModal({
                           value={row.sku}
                           onChange={(e) => updateVariant(row.key, { sku: e.target.value })}
                           placeholder="SKU varian"
+                          disabled={!canManageVariants}
                         />
                         <Button
                           variant="ghost"
@@ -931,11 +957,12 @@ export function AddProductModal({
                           onClick={() =>
                             updateVariant(row.key, { sku: variantSku(formData.sku, row.attributes) })
                           }
+                          disabled={!canManageVariants}
                         >
                           <RefreshCw className="h-3.5 w-3.5" />
                         </Button>
                       </div>
-                      <Button size="sm" variant="outline" type="button" onClick={() => addPack(row.key)}>
+                      <Button size="sm" variant="outline" type="button" onClick={() => addPack(row.key)} disabled={!canManageVariants}>
                         <Plus className="w-3.5 h-3.5 mr-1" />
                         Pecahan
                       </Button>
@@ -959,7 +986,9 @@ export function AddProductModal({
                                   onChange={(e) =>
                                     handlePackChange(row.key, index, "name", e.target.value)
                                   }
+                                  list="satuan-kanon"
                                   placeholder="Pcs / Karton"
+                                  disabled={!canManageVariants}
                                 />
                               </div>
                               <div className="col-span-2">
@@ -975,7 +1004,7 @@ export function AddProductModal({
                                       parseFloat(e.target.value) || 1
                                     )
                                   }
-                                  disabled={index === 0}
+                                  disabled={index === 0 || !canManageVariants}
                                 />
                               </div>
                               <div className="col-span-2">
@@ -991,6 +1020,7 @@ export function AddProductModal({
                                       parseFloat(e.target.value) || 0
                                     )
                                   }
+                                  disabled={!canManageVariants}
                                 />
                               </div>
                               <div className="col-span-2">
@@ -1006,6 +1036,7 @@ export function AddProductModal({
                                       parseFloat(e.target.value) || 0
                                     )
                                   }
+                                  disabled={!canManageSellPrices}
                                 />
                               </div>
                               <div className="col-span-2">
@@ -1017,6 +1048,7 @@ export function AddProductModal({
                                       handlePackChange(row.key, index, "barcode", e.target.value)
                                     }
                                     placeholder="Scan/Input"
+                                    disabled={!canManageVariants}
                                   />
                                   <Button
                                     variant="ghost"
@@ -1031,6 +1063,7 @@ export function AddProductModal({
                                         `${row.sku || formData.sku}-${unit.name || factor}`
                                       )
                                     }
+                                    disabled={!canManageVariants}
                                   >
                                     <BarcodeIcon className="h-4 w-4" />
                                   </Button>
@@ -1042,7 +1075,7 @@ export function AddProductModal({
                                   size="icon"
                                   type="button"
                                   onClick={() => removePack(row.key, index)}
-                                  disabled={index === 0}
+                                  disabled={index === 0 || !canManageVariants}
                                   className="text-destructive"
                                 >
                                   <Trash2 className="w-4 h-4" />
@@ -1051,7 +1084,11 @@ export function AddProductModal({
                             </div>
 
                             <p className="text-[11px] text-muted-foreground">
-                              {formatCurrency(baseCost)} / {baseName} dibeli · {formatCurrency(basePrice)} /{" "}
+                              {unit.name}
+                              {unitLabel(unit.name, factor, baseName)
+                                ? ` (${unitLabel(unit.name, factor, baseName)})`
+                                : ""}{" "}
+                              · {formatCurrency(baseCost)} / {baseName} dibeli · {formatCurrency(basePrice)} /{" "}
                               {baseName} dijual · margin {margin.toFixed(1)}%
                             </p>
 

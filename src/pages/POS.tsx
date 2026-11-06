@@ -1,8 +1,12 @@
 import { useState, useMemo, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/hooks/use-auth";
-import { useBranchScope, usePermissions } from "@/hooks/use-permissions";
-import { useTenant } from "@/contexts/TenantContext";
+import { usePermissions } from "@/hooks/use-permissions";
+import { usePosBranch } from "@/hooks/use-pos-branch";
+import {
+  autoAttendanceWarning,
+  autoCheckInForShift,
+  autoCheckOutForShift,
+} from "@/lib/shift-attendance";
 import { POSLayout } from "@/components/layout/POSLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,13 +28,15 @@ import {
 } from "@/components/ui/select";
 import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package, MapPin } from "lucide-react";
 import { toast } from "sonner";
-import { Product, ProductUnit, ProductVariant, Branch, Transaction, CartItem } from "@/types";
+import { Product, ProductUnit, ProductVariant, Transaction, CartItem } from "@/types";
 import { query, runTransaction, batchQuery, parseJson, type BatchStatement } from "@/lib/db";
 import { logAuditTx } from "@/lib/audit";
 import { resolveBranchWarehouse } from "@/lib/warehouse";
-import { getStockIssueMethod } from "@/lib/tenant-settings";
+import { getStockIssueMethod, readTenantSetting } from "@/lib/tenant-settings";
 import { sortBatchesForIssue } from "@/lib/stock-issue";
 import { parseVariantAttributes, parseVariantGroups, variantLabel } from "@/lib/variants";
+import { bestPackPriceFor, PRICING_SETTING_KEY, type PackInput } from "@/lib/pricing";
+import { unitLabel } from "@/lib/units";
 
 // Mock Session Data (In real app, this comes from Context/Auth)
 const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
@@ -49,12 +55,6 @@ function formatCurrency(value: number) {
 export default function POS() {
   const { user } = useAuth();
   const { can } = usePermissions();
-  // Branch scoping comes from the verified tenant session, not from row order.
-  // The previous `res.rows[0].id` fallback quietly rang sales up against
-  // whichever branch sorted first, which became a real risk once the database
-  // (RLS) stopped enforcing a branch for us.
-  const { session: tenantSession } = useTenant();
-  const navigate = useNavigate();
   const [cart, setCart] = useState<CartItem[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Semua");
@@ -67,10 +67,35 @@ export default function POS() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [showLowStock, setShowLowStock] = useState(true);
   const [currentShiftId, setCurrentShiftId] = useState<string | null>(null);
+  /**
+   * Register data load answers as a state, not just a console line: a till
+   * that silently shows an empty grid looks broken to the cashier, and they
+   * have no way to know whether to wait, retry, or call for help. The banner
+   * says which failed and `Coba lagi` re-runs the load.
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
+  /** True once the open-shift lookup has actually answered this session. */
+  const [shiftChecked, setShiftChecked] = useState(false);
+  /** <lg screens keep the cart behind a sheet dialog (see the summary bar). */
+  const [isMobileCartOpen, setIsMobileCartOpen] = useState(false);
   
   const [products, setProducts] = useState<Product[]>([]);
-  const [branches, setBranches] = useState<Branch[]>([]);
-  const [currentBranchId, setCurrentBranchId] = useState<string>("");
+  /**
+   * One branch answer shared with POSShifts and the layout header. The
+   * precedence (session branch → assigned branch → first in-scope) lives in
+   * `usePosBranch`, so a shift opened at the shift desk is always the shift
+   * this till finds, and an unassigned cashier is no longer dead-ended.
+   */
+  const {
+    branchId: resolvedBranchId,
+    setBranchId,
+    branches: visibleBranches,
+    branchName,
+    canSwitch: canSwitchBranch,
+    error: branchesError,
+    reload: reloadBranches,
+  } = usePosBranch();
+  const currentBranchId = resolvedBranchId ?? "";
   /** Stockroom the till sells from; resolved from the branch↔warehouse map. */
   const [currentWarehouseId, setCurrentWarehouseId] = useState<string | null>(null);
 
@@ -79,52 +104,15 @@ export default function POS() {
   /** Null until the cashier has chosen which flavour/size is being sold. */
   const [selectedVariantForUnit, setSelectedVariantForUnit] = useState<ProductVariant | null>(null);
 
-  const currentBranch = useMemo(() =>
-    branches.find(b => b.id === currentBranchId) || { id: "", name: "Loading...", tenant_id: "" } as Branch,
-    [branches, currentBranchId]
-  );
-  
   /**
-   * Whose branches may be rung up here.
-   *
-   * This used to be a list of company-level roles. It is now the role's branch
-   * scope: a person tied to one gudang of shops cannot hop to another, and an
-   * owner who gives a role two branches gets a two-item picker for free.
+   * Opt-in "sold by piece, priced like a carton" rule, read once from
+   * `tenants.settings.pricing.auto_pack_price`. Default off so a tenant that
+   * never asked for it keeps charging the verbatim pack price.
    */
-  const { branchIds } = useBranchScope();
-  const canSwitchBranch = branchIds === null || branchIds.length > 1;
-  const visibleBranches = useMemo(
-    () => (branchIds ? branches.filter((b) => branchIds.includes(b.id)) : branches),
-    [branches, branchIds]
-  );
-
-  const fetchBranches = async () => {
-    try {
-        const res = await query('SELECT * FROM branches ORDER BY name');
-        setBranches(res.rows);
-        if (currentBranchId || res.rows.length === 0) return;
-
-        // Precedence: the branch on the tenant session (resolved at sign-in),
-        // then this person's assigned branch, and only then the first branch —
-        // which is the owner case, where every branch is in scope.
-        const rows = res.rows as Branch[];
-        // Precedence: the branch on the tenant session (resolved at sign-in),
-        // then this person's assigned branch, then the first branch their role
-        // is allowed to see — an owner with no scope left is the last case.
-        const inScope = (b: Branch) => !branchIds || branchIds.includes(b.id);
-        const preferred =
-          rows.find((b) => b.id === tenantSession?.branchId && inScope(b)) ??
-          rows.find((b) => b.id === user?.assigned_branch_id && inScope(b)) ??
-          rows.find(inScope) ??
-          rows[0];
-        setCurrentBranchId(preferred.id);
-    } catch (error) {
-        console.error("Failed to fetch branches:", error);
-    }
-  };
+  const [autoPackPrice, setAutoPackPrice] = useState(false);
 
   /**
-   * Register load is two round-trips: branches, then a single batch carrying
+   * Register load is a single batch carrying
    * the branch catalogue (product + units + stock via JSON1) and this cashier's
    * open shift. The shift lookup used to be a third sequential round-trip in
    * its own effect, and it also popped the open-shift dialog whenever a shift
@@ -193,7 +181,7 @@ export default function POS() {
           },
           {
             sql: `
-              SELECT variant_id, name, conversion_factor, price, barcode
+              SELECT variant_id, name, conversion_factor, price, cost, barcode
                 FROM product_units
                WHERE variant_id IS NOT NULL
                ORDER BY conversion_factor ASC
@@ -228,6 +216,7 @@ export default function POS() {
           name: string;
           conversion_factor: number;
           price: number;
+          cost: number | null;
           barcode: string | null;
         }[]) {
           const list = packsByVariant.get(row.variant_id) ?? [];
@@ -235,6 +224,7 @@ export default function POS() {
             name: row.name,
             conversion_factor: Number(row.conversion_factor) || 1,
             price: Number(row.price) || 0,
+            cost: Number(row.cost) || 0,
             barcode: row.barcode ?? "",
           });
           packsByVariant.set(row.variant_id, list);
@@ -289,32 +279,50 @@ export default function POS() {
         }));
         
         setProducts(mappedProducts);
+        setLoadError(null);
 
         if (!userId) return;
 
         if (!shiftRes || shiftRes.rows.length === 0) {
+            // No redirect, no toast-only warning: the blocking banner above
+            // the grid says exactly why `Bayar` is dead and hands the cashier
+            // the one button that fixes it. Redirecting mid-shift-check is
+            // how people used to lose a half-built cart.
             setCurrentShiftId(null);
             setIsShiftActive(false);
-            toast.warning("Silakan buka shift terlebih dahulu untuk melakukan transaksi.");
-            navigate("/pos/shifts");
         } else {
             setCurrentShiftId((shiftRes.rows[0] as { id: string }).id);
             setIsShiftActive(true);
         }
+        setShiftChecked(true);
     } catch (error) {
         console.error("Failed to fetch products:", error);
+        const message = error instanceof Error ? error.message : String(error);
+        setLoadError(message);
+        toast.error("Gagal memuat data kasir: " + message);
     }
   };
-
-  useEffect(() => {
-    fetchBranches();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tenantSession?.branchId]);
 
   useEffect(() => {
     fetchProducts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentBranchId, user]);
+
+  // Read the auto pack-price flag once per mount; it is a tenant policy, not
+  // per-sale state, and a page reload is a fine boundary for changing it.
+  useEffect(() => {
+    let cancelled = false;
+    readTenantSetting<{ auto_pack_price?: boolean } | null>(PRICING_SETTING_KEY, null)
+      .then((stored) => {
+        if (!cancelled) setAutoPackPrice(stored?.auto_pack_price === true);
+      })
+      .catch(() => {
+        if (!cancelled) setAutoPackPrice(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Helper to get stock for the current branch's stockroom
   const getProductStock = (product: Product) => {
@@ -389,6 +397,62 @@ export default function POS() {
     addCartItem(product, null, product.unit_type || "Pcs", 1, product.price);
   };
 
+  /**
+   * Packs of the line's variant (or the product's own packs) shaped for the
+   * pricing library. Read from the already-loaded catalogue, so no extra query.
+   */
+  const packsForLine = (line: CartItem): PackInput[] => {
+    const product = products.find((p) => p.id === line.id);
+    if (!product) return [];
+    const variant = line.variant_id
+      ? product.variants?.find((v) => v.id === line.variant_id) ?? null
+      : null;
+    const units = variant?.units ?? product.units ?? [];
+    return units.map((u) => ({
+      unitName: u.name,
+      conversionFactor: Number(u.conversion_factor) || 1,
+      cost: Number(u.cost) || 0,
+      price: Number(u.price) || 0,
+    }));
+  };
+
+  /**
+   * "Sold by piece, priced like a carton." Re-prices a base-unit (factor 1) line
+   * against the cheaper bulk packs without touching `unit_name` or
+   * `conversion_factor`, so stock drain, the cart merge key and the receipt all
+   * behave exactly as before — only `item.price` changes. Any non-base line is
+   * returned untouched, and when the deal no longer applies the line snaps back
+   * to the shelf price so a quantity edit cannot strand a stale discount.
+   */
+  const applyAutoPackPrice = (item: CartItem): CartItem => {
+    if (!autoPackPrice) return item;
+    if (Number(item.conversion_factor) !== 1) return item;
+
+    const packs = packsForLine(item);
+    const basePack = packs.find((pack) => (Number(pack.conversionFactor) || 1) === 1);
+    const shelfPrice = basePack?.price ?? item.price;
+    const costFloor = basePack && basePack.cost > 0 ? basePack.cost : undefined;
+
+    const deal = bestPackPriceFor({
+      packs,
+      baseQty: item.quantity,
+      costFloorPerBase: costFloor,
+    });
+
+    if (!deal) {
+      if (item.auto_pack_saving || item.price !== shelfPrice) {
+        return {
+          ...item,
+          price: shelfPrice,
+          auto_pack_unit: undefined,
+          auto_pack_saving: undefined,
+        };
+      }
+      return item;
+    }
+    return { ...item, price: deal.perBase, auto_pack_unit: deal.unitName, auto_pack_saving: deal.saving };
+  };
+
   const addCartItem = (
     product: Product,
     variant: ProductVariant | null,
@@ -412,10 +476,10 @@ export default function POS() {
       }
 
       if (existing) {
-        return prev.map((item) => (sameStock(item) && item.unit_name === unitName) ? { ...item, quantity: item.quantity + 1 } : item);
+        return prev.map((item) => (sameStock(item) && item.unit_name === unitName) ? applyAutoPackPrice({ ...item, quantity: item.quantity + 1 }) : item);
       }
       
-      return [...prev, { 
+      return [...prev, applyAutoPackPrice({ 
         id: product.id,
         sku: variant?.sku || product.sku,
         name: product.name,
@@ -427,7 +491,7 @@ export default function POS() {
         // Only a product with something to choose between names the SKU; the
         // backfilled `Default` row is the product itself.
         variant_name: variant && hasVariantChoice(product) ? variant.label : "",
-      }];
+      })];
     });
   };
 
@@ -451,7 +515,7 @@ export default function POS() {
             toast.error(`Stok tersedia hanya ${stock} (Base Unit)`);
             return item;
           }
-          return { ...item, quantity: Math.max(0, newQty) };
+          return applyAutoPackPrice({ ...item, quantity: Math.max(0, newQty) });
         }
         return item;
       }).filter(item => item.quantity > 0);
@@ -476,7 +540,7 @@ export default function POS() {
                toast.error(`Stok tersedia hanya ${stock} (Base Unit)`);
                return item; 
             }
-            return { ...item, quantity: Math.max(0, qty) };
+            return applyAutoPackPrice({ ...item, quantity: Math.max(0, qty) });
          }
          return item;
       }).filter(item => item.quantity > 0);
@@ -649,7 +713,6 @@ export default function POS() {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 const batches = sortBatchesForIssue(batchesRes.rows as any[], issueMethod);
 
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 for (const batch of batches) {
                     if (remainingBaseQty <= 0) break;
                     
@@ -697,7 +760,12 @@ export default function POS() {
                 }
                 
                 if (remainingBaseQty > 0.001) { // Tolerance for float math
-                    throw new Error(`Insufficient stock for product ${item.name} (Need ${remainingBaseQty} more base units)`);
+                    // Same shape as the pre-flight message: name, what is
+                    // missing, and what to do about it — never English.
+                    const needed = item.quantity * item.conversion_factor;
+                    throw new Error(
+                        `Stok ${item.name} tidak cukup saat potongan berjalan: kurang ${remainingBaseQty} dari ${needed} unit dasar yang dibutuhkan. Kurangi jumlah atau muat ulang stok.`
+                    );
                 }
             }
 
@@ -733,7 +801,10 @@ export default function POS() {
         
     } catch (error) {
         console.error("Payment failed:", error);
-        toast.error("Transaksi gagal: " + (error instanceof Error ? error.message : "Unknown error"));
+        toast.error(
+            "Transaksi gagal: " +
+                (error instanceof Error ? error.message : "Terjadi kesalahan tidak dikenal. Periksa stok dan jaringan, lalu coba lagi.")
+        );
         return false;
     }
   };
@@ -745,7 +816,10 @@ export default function POS() {
    */
   const handleShiftAction = async (data: ShiftActionData) => {
     const userId = user?.id;
-    const shiftBranchId = tenantSession?.branchId || currentBranchId;
+    // The hook's answer already prefers the tenant session's branch, so there
+    // is no second precedence to apply here — and there must not be, or the
+    // shift opened at the desk would hide from the till again.
+    const shiftBranchId = currentBranchId;
 
     try {
       if (shiftMode === "open") {
@@ -777,7 +851,24 @@ export default function POS() {
           pettyCash: data.pettyCash ?? 0,
           transactions: [],
         });
-        toast.success(`Shift dibuka dengan petty cash ${formatCurrency(data.pettyCash ?? 0)}`);
+        // Opening the drawer is showing up: book the day's check-in unless
+        // one already exists. Best-effort — the shift is already committed.
+        const cashNote =
+          (data.pettyCash ?? 0) === 0
+            ? "Shift dibuka tanpa uang tunai awal."
+            : `Shift dibuka dengan petty cash ${formatCurrency(data.pettyCash ?? 0)}.`;
+        if (userId) {
+          const checkIn = await autoCheckInForShift(userId, shiftBranchId);
+          const warning = autoAttendanceWarning(checkIn);
+          if (warning) toast.warning(`${cashNote} ${warning}`);
+          else if (checkIn.changed)
+            toast.success(`${cashNote} Absensi tercatat otomatis.`);
+          // They had already checked in at /absen: report that, not a second
+          // entry that never happened.
+          else toast.success(`${cashNote} Absensi hari ini sudah tercatat.`);
+        } else {
+          toast.success(cashNote);
+        }
         return;
       }
 
@@ -816,6 +907,13 @@ export default function POS() {
       setTransactions([]);
       setIsShiftOpen(false);
 
+      // Closing stamps the day's check-out on rows still missing one.
+      if (userId) {
+        const checkOut = await autoCheckOutForShift(userId);
+        const warning = autoAttendanceWarning(checkOut);
+        if (warning) toast.warning(warning);
+      }
+
       const difference = actualCash - expectedCash;
       if (Math.abs(difference) < 1) {
         toast.success(`Shift ditutup. Kas sesuai (${formatCurrency(expectedCash)}).`);
@@ -832,6 +930,56 @@ export default function POS() {
 
   const openShiftModal = (mode: "open" | "close") => { setShiftMode(mode); setIsShiftOpen(true); };
 
+  // Cart rows and totals render from one source into two shells: the desktop
+  // side panel and the <lg sheet dialog behind the summary bar. Two copies
+  // of this markup is how a till screen used to drift between breakpoints.
+  const cartRows = cart.length === 0 ? (
+    <div className="h-full flex flex-col items-center justify-center text-muted-foreground py-8"><QrCode className="w-12 h-12 md:w-16 md:h-16 mb-4 opacity-50" /><p className="font-medium">Keranjang kosong</p><p className="text-sm">Scan barcode atau pilih produk</p></div>
+  ) : (
+    cart.map((item) => (
+      <div key={cartKey(item)} className="flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-lg bg-muted/50">
+        <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg bg-gradient-to-br from-primary/20 to-info/20 flex items-center justify-center text-lg md:text-xl">📦</div>
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-xs md:text-sm truncate">
+            {item.name}
+            <span className="ml-1 text-[10px] text-muted-foreground px-1.5 py-0.5 bg-background rounded border">{item.unit_name}</span>
+          </p>
+          {item.variant_name && (
+            <p className="text-[11px] text-muted-foreground truncate">{item.variant_name}</p>
+          )}
+          <p className="text-xs md:text-sm text-primary font-semibold">{formatCurrency(item.price)}</p>
+          {item.auto_pack_saving ? (
+            <p className="text-[10px] font-medium text-success">
+              Harga {item.auto_pack_unit} otomatis · hemat {formatCurrency(item.auto_pack_saving)}
+            </p>
+          ) : null}
+          <p className="text-xs text-muted-foreground">Total: {formatCurrency(item.price * item.quantity)}</p>
+        </div>
+        <div className="flex items-center gap-1">
+          <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item, -1)}><Minus className="w-3 h-3" /></Button>
+          <Input
+            type="number"
+            min="1"
+            value={item.quantity}
+            onChange={(e) => setQuantity(item, parseInt(e.target.value) || 0)}
+            className="w-12 md:w-14 text-center font-medium text-sm h-8 px-1"
+          />
+          <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item, 1)}><Plus className="w-3 h-3" /></Button>
+        </div>
+        <Button variant="ghost" size="iconSm" onClick={() => removeFromCart(item)} className="text-destructive"><X className="w-4 h-4" /></Button>
+      </div>
+    ))
+  );
+
+  const cartFooter = (
+    <div className="border-t p-3 md:p-4 space-y-3 md:space-y-4">
+      <div className="flex items-center gap-2"><Button variant="outline" size="sm" className="gap-1"><User className="w-4 h-4" />Member</Button>{can("apply_discount") && <Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button>}</div>
+      <div className="space-y-2 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(subtotal)}</span></div>{discount > 0 && <div className="flex justify-between text-success"><span>Diskon ({discount}%)</span><span>-{formatCurrency(discountAmount)}</span></div>}<div className="flex justify-between text-lg font-bold pt-2 border-t"><span>Total</span><span className="text-primary">{formatCurrency(total)}</span></div></div>
+      <div className="grid grid-cols-3 gap-2"><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Banknote className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Tunai</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><CreditCard className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Kartu</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Wallet className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">E-Wallet</span></Button></div>
+      <Button variant="posPayment" size="xl" className="w-full" disabled={cart.length === 0 || !isShiftActive} onClick={() => { setIsMobileCartOpen(false); setIsPaymentOpen(true); }}>Bayar {formatCurrency(total)}</Button>
+    </div>
+  );
+
   return (
     <POSLayout>
       <div className="h-[calc(100vh-8rem)] md:h-[calc(100vh-6rem)] flex flex-col lg:flex-row gap-4">
@@ -844,7 +992,7 @@ export default function POS() {
                     sale cannot post to "all branches", so no aggregate option
                     is offered here — only the read-side dashboards aggregate. */}
                 {canSwitchBranch ? (
-                  <Select value={currentBranchId} onValueChange={setCurrentBranchId}>
+                  <Select value={currentBranchId} onValueChange={setBranchId}>
                     <SelectTrigger className="w-auto min-w-[160px] h-8 gap-2 text-sm">
                       <MapPin className="w-4 h-4" />
                       <SelectValue placeholder="Pilih cabang" />
@@ -860,18 +1008,63 @@ export default function POS() {
                 ) : (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1 rounded-full">
                       <MapPin className="w-4 h-4" />
-                      <span>{currentBranch.name}</span>
+                      <span>{branchName ?? "Memuat…"}</span>
                   </div>
                 )}
             </div>
             <div className="flex gap-2">
-              <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Cari produk..." className="pl-10" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
+              <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Cari produk..." className="pl-10 text-base" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
               <Button variant="outline" size="icon"><Barcode className="w-5 h-5" /></Button>
               {!isShiftActive ? <Button onClick={() => openShiftModal("open")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Buka Shift</span></Button> : <Button variant="destructive" onClick={() => openShiftModal("close")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Tutup Shift</span></Button>}
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">{categories.map((category) => (<Button key={category} variant={selectedCategory === category ? "default" : "outline"} size="sm" onClick={() => setSelectedCategory(category)} className="whitespace-nowrap text-xs md:text-sm">{category}</Button>))}</div>
           </div>
           <div className="flex-1 overflow-y-auto p-3 md:p-4">
+            {/* Data load failure: say what broke and how to recover, in one
+                place the cashier is already looking at. */}
+            {(loadError || branchesError) && (
+              <div className="mb-4 p-3 rounded-lg border border-destructive/30 bg-destructive/5 flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium text-destructive">Gagal memuat data kasir</p>
+                    <p className="text-xs text-muted-foreground">
+                      {loadError ?? "Koneksi ke database toko bermasalah. Periksa jaringan lalu coba lagi."}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => {
+                    setLoadError(null);
+                    reloadBranches();
+                    void fetchProducts();
+                  }}
+                >
+                  Coba lagi
+                </Button>
+              </div>
+            )}
+            {/* Blocking, but not a dead end: why `Bayar` cannot be pressed. */}
+            {shiftChecked && !isShiftActive && (
+              <div className="mb-4 p-3 rounded-lg border border-warning/40 bg-warning/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <Clock className="w-4 h-4 text-warning mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-sm font-medium">Shift belum dibuka — transaksi tidak bisa diproses</p>
+                    <p className="text-xs text-muted-foreground">
+                      Buka shift terlebih dahulu (laci kas &amp; absensi tercatat otomatis) sebelum menjual.
+                    </p>
+                  </div>
+                </div>
+                <Button size="sm" onClick={() => openShiftModal("open")} className="gap-2 shrink-0">
+                  <Clock className="w-4 h-4" />
+                  Buka Shift
+                </Button>
+              </div>
+            )}
             {/* Low Stock Alert */}
             {showLowStock && lowStockProducts.length > 0 && (
               <div className="mb-4 p-3 rounded-lg border border-warning/30 bg-warning/5">
@@ -899,7 +1092,7 @@ export default function POS() {
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 md:gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 md:gap-3">
               {filteredProducts.map((product) => {
                 const stock = getProductStock(product);
                 const isLowStock = stock < product.min_stock_alert;
@@ -944,50 +1137,45 @@ export default function POS() {
           </div>
         </div>
 
-        {/* Cart */}
-        <div className="w-full lg:w-96 flex flex-col bg-card rounded-xl border overflow-hidden">
+        {/* Cart — side panel from lg up; below lg the same rows and totals
+            live in the sheet dialog behind the summary bar, so the product
+            grid gets to keep the whole phone screen. */}
+        <div className="hidden lg:flex w-96 flex-col bg-card rounded-xl border overflow-hidden">
           <div className="p-3 md:p-4 border-b"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">Keranjang</h2><p className="text-sm text-muted-foreground">{totalItems} item</p></div>{cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart} className="text-destructive"><Trash2 className="w-4 h-4 mr-1" />Hapus</Button>}</div></div>
-          <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-2 md:space-y-3 min-h-[150px] max-h-[200px] lg:max-h-none">
-            {cart.length === 0 ? <div className="h-full flex flex-col items-center justify-center text-muted-foreground py-8"><QrCode className="w-12 h-12 md:w-16 md:h-16 mb-4 opacity-50" /><p className="font-medium">Keranjang kosong</p><p className="text-sm">Scan barcode atau pilih produk</p></div> : cart.map((item) => (
-              <div key={cartKey(item)} className="flex items-center gap-2 md:gap-3 p-2 md:p-3 rounded-lg bg-muted/50">
-                <div className="w-10 h-10 md:w-12 md:h-12 rounded-lg bg-gradient-to-br from-primary/20 to-info/20 flex items-center justify-center text-lg md:text-xl">📦</div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium text-xs md:text-sm truncate">
-                    {item.name}
-                    <span className="ml-1 text-[10px] text-muted-foreground px-1.5 py-0.5 bg-background rounded border">{item.unit_name}</span>
-                  </p>
-                  {item.variant_name && (
-                    <p className="text-[11px] text-muted-foreground truncate">{item.variant_name}</p>
-                  )}
-                  <p className="text-xs md:text-sm text-primary font-semibold">{formatCurrency(item.price)}</p>
-                  <p className="text-xs text-muted-foreground">Total: {formatCurrency(item.price * item.quantity)}</p>
-                </div>
-                <div className="flex items-center gap-1">
-                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item, -1)}><Minus className="w-3 h-3" /></Button>
-                  <Input
-                    type="number"
-                    min="1"
-                    value={item.quantity}
-                    onChange={(e) => setQuantity(item, parseInt(e.target.value) || 0)}
-                    className="w-12 md:w-14 text-center font-medium text-sm h-8 px-1"
-                  />
-                  <Button variant="outline" size="iconSm" onClick={() => updateQuantity(item, 1)}><Plus className="w-3 h-3" /></Button>
-                </div>
-                <Button variant="ghost" size="iconSm" onClick={() => removeFromCart(item)} className="text-destructive"><X className="w-4 h-4" /></Button>
-              </div>
-            ))}
+          <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-2 md:space-y-3 min-h-[150px]">{cartRows}</div>
+          {cartFooter}
+        </div>
+
+        {/* <lg summary bar: total and Bayar always within thumb reach. */}
+        <div className="lg:hidden flex items-center gap-3 bg-card border rounded-xl p-3 shadow-lg">
+          <Button variant="outline" size="pos" className="gap-2 shrink-0" onClick={() => setIsMobileCartOpen(true)}>
+            <Package className="w-5 h-5" />
+            <span className="text-xs">{totalItems} item</span>
+          </Button>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-muted-foreground">Total</p>
+            <p className="font-bold text-primary truncate">{formatCurrency(total)}</p>
           </div>
-          <div className="border-t p-3 md:p-4 space-y-3 md:space-y-4">
-            <div className="flex items-center gap-2"><Button variant="outline" size="sm" className="gap-1"><User className="w-4 h-4" />Member</Button>{can("apply_discount") && <Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button>}</div>
-            <div className="space-y-2 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(subtotal)}</span></div>{discount > 0 && <div className="flex justify-between text-success"><span>Diskon ({discount}%)</span><span>-{formatCurrency(discountAmount)}</span></div>}<div className="flex justify-between text-lg font-bold pt-2 border-t"><span>Total</span><span className="text-primary">{formatCurrency(total)}</span></div></div>
-            <div className="grid grid-cols-3 gap-2"><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Banknote className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Tunai</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><CreditCard className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Kartu</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Wallet className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">E-Wallet</span></Button></div>
-            <Button variant="posPayment" size="xl" className="w-full" disabled={cart.length === 0 || !isShiftActive} onClick={() => setIsPaymentOpen(true)}>Bayar {formatCurrency(total)}</Button>
-          </div>
+          <Button variant="posPayment" size="pos" className="flex-1 max-w-[55%]" disabled={cart.length === 0 || !isShiftActive} onClick={() => setIsPaymentOpen(true)}>
+            Bayar
+          </Button>
         </div>
       </div>
 
       <PaymentModal open={isPaymentOpen} onOpenChange={setIsPaymentOpen} total={total} onPaymentComplete={handlePaymentComplete} banks={banks} />
       <ShiftModal open={isShiftOpen} onOpenChange={setIsShiftOpen} mode={shiftMode} shiftData={shiftData ? { ...shiftData, transactions } : undefined} onShiftAction={handleShiftAction} />
+
+      {/* The full cart as a sheet on <lg screens: same rows, same totals,
+          one tap away from the summary bar. */}
+      <Dialog open={isMobileCartOpen} onOpenChange={setIsMobileCartOpen}>
+        <DialogContent className="w-[95vw] max-w-[520px] max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Keranjang ({totalItems} item)</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2 md:space-y-3 py-2">{cartRows}</div>
+          {cartFooter}
+        </DialogContent>
+      </Dialog>
       
       {/*
         One dialog, two steps: which variant, then which pack. A product
@@ -1000,7 +1188,7 @@ export default function POS() {
           if (!open) setSelectedVariantForUnit(null);
         }}
       >
-        <DialogContent className="sm:max-w-[420px]">
+        <DialogContent className="w-[95vw] max-w-[420px] sm:max-w-[420px]">
           <DialogHeader>
             <DialogTitle>
               {hasVariantChoice(selectedProductForUnit) && !selectedVariantForUnit
@@ -1061,7 +1249,11 @@ export default function POS() {
                       <span className="text-xs text-muted-foreground">
                         {pack.conversion_factor === 1
                           ? "Satuan Dasar"
-                          : `Konversi: ${pack.conversion_factor} ${selectedProductForUnit?.unit_type || "Pcs"}`}
+                          : unitLabel(
+                              pack.name,
+                              pack.conversion_factor,
+                              selectedProductForUnit?.unit_type || "Pcs"
+                            ) || `Konversi: ${pack.conversion_factor}`}
                       </span>
                     </div>
                     <span className="font-bold">{formatCurrency(pack.price)}</span>

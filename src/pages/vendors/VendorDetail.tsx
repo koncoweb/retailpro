@@ -55,6 +55,7 @@ import { batchQuery, query, runTransaction } from "@/lib/db";
 import { parseJson } from "@/lib/db/json";
 import { logAudit, logAuditTx } from "@/lib/audit";
 import { formatCurrency } from "@/lib/formatters";
+import { unitNameOptions } from "@/lib/units";
 import {
   VENDOR_PAYMENT_METHODS,
   dueDateFromTerms,
@@ -528,6 +529,10 @@ export default function VendorDetail() {
 
   const openLinkDialog = async () => {
     if (!id) return;
+    if (!canEditPrices) {
+      toast.error("Tidak berwenang mengelola template vendor.");
+      return;
+    }
     try {
       const res = await query<ProductOption>(UNLINKED_PRODUCTS_SQL, [id]);
       setProductOptions(
@@ -995,9 +1000,11 @@ export default function VendorDetail() {
             <Button variant="outline" onClick={() => setDebtOpen(true)}>
               <Plus className="mr-2 h-4 w-4" /> Catat Tagihan
             </Button>
-            <Button onClick={() => setEditOpen(true)}>
-              <Edit className="mr-2 h-4 w-4" /> Edit Vendor
-            </Button>
+            {canEditPrices && (
+              <Button onClick={() => setEditOpen(true)}>
+                <Edit className="mr-2 h-4 w-4" /> Edit Vendor
+              </Button>
+            )}
           </div>
         </div>
 
@@ -1118,7 +1125,7 @@ export default function VendorDetail() {
                     SKU vendor, harga modal terakhir, lead time, dan minimum order.
                   </p>
                 </div>
-                <Button size="sm" onClick={openLinkDialog}>
+                <Button size="sm" onClick={openLinkDialog} disabled={!canEditPrices}>
                   <Link2 className="mr-2 h-4 w-4" /> Hubungkan Produk
                 </Button>
               </div>
@@ -1740,11 +1747,17 @@ export default function VendorDetail() {
                 <Input
                   id="price-unit"
                   value={priceForm.unitName}
+                  list="satuan-kanon-vendor"
                   placeholder="Karton"
                   onChange={(e) =>
                     setPriceForm((prev) => ({ ...prev, unitName: e.target.value }))
                   }
                 />
+                <datalist id="satuan-kanon-vendor">
+                  {unitNameOptions().map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="price-factor">Isi per Pecahan</Label>

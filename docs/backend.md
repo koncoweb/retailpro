@@ -305,6 +305,15 @@ tetapi belum dipakai UI mana pun.
 > liveness hardware: foto-dari-foto secara teori bisa menipu face-api.js, diperlambat hanya oleh
 > pendaftaran multi-sampel + peninjauan owner.
 
+> **Absensi dari layar kasir (tanpa GPS/wajah).** Membuka shift POS sekarang menulis baris
+> `attendance` hari WIB berjalan (`source='self'`, `location_type='branch'`, `location_id` = cabang shift,
+> `notes='Otomatis dari buka shift'`) dan menutupnya mengisi `check_out` — keduanya ditulis SPA di
+> `src/lib/shift-attendance.ts`. Tidak ada kunci `UNIQUE(employee_id, date)` di tabel, jadi pengulangan
+> dicegah dengan **baca-dulu-baru-tulis** (dan `UPDATE ... WHERE check_out IS NULL`), bukan dengan
+> constraint. Trigger `trg_attendance_today_only` hanya `BEFORE INSERT`, sehingga pencapan check-out
+> aman. Sifatnya best-effort: kegagalan tulis absensi hanya menjadi peringatan di UI dan tidak pernah
+> membatalkan operasi shift, karena shift adalah catatan pertanggungjawaban uang kasir.
+
 ### 5.8 Indeks
 
 | Tabel | Indeks |
@@ -423,6 +432,7 @@ blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen
 | `user_permissions` hanya **mengurangi**, tidak pernah menambah di luar role | `effectiveUserPermissions(grant, restrictions)` di `src/lib/permission-matrix.ts` mengabaikan nilai `true` dan hanya memakai `false`; ditulis `setUserPermissionOverrides()` (screen Employees), dan entri user dibersihkan saat karyawan dihapus |
 | Scope default `"all"` di kedua sisi | `normalizeScope()` di `src/lib/permission-matrix.ts`; nilai yang sama dengan default dihapus dari dokumen, tidak disimpan sebagai "semua" eksplisit |
 | Peran tidak dikenal ⇒ tanpa izin | `grantForRole()` mengembalikan `undefined`, `makeChecker()` menolak semua key (gagal-tertutup) |
+| **Kecuali:** tenant baru mendapat snapshot matriks penuh | `db/schema/seed.sql` menulis `role_permissions` lengkap (bukan selisih) supaya database baru langsung punya angka yang sama dengan UI. Konsekuensinya: mengubah default di `src/config/roles.ts` tidak menjangkau tenant yang sudah ada — contoh nyatanya `cashier.view_dashboard` yang harus dihapus dari seed juga, bukan hanya dari kode. Penjaga: `db/__tests__/seed.test.ts` menolak seed yang **membantah** default kode (key yang hilang boleh, karena resolver menggabung per kunci) |
 
 Perubahan matriks di simulator lokal: `npm run dev:api` adalah `tsx` **tanpa watcher** — port 3000
 harus di-restart sebelum menguji endpoint baru, jika tidak proses lama yang menjawab (mis. 201 di
@@ -548,7 +558,7 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: 19 berkas, 263 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt, pricing, variants, password, geolocation, face) |
+| `npm test` | Vitest: 23 berkas, 316 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt, pricing, variants, password, geolocation, face, pos-branch, shift-attendance) |
 | `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---

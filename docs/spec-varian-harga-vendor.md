@@ -894,6 +894,43 @@ kedua modal masih berarti "seluruh produk". Itu disengaja — baris lama pra-mig
 bisa dipindahkan, dan pemanggil yang tidak punya data varian (halaman transfer cabang)
 tetap berfungsi dengan angka stok tingkat produk.
 
+### G1–G5: master vendor tersinkron sebagai template PO (diperbarui 2026-11-01)
+
+> Koreksi versi: skema tenant kini di **versi 8** (`db/schema/tenant.sql`,
+> `schema_version (1, 8)`), bukan 6 seperti tertulis di §16 atas. Tidak ada
+> migrasi baru untuk G1–G5 — fondasi `product_variants` / `product_units` /
+> `vendor_price_list` sudah cukup, dan `vendor_price_list` memang ditunjuk
+> sebagai template PO (§15.1).
+
+Permintaan pemilik: hanya owner (atau user yang diberi wewenang owner) yang
+mengelola template vendor & produk; sistem satuan ritel Indonesia dengan label
+"Isi N pcs"; PO dapat diisi dari template harga vendor; dan kasir yang menjual
+satuan otomatis mendapat harga karton. Gap-nya ditutup di layer UI + satu
+konstanta + satu fungsi murni, **tanpa permission key baru dan tanpa migrasi**.
+
+| Gap | Berkas | Perubahan |
+|---|---|---|
+| **G1** gating produk | `src/pages/Inventory.tsx`, `src/components/inventory/AddProductModal.tsx` | Tombol "Tambah Produk" + item "Edit"/"Hapus" dropdown disembunyikan via `can("manage_variants")`; guard defensif di `handleSaveProduct`/`handleDeleteProduct`; modal menerima `canManageVariants`/`canManageSellPrices` dan me-*disable* grup atribut/varian/pecahan/harga. Baca tetap terbuka, rute `view_finance` tidak diubah |
+| **G1** gating vendor | `src/pages/vendors/Vendors.tsx`, `src/pages/vendors/VendorDetail.tsx` | "Tambah Vendor"/"Edit"/"Hapus" dan "Edit Vendor"/"Hubungkan Produk" di-`<PermissionGate permission="manage_vendor_prices">`; guard di `openLinkDialog`. Tombol "Lihat detail" tetap ada |
+| **G2** satuan kanonis | `src/lib/units.ts` (baru) + `src/lib/units.test.ts` | `CANONICAL_UNITS` (Pcs…Karton, Lusin, Gross, Rim, Kg, Liter, Meter, dll) + `unitNameOptions()`, `typicalFactorsFor()`, `unitLabel()` ("Isi 40 pcs", kosong untuk faktor 1). Murni, tanpa DB |
+| **G3** label "Isi N pcs" | `AddProductModal.tsx`, `VendorDetail.tsx`, `POS.tsx` | `<datalist>` saran satuan (bukan `<Select>`, tanpa normalisasi data lama) di input nama pecahan; caption & dialog memakai `unitLabel()` sehingga tiga layar konsisten |
+| **G4** isi PO dari template | `src/components/inventory/PurchaseOrderModal.tsx` | Tombol "Isi dari template harga vendor" memetakan `agreedPrices` aktif menjadi baris draft (`quantity = min_qty`, harga = `buy_price`), melewati baris yang sudah ada, tetap `draft`. Tanpa query/tabel baru |
+| **G5** harga karton otomatis | `src/lib/pricing.ts` + `pricing.test.ts`, `src/pages/POS.tsx`, `src/types/index.ts`, `server/demo/ledger.ts` | `bestPackPriceFor()` greedy (penuh pack besar, sisa di harga dasar, floor `cost`), **hanya** menurunkan `item.price` untuk baris faktor-1 — `unit_name`/`conversion_factor`/`quantity`/drain batch tak disentuh. Ditoggle flag `tenants.settings.pricing.auto_pack_price` (default **off**); badge "harga <pack> otomatis (hemat …)". Demo Thalia menyalakan flag |
+
+Catatan keamanan: gating ini kontrol UX, bukan keamanan keras — browser tetap
+memegang token DB tenant penuh (`use-permissions.ts`), jadi penegakan keras ada
+di server. Flag `auto_pack_price` sengaja default OFF agar `kasir.e2e.ts` yang
+mengasumsikan harga pack verbatim tetap hijau; hanya tenant yang mengaktifkan
+(auto-carton) yang berubah perilaku.
+
+**Uji**: `tests/kasir.e2e.ts` menambah kasus 50 pcs `Box Kue 20x20` dengan flag
+ON → baris tetap `pcs`, badge otomatis muncul, total = deal karton (bukan
+50×harga pcs). `tests/permissions.e2e.ts` menambah sesi **`manager`**
+(`store_manager`) yang membuka `/backoffice/vendors` & Inventory → "Tambah
+Vendor"/"Edit" dan "Tambah Produk" tidak ada, tetapi kedua halaman tetap
+ terbaca. Sesi `manager` ditambahkan di `e2e.config.ts`, `tests/support/accounts.ts`,
+dan `scripts/provision-e2e-users.ts`.
+
 ### Menyusul
 
 - `gudang.e2e.ts` belum menguji penerimaan PO dengan harga ≠ pricelist (peringatan selisih).

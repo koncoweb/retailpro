@@ -61,20 +61,33 @@ export function ShiftModal({
   const [actualCash, setActualCash] = useState("");
 
   const handleOpenShift = () => {
-    const amount = parseFloat(pettyCash) || 0;
-    if (amount <= 0) {
-      toast.error("Masukkan jumlah petty cash yang valid");
+    // Blank and 0 are a legitimate choice — many mornings the drawer starts
+    // empty — so the guard rejects only what is actually not a number or
+    // negative. The old `<= 0` rule made "tanpa uang tunai" un-openable.
+    const raw = pettyCash.trim();
+    const amount = raw === "" ? 0 : parseFloat(raw);
+    if (isNaN(amount)) {
+      toast.error("Petty cash harus berupa angka. Kosongkan jika tidak ada uang tunai awal.");
       return;
     }
-    toast.success("Shift berhasil dibuka!");
+    if (amount < 0) {
+      toast.error("Petty cash tidak boleh negatif.");
+      return;
+    }
+    // No premature victory lap: "berhasil" belongs to the caller, after the
+    // insert actually lands. This modal only hands the data over and closes.
     onShiftAction({ pettyCash: amount, openTime: new Date() });
     onOpenChange(false);
     setPettyCash("");
   };
 
   const handleCloseShift = () => {
-    toast.success("Shift berhasil ditutup!");
-    onShiftAction({ closeTime: new Date(), actualCash: parseFloat(actualCash) || 0 });
+    const raw = actualCash.trim();
+    if (raw !== "" && (isNaN(parseFloat(raw)) || parseFloat(raw) < 0)) {
+      toast.error("Uang tunai aktual harus angka dan tidak boleh negatif. Masukkan 0 jika laci kosong.");
+      return;
+    }
+    onShiftAction({ closeTime: new Date(), actualCash: parseFloat(raw) || 0 });
     onOpenChange(false);
     setActualCash("");
   };
@@ -103,14 +116,15 @@ export function ShiftModal({
   if (mode === "open") {
     return (
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="sm:max-w-[400px]">
+        <DialogContent className="max-w-[95vw] sm:max-w-[400px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Clock className="w-5 h-5 text-primary" />
               Buka Shift Kasir
             </DialogTitle>
             <DialogDescription>
-              Masukkan jumlah uang awal (petty cash) untuk memulai shift
+              Masukkan jumlah uang awal (petty cash) untuk memulai shift.
+              Kosongkan atau isi 0 jika tidak ada uang tunai awal.
             </DialogDescription>
           </DialogHeader>
 
@@ -121,23 +135,29 @@ export function ShiftModal({
                 <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
                   type="number"
-                  placeholder="Contoh: 500000"
+                  inputMode="numeric"
+                  placeholder="Contoh: 500000 (kosong = 0)"
                   value={pettyCash}
                   onChange={(e) => setPettyCash(e.target.value)}
-                  className="pl-10 text-lg"
+                  className="pl-10 text-base md:text-lg"
                 />
               </div>
+              {!pettyCash && (
+                <p className="text-xs text-muted-foreground">
+                  Tanpa uang tunai awal — shift tetap bisa dibuka.
+                </p>
+              )}
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
-              {[200000, 300000, 500000].map((amount) => (
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {[0, 200000, 300000, 500000].map((amount) => (
                 <Button
                   key={amount}
                   variant="outline"
                   size="sm"
                   onClick={() => setPettyCash(amount.toString())}
                 >
-                  {formatCurrency(amount)}
+                  {amount === 0 ? "Rp0" : formatCurrency(amount)}
                 </Button>
               ))}
             </div>
@@ -169,7 +189,7 @@ export function ShiftModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[600px]">
+      <DialogContent className="max-w-[95vw] sm:max-w-[600px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Clock className="w-5 h-5 text-primary" />
@@ -261,7 +281,8 @@ export function ShiftModal({
               <Label>Uang Tunai Aktual di Laci</Label>
               <Input
                 type="number"
-                placeholder="Masukkan jumlah uang aktual"
+                inputMode="numeric"
+                placeholder="Masukkan jumlah uang aktual (0 jika laci kosong)"
                 value={actualCash}
                 onChange={(e) => setActualCash(e.target.value)}
               />

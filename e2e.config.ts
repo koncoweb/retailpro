@@ -39,6 +39,7 @@ export default {
   credentials: {
     owner: { username: 'owner@tokobahankue.com', password: ownerPassword },
     admin: { username: 'e2e.admin@tokobahankue.com', password: staffPassword },
+    manager: { username: 'e2e.manager@tokobahankue.com', password: staffPassword },
     kasir: { username: 'e2e.kasir@tokobahankue.com', password: staffPassword },
     gudang: { username: 'e2e.gudang@tokobahankue.com', password: staffPassword },
     purchasing: { username: 'e2e.purchasing@tokobahankue.com', password: staffPassword },

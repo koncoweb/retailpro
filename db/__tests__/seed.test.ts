@@ -22,6 +22,7 @@ process.env.TURSO_ORG_SLUG ??= 'test-org';
 process.env.TURSO_GROUP ??= 'test-group';
 
 const { loadSchemaFile, renderSeed } = await import('../../server/provision');
+const { DEFAULT_ROLE_PERMISSIONS } = await import('../../src/config/roles');
 
 const dbPath = path.join(os.tmpdir(), `rp-seed-test-${process.pid}-${Date.now()}.db`);
 let client: Client;
@@ -84,8 +85,33 @@ describe('tenant provisioning payload', () => {
     };
     expect(settings.role_permissions.cashier.access_pos).toBe(true);
     expect(settings.role_permissions.cashier.void_transaction).toBeUndefined();
+    // A cashier is a register, not a dashboard: the seed must not hand the
+    // back office back to them behind the code default's back.
+    expect(settings.role_permissions.cashier.view_dashboard).toBeUndefined();
     expect(settings.role_permissions.tenant_owner.manage_roles).toBe(true);
     expect(settings.payroll_config.work_hours_per_day).toBe(8);
+  });
+
+  it('never contradicts the role matrix that ships in src/config/roles.ts', async () => {
+    // The comment above the tenants row promises the seed mirrors
+    // DEFAULT_ROLE_PERMISSIONS. It may omit keys — the resolver merges, so an
+    // absent key keeps its default — but a key it does write must agree,
+    // otherwise a permission revoked in code comes back granted for every
+    // tenant provisioned from this file (that is how `cashier` kept
+    // `view_dashboard` after the transactions-only change).
+    const row = await one<{ settings: string }>(`SELECT settings FROM tenants`);
+    const seeded = JSON.parse(String(row?.settings)) as {
+      role_permissions: Record<string, Record<string, boolean>>;
+    };
+    const mismatches: string[] = [];
+    for (const [role, permissions] of Object.entries(DEFAULT_ROLE_PERMISSIONS)) {
+      for (const [key, granted] of Object.entries(seeded.role_permissions[role] ?? {})) {
+        if (granted !== (permissions[key] ?? false)) {
+          mismatches.push(`${role}.${key}: seed=${granted} code=${permissions[key] ?? false}`);
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
   });
 
   it('seeds the default branch and the owner mirror row', async () => {

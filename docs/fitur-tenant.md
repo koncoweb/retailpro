@@ -164,6 +164,10 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-10-31 | — (working tree) | Kasir | Layar kasir memilih **varian lalu pecahan**: stok yang ditekan, pra-cek sebelum bayar, dan pemotongan batch (FIFO/LIFO/FEFO) semuanya per varian, sehingga menjual Cokelat tidak mengurangi stok Putih. `transaction_items.variant_id` terisi sejak transaksi pertama | Ubah |
 | 2026-10-31 | — (working tree) | Gudang | Transfer dan stok opname menghitung per varian: satu baris opname per varian dengan stok sistemnya sendiri, dan transfer memindahkan paket milik varian yang dipilih. Selisih satu rasa tidak lagi tertutup oleh rasa lain | Ubah |
 | 2026-10-31 | — (working tree) | Pengaturan | Izin baru `manage_variants`, `manage_vendor_prices`, `manage_sell_prices`, ketiganya **tertutup** untuk `store_manager`, `warehouse`, dan `purchasing` secara bawaan; owner/admin mendapatkannya lewat daftar izin penuh | Baru |
+| 2026-11-01 | — (working tree) | Pengaturan | Wewenang kelola **template produk** dan **template vendor** kini benar-benar di-gate di layar: tombol "Tambah Produk"/"Edit"/"Hapus" (Inventory) dan "Tambah Vendor"/"Edit"/"Hapus"/"Hubungkan Produk" (Vendor) hanya muncul untuk pemegang `manage_variants`/`manage_vendor_prices`; peran lain tetap bisa membaca. Guard defensif ditambahkan di jalur tulis agar tab basi tidak bisa menyimpan | Ubah |
+| 2026-11-01 | — (working tree) | Inventori | Daftar **satuan ritel Indonesia** kanonis (`src/lib/units.ts`: Pcs, Sachet, Stick, Renceng, Dus, Karton, Kaleng, Botol, Lusin=12, Gross=144, Rim, Kg, Liter, Meter, …) ditawarkan lewat `<datalist>` di input nama pecahan — hanya saran, data lama tidak dinormalisasi/di-rename. Label turunan **"Isi 40 pcs"** (`unitLabel`) tampil konsisten di editor produk, harga vendor, dan kasir untuk pack besar | Baru |
+| 2026-11-01 | — (working tree) | Pembelian | PO dapat **diisi dari template harga vendor**: satu tombol memetakan seluruh baris `vendor_price_list` aktif vendor terpilih menjadi baris draft (jumlah = `min_qty`, harga = `buy_price`) tanpa query/tabel baru; baris yang sudah ada tidak ditimpa, dan order tetap `draft` | Baru |
+| 2026-11-01 | — (working tree) | Kasir | **Harga karton otomatis saat jual satuan** (opt-in `tenants.settings.pricing.auto_pack_price`, default mati): bila jumlah pcs sudah memenuhi sebuah pack besar yang lebih murah per satuan, harga baris diturunkan ke harga pack itu — **hanya `item.price`**, satuan/faktor/jumlah dan pengurasan batch tidak berubah — dengan badge "harga Dus otomatis (hemat …)". Floor `cost` mencegah harga di bawah modal. Demo Thalia menyalakannya | Baru |
 | 2026-10-31 | — (working tree) | Demo | Thalia punya dua produk bervarian: **Susu Kental Manis** (Rasa Putih/Cokelat) dan **Pewarna Makanan** (Warna Merah/Kuning/Hijau/Biru), masing-masing dengan harga beli, harga jual pecahan, pricelist vendor, dan stok sendiri di gudang maupun rak | Ubah |
 | 2026-10-31 | — (working tree) | Toko Online | `GET /api/storefront/catalog` menambah `variants[]` (SKU, label, atribut, stok gudang pemenuh, pecahan + harga). Bentuk lama `units`/`stock` per produk tetap dikirim supaya etalase yang sudah berjalan tidak perlu berubah | Ubah |
 
@@ -208,6 +212,28 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-11-06 | — (working tree) | Karyawan/Izin | **Izin khusus per karyawan (hanya mengurangi / restrict-only)**: owner dapat **mencabut** sebagian izin yang role berikan kepada satu orang lewat aksi "Izin khusus" (ikon Shield) di `/backoffice/hr/employees` — misalnya seorang cashier kehilangan Akses POS sementara cashier lain tidak. Pengecualian disimpan di `tenants.settings.user_permissions` (peta `userId → { izin: false }`), tanpa migrasi skema. Sifatnya **hanya mengurangi**: izin yang tidak diberikan role tidak ditawarkan sama sekali, sehingga penugasan individu tidak pernah melangkahi sistem role general di Pengaturan → Role; aturan ini ditegakkan di resolver, bukan hanya UI |
 | 2026-11-06 | — (working tree) | Karyawan | Editor per individu merinci izin role per grup (dialog di desktop, `Sheet` layar penuh di ponsel), ringkasan "X dari Y izin role aktif, N dikecualikan" + "Kembalikan semua ke role"; daftar Karyawan menampilkan badge "N pengecualian", dan menghapus karyawan ikut membersihkan pengecualiannya. Setiap perubahan tercatat di audit (`update_employee_permissions`) |
 | 2026-11-06 | — (working tree) | Pengaturan | **Tab Role responsif**: daftar role yang semula menumpuk vertikal dan melewati tinggi layar pendek kini menjadi **strip geser horizontal** pada tablet/desktop kecil (`md`/`lg`); tata letak master-detail berdampingan tetap hanya di monitor besar (`xl`), dan `Sheet` layar penuh di ponsel tidak berubah |
+
+### 2026-11-06 — input/output massal CSV & Excel (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-06 | — (working tree) | Inventori / Vendor / Pelanggan | **Buat massal lewat berkas yang mudah diedit**: setiap layar menambah **Import** (menerima `.csv`, `.xlsx`, `.xls`), **Export CSV** (bentuk siap-impor kembali), dan **unduh template CSV & Excel**. Parser, pencocokan header longgar (label Indonesia + alias Inggris), dan CSV ber-BOM agar Excel Indonesia tidak mojibake, berpusat di `src/lib/bulk-io.ts` (murni, unit-tested) |
+| 2026-11-06 | — (working tree) | Inventori | **Impor produk kini aditif, bukan menimpa** (`handleImport`): SKU yang sudah ada atau kembar dalam file **dilewati** (tidak lagi meng-`UPDATE` produk owner), dan baris **tanpa SKU dibuat otomatis** meneruskan penomoran aplikasi (`KAT-YYYYMMDD-XXX` lewat `generateNextSku`/`skuPrefixForCategory`, dibaca MAX per kategori lalu dinaikkan dalam batch). Preview menampilkan jumlah ditambah / dibuat otomatis / dilewati | Ubah |
+| 2026-11-06 | — (working tree) | Vendor | Import vendor aditif: bentrok bila `code` **atau** `name` sudah ada (`idx_suppliers_code`/`idx_suppliers_name`) atau kembar → dilewati; `Kode` kosong dibuat otomatis meneruskan `VND-####` (`nextVendorCode`). Kategori/status menerima nilai Inggris maupun label; Termin menerima "30 hari" | Baru |
+| 2026-11-06 | — (working tree) | Pelanggan | Import pelanggan aditif dengan **dedup** (telepon, fallback nama) terhadap database + dalam file; tanpa ID otomatis karena pelanggan tidak punya kode manusia | Baru |
+| 2026-11-06 | — (working tree) | Izin | Tombol Import digate mengikuti tombol Tambah entitasnya: produk `manage_variants`, vendor `manage_vendor_prices`, pelanggan `view_finance`. Export tetap `export_reports`; template tidak digate (hanya baris contoh). `handleImport` produk menolak tulis tanpa `manage_variants` di sisi data, bukan hanya UI | Baru |
+
+### 2026-11-06 — POS: satu sumber cabang, absensi otomatis dari shift, kasir transaksi-saja (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-06 | — (working tree) | POS/Shift | **Satu sumber cabang untuk seluruh POS** (`src/hooks/use-pos-branch.ts`): till, meja shift, dan header memakai cabang yang sama hasil prioritas `session.branchId → user.assigned_branch_id → cabang pertama in-scope → baris pertama`, dengan pilihan manual dibagikan per user (bukan localStorage) sehingga shift yang baru dibuka selalu terlihat oleh till. Bug "sudah buka shift tapi POS bilang belum dibuka" hilang; pesan buntu "Sesi tidak lengkap" diganti keadaan kosong yang menjelaskan + tombol Muat Ulang | Perbaikan |
+| 2026-11-06 | — (working tree) | POS/SDM | **Buka/tutup shift mencatat absensi otomatis** (`src/lib/shift-attendance.ts`): buka shift menulis baris `attendance` hari berjalan (WIB) `status='present'`, `source='self'`, `location_type='branch'`, `notes='Otomatis dari buka shift'` bila belum ada baris hari itu; tutup shift mengisi `check_out` hanya yang masih NULL. Best-effort: kegagalan absensi hanya menjadi toast peringatan dan tidak membatalkan shift. `/absen` menampilkan catatan sumber baris tersebut | Baru |
+| 2026-11-06 | — (working tree) | POS/Shift | **Petty cash 0 sah** di kedua jalur (modal POS & layar shift): kosong/`0` berarti "tanpa uang tunai awal", ada tombol cepat `Rp0`, dan toast "berhasil" baru muncul setelah tulisannya benar-benar dieksekusi (sebelumnya modal menutup dengan toast kemenangan lebih dulu) | Perbaikan |
+| 2026-11-06 | — (working tree) | Izin | **Kasir dibatasi ke transaksi saja**: `view_dashboard` dicabut dari default `cashier` di `src/config/roles.ts` **dan** dari snapshot `role_permissions` di `db/schema/seed.sql` (seed menulis matriks penuh, jadi default lama tenant ikut terbaca kalau hanya kode yang diubah). Guard `/pos/transactions` kini menerima `access_pos` sehingga buku transaksi till sendiri tetap terbuka. Owner masih bisa mengaktifkan dashboard per role/per karyawan lewat matriks izin | Ubah |
+| 2026-11-06 | — (working tree) | POS | **Pesan error yang bisa ditindaklanjuti**: kegagalan muat produk/cabang menampilkan banner "Gagal memuat data" + tombol Coba lagi (bukan `console.error` saja), belum buka shift menjadi banner blocking di atas grid dengan tombol Buka Shift, dan pesan stok saat bayar menyebut nama produk + sisa/kebutuhan dalam Bahasa Indonesia | Baru |
+| 2026-11-06 | — (working tree) | POS | **Responsif ponsel/tablet/desktop**: grid produk `2/3/4/5` kolom per breakpoint, keranjang menjadi baris ringkas lengket + dialog isi di bawah `lg`, riwayat shift & daftar transaksi jadi kartu di bawah `md` (tabel tetap di `md`+), dialog POS `max-w-[95vw]`, input pencarian `text-base` (tanpa zoom paksa di iOS), target sentuh `size="pos"` dipertahankan | Ubah |
+| 2026-11-06 | — (working tree) | Uji | Unit baru `src/hooks/use-pos-branch.test.ts` (7 kasus prioritas cabang) dan `src/lib/db/__tests__/shift-attendance.test.ts` (7 kasus, replay SQL aslinya ke database v8 sementara); `db/__tests__/seed.test.ts` menambah penjaga bahwa seed tidak boleh membantah matriks kode. E2E `tests/kasir.e2e.ts` menambah alur "drawer kosong tetap bisa buka shift + absensi tercatat otomatis" | Baru |
 
 ### Riwayat commit (aplikasi sebelum migrasi)
 
@@ -278,7 +304,9 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Pilih pelanggan (member) | Belum | `customer_id` sudah ada di skema |
 | Scan barcode | Sebagian | Barcode bisa dibuat & dicetak; input scanner belum ditangani |
 | Cetak struk | Belum | Pengaturan struk sudah tersimpan, renderer belum ada |
-| Shift: buka/tutup kas | Ada | Kas awal, kas akhir, kas seharusnya, selisih |
+| Shift: buka/tutup kas | Ada | Kas awal (0 = tanpa uang tunai), kas akhir, kas seharusnya, selisih |
+| Satu sumber cabang POS | Ada | `use-pos-branch`: till, layar shift, dan header selalu cabang yang sama; pemilih cabang bila role melintas beberapa cabang |
+| Absensi otomatis dari shift | Ada | Buka shift = check-in, tutup shift = check-out (`source='self'`, `notes='Otomatis dari buka shift'`), best-effort tanpa membatalkan shift |
 | Riwayat transaksi & detail | Ada | Dengan pagination |
 | Void/refund transaksi | Belum | Status `void` ada di skema, belum ada aksi UI |
 
@@ -299,7 +327,7 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Transfer antar gudang | Ada | `pending → in_transit → completed`, per batch, simpan expiry & HPP; gudang asal/tujuan dipilih dari `warehouses`; menampilkan nomor pesanan asal bila tertaut |
 | Transfer bertahap (terima sebagian) | Sebagian | Pengiriman dan penerimaan sudah terpisah dan selisih dicatat; belum ada penerimaan bertahap dalam beberapa kedatangan |
 | Purchase order | Ada | draft/ordered/received, item + total |
-| Import/Export produk (Excel) | Ada | `xlsx` |
+| Import/Export produk (CSV & Excel) | Ada | `xlsx`; import **aditif** (SKU existing/kembar dilewati, SKU kosong dibuat otomatis), template CSV/Excel siap-impor (parser `src/lib/bulk-io.ts`) |
 | Hapus produk | Sebagian | Tetap menghapus permanen; transaksi lama kehilangan referensi produk |
 
 ### 2.4 Vendor
@@ -313,7 +341,8 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Katalog produk per vendor | Ada | `vendor_products`: SKU vendor, harga beli terakhir, lead time, minimum order, penanda vendor utama |
 | Purchase order per vendor | Ada | PO memilih vendor dari master; daftar produk disaring ke katalog vendor tersebut (vendor utama + tautan `vendor_products`) |
 | Hutang & pembayaran vendor | Ada | Tagihan manual, bayar sebagian/penuh, metode bayar + nomor referensi, riwayat pembayaran |
-| Statistik & export | Ada | Total vendor, aktif, total hutang, tagihan lewat jatuh tempo; export Excel |
+| Statistik & export | Ada | Total vendor, aktif, total hutang, tagihan lewat jatuh tempo; export Excel (report) & CSV (siap-impor) |
+| Import massal vendor | Ada | CSV/Excel; aditif — `code`/`name` sudah ada atau kembar dilewati, `Kode` kosong auto `VND-####`; template CSV/Excel |
 | Hapus vendor | Sebagian | Ditolak bila masih dipakai produk/PO/tagihan; gunakan status nonaktif |
 | Penilaian otomatis (on-time delivery) | Belum | Rating diisi manual |
 
@@ -333,6 +362,7 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Fitur | Status | Catatan |
 |---|---|---|
 | Data pelanggan | Ada | Termasuk `total_spent`, `points` |
+| Import massal pelanggan | Ada | CSV/Excel; aditif dengan dedup telepon/nama (tanpa ID manusia); template CSV/Excel |
 | Data supplier | Ada | Sudah dipindah ke modul **Vendor** (§2.4): master lengkap, katalog produk, hutang & pembayaran |
 | Riwayat transaksi per pelanggan | Belum | Bergantung pada pemilihan pelanggan di POS |
 
@@ -342,7 +372,7 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 |---|---|---|
 | Data karyawan + role | Ada | 7 peran (lihat §3) |
 | Gaji pokok | Ada | Dipakai laporan payroll |
-| Presensi (check-in/out) | Sebagian | Tercatat di `attendance`, tapi input manual bukan jam otomatis. Modal absensi mengunci tanggal hari berjalan (UTC+7) dan trigger `trg_attendance_today_only` (skema v7) menolak insert bertanggal lain — back/forward-dating lewat payload tidak bisa lagi |
+| Presensi (check-in/out) | Ada | Self-service di `/absen` (GPS + wajah) **dan** otomatis dari siklus shift POS (`src/lib/shift-attendance.ts`: buka shift mencatat check-in hari WIB berjalan bila belum ada baris, tutup shift mengisi `check_out` yang masih NULL). Input owner/HR di laporan absensi tetap ada. Modal absensi mengunci tanggal hari berjalan (UTC+7) dan trigger `trg_attendance_today_only` (skema v7) menolak insert bertanggal lain — back/forward-dating lewat payload tidak bisa lagi |
 | Lembur | Sebagian | Kolom `overtime` ada, input manual |
 | Cuti | Ada | Pengajuan + status; approval belum berjejak audit |
 | Hari libur nasional | Ada | Tab Libur memuat libur nasional + cuti bersama per tahun dari API Tanggal Merah (`src/lib/holidays.ts`), otomatis mengikuti tahun berjalan; offline jatuh ke daftar bawaan tahun aktif |

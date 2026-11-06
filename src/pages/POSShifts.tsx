@@ -4,6 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -20,15 +27,32 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2 } from "lucide-react";
+import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2, MapPin } from "lucide-react";
 import { toast } from "sonner";
 import { query, runTransaction } from "@/lib/db";
 import { useAuth } from "@/hooks/use-auth";
-import { Shift, Transaction } from "@/types";
-import { formatCurrency } from "@/lib/utils";
+import { usePosBranch } from "@/hooks/use-pos-branch";
+import {
+  autoAttendanceWarning,
+  autoCheckInForShift,
+  autoCheckOutForShift,
+} from "@/lib/shift-attendance";
+import { Shift } from "@/types";
+import { cn, formatCurrency } from "@/lib/utils";
 
 export default function POSShifts() {
   const { user } = useAuth();
+  // One branch answer shared with the till and the header: a shift opened
+  // here is the very shift the till finds, even for a cashier whose
+  // `assigned_branch_id` is null but whose session resolved a branch.
+  const {
+    branchId,
+    setBranchId,
+    branches,
+    branchName,
+    canSwitch,
+    loading: branchLoading,
+  } = usePosBranch();
   const [isLoading, setIsLoading] = useState(true);
   const [activeShift, setActiveShift] = useState<Shift | null>(null);
   const [shiftHistory, setShiftHistory] = useState<Shift[]>([]);
@@ -48,18 +72,25 @@ export default function POSShifts() {
   });
 
   useEffect(() => {
-    if (user) {
-      fetchShiftData();
+    if (!user || branchLoading) return;
+    if (!branchId) {
+      // No in-scope branch at all: stop the spinner and let the empty state
+      // below explain it. This used to dead-end on "Sesi tidak lengkap"
+      // whenever `assigned_branch_id` was null, even though the session had
+      // perfectly good branches to open a shift under.
+      setIsLoading(false);
+      return;
     }
-  }, [user]);
+    fetchShiftData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, branchLoading, branchId]);
 
   const fetchShiftData = async () => {
     setIsLoading(true);
     try {
-      // 1. Get Active Shift. Both ids come from the session — with
+      // Both ids come from the session + the shared hook — with
       // database-per-tenant there is no `tenant_id` column to read.
       const userId = user?.id;
-      const branchId = user?.assigned_branch_id;
 
       if (!userId || !branchId) return;
 
@@ -76,7 +107,7 @@ export default function POSShifts() {
         setActiveShift(null);
       }
 
-      // 2. Get Shift History
+      // Shift history for this branch, newest first
       const historyRes = await query(
         `SELECT * FROM shifts WHERE user_id = $1 AND branch_id = $2 ORDER BY created_at DESC LIMIT 10`,
         [userId, branchId]
@@ -122,21 +153,23 @@ export default function POSShifts() {
   };
 
   const handleOpenShift = async () => {
-    const amount = parseFloat(initialCash);
+    // Blank means "no cash in the drawer this morning", which is a normal
+    // shift, not a validation error — the hint under the field says so.
+    const raw = initialCash.trim();
+    const amount = raw === "" ? 0 : parseFloat(raw);
     if (isNaN(amount) || amount < 0) {
-      toast.error("Masukkan jumlah modal awal yang valid");
+      toast.error("Masukkan jumlah modal awal yang valid (0 boleh, tanpa uang tunai awal)");
+      return;
+    }
+
+    const userId = user?.id;
+
+    if (!userId || !branchId) {
+      toast.error("Belum ada cabang yang bisa diakses akun ini. Hubungi owner.");
       return;
     }
 
     try {
-      const userId = user?.id;
-      const branchId = user?.assigned_branch_id;
-
-      if (!userId || !branchId) {
-        toast.error("Sesi tidak lengkap: cabang belum ditetapkan");
-        return;
-      }
-
       // Close any shift left open by this user in this branch before opening a
       // new one, so `shifts` never ends up with two open drawers.
       await runTransaction(async (tx) => {
@@ -153,21 +186,36 @@ export default function POSShifts() {
         );
       });
 
-      toast.success("Shift berhasil dibuka");
+      // Attendance half of the deal: opening a drawer *is* showing up, so it
+      // books the day's check-in unless one already exists. Best-effort —
+      // the shift itself already succeeded and stays open either way.
+      const checkIn = await autoCheckInForShift(userId, branchId);
+      const shiftNote =
+        amount === 0
+          ? "Shift berhasil dibuka tanpa uang tunai awal."
+          : "Shift berhasil dibuka.";
+      const warning = autoAttendanceWarning(checkIn);
+      if (warning) toast.warning(`${shiftNote} ${warning}`);
+      else if (checkIn.changed)
+        toast.success(`${shiftNote} Absensi tercatat otomatis.`);
+      // Already booked (they checked in at /absen first): say what happened
+      // instead of claiming a second entry.
+      else toast.success(`${shiftNote} Absensi hari ini sudah tercatat.`);
       setInitialCash("");
       fetchShiftData();
     } catch (error) {
       console.error("Error opening shift:", error);
-      toast.error("Gagal membuka shift");
+      toast.error("Gagal membuka shift: " + (error instanceof Error ? error.message : "Coba lagi"));
     }
   };
 
   const handleCloseShift = async () => {
     if (!activeShift) return;
+    const userId = user?.id;
     
     const actual = parseFloat(finalCash);
     if (isNaN(actual) || actual < 0) {
-      toast.error("Masukkan jumlah uang fisik yang valid");
+      toast.error("Masukkan jumlah uang fisik yang valid (0 boleh, laci kosong)");
       return;
     }
 
@@ -187,17 +235,30 @@ export default function POSShifts() {
         [actual, expected, diff, notes, activeShift.id]
       );
 
-      toast.success("Shift berhasil ditutup");
+      // Closing the drawer stamps the day's check-out — but only on rows
+      // that still lack one, so an /absen check-out is never overwritten.
+      if (userId) {
+        const checkOut = await autoCheckOutForShift(userId);
+        const warning = autoAttendanceWarning(checkOut);
+        if (warning) toast.warning(`Shift berhasil ditutup. ${warning}`);
+        else if (checkOut.changed)
+          toast.success("Shift berhasil ditutup. Absensi check-out tercatat otomatis.");
+        // Nothing to stamp: this account never got an auto check-in (or the
+        // day's row already had a check-out). Don't invent a claim.
+        else toast.success("Shift berhasil ditutup");
+      } else {
+        toast.success("Shift berhasil ditutup");
+      }
       setFinalCash("");
       setNotes("");
       fetchShiftData();
     } catch (error) {
       console.error("Error closing shift:", error);
-      toast.error("Gagal menutup shift");
+      toast.error("Gagal menutup shift: " + (error instanceof Error ? error.message : "Coba lagi"));
     }
   };
 
-  if (isLoading) {
+  if (isLoading || branchLoading) {
     return (
       <POSLayout>
         <div className="flex items-center justify-center h-full">
@@ -210,7 +271,7 @@ export default function POSShifts() {
   return (
     <POSLayout>
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Clock className="w-6 h-6" />
             Manajemen Shift
@@ -222,13 +283,64 @@ export default function POSShifts() {
           )}
         </div>
 
+        {!branchId ? (
+          // Not "sesi tidak lengkap" anymore: the real explanation, with the
+          // one action that can fix it (retry), instead of a dead end.
+          <Card className="border-warning/30">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <AlertCircle className="w-5 h-5 text-warning" />
+                Cabang belum tersedia
+              </CardTitle>
+              <CardDescription>
+                Shift butuh sebuah cabang untuk dibuka. Akun ini belum punya
+                cabang yang bisa diakses — minta owner menetapkan cabang atau
+                scope role Anda, lalu muat ulang halaman ini.
+              </CardDescription>
+            </CardHeader>
+            <CardFooter>
+              <Button variant="outline" onClick={() => window.location.reload()}>
+                Muat Ulang
+              </Button>
+            </CardFooter>
+          </Card>
+        ) : (
+          <>
+        {/* Where the drawer lives: same picker the till uses, same memory. */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {canSwitch ? (
+            <Select value={branchId ?? ""} onValueChange={setBranchId}>
+              <SelectTrigger className="w-auto min-w-[180px] h-9 gap-2 text-sm">
+                <MapPin className="w-4 h-4" />
+                <SelectValue placeholder="Pilih cabang" />
+              </SelectTrigger>
+              <SelectContent>
+                {branches.map((branch) => (
+                  <SelectItem key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-full">
+              <MapPin className="w-4 h-4" />
+              <span>{branchName ?? "Cabang"}</span>
+            </div>
+          )}
+        </div>
+
         {/* Active Shift / Open Shift Action */}
         <div className="grid gap-6">
           {!activeShift ? (
             <Card className="border-primary/20 shadow-lg">
               <CardHeader>
                 <CardTitle>Buka Shift Baru</CardTitle>
-                <CardDescription>Masukkan modal awal (Petty Cash) untuk memulai operasional kasir.</CardDescription>
+                <CardDescription>
+                  Masukkan modal awal (Petty Cash) untuk memulai operasional
+                  kasir. Boleh 0 jika tidak ada uang tunai awal. Buka shift
+                  sekaligus mencatat absensi masuk Anda hari ini.
+                </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
@@ -237,16 +349,17 @@ export default function POSShifts() {
                     <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
                       type="number"
-                      placeholder="Contoh: 200000"
+                      inputMode="numeric"
+                      placeholder="Contoh: 200000 (0 = tanpa uang tunai)"
                       value={initialCash}
                       onChange={(e) => setInitialCash(e.target.value)}
-                      className="pl-10 text-lg"
+                      className="pl-10 text-base md:text-lg"
                     />
                   </div>
-                  <div className="flex gap-2 mt-2">
-                    {[100000, 200000, 500000].map(amt => (
+                  <div className="flex gap-2 mt-2 flex-wrap">
+                    {[0, 100000, 200000, 500000].map(amt => (
                       <Button key={amt} variant="outline" size="sm" onClick={() => setInitialCash(amt.toString())}>
-                        {formatCurrency(amt)}
+                        {amt === 0 ? "Rp0 (tanpa tunai)" : formatCurrency(amt)}
                       </Button>
                     ))}
                   </div>
@@ -311,10 +424,11 @@ export default function POSShifts() {
                       <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                       <Input
                         type="number"
+                        inputMode="numeric"
                         placeholder="Masukkan total uang tunai yang ada..."
                         value={finalCash}
                         onChange={(e) => setFinalCash(e.target.value)}
-                        className="pl-10 text-lg"
+                        className="pl-10 text-base md:text-lg"
                       />
                     </div>
                     {finalCash && (
@@ -352,10 +466,13 @@ export default function POSShifts() {
           )}
         </div>
 
-        {/* History */}
+        {/* History: a table from md up, compact cards below it — the same
+            two-view pattern the attendance reports settled on, because a
+            six-column shift table is unreadable on a phone propped by the
+            cash drawer. */}
         <div className="space-y-4">
           <h2 className="text-lg font-semibold">Riwayat Shift Terakhir</h2>
-          <Card>
+          <Card className="hidden md:block">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -402,13 +519,54 @@ export default function POSShifts() {
               </TableBody>
             </Table>
           </Card>
+          <div className="md:hidden space-y-3">
+            {shiftHistory.length === 0 ? (
+              <Card>
+                <CardContent className="py-8 text-center text-muted-foreground">
+                  Belum ada riwayat shift.
+                </CardContent>
+              </Card>
+            ) : (
+              shiftHistory.map((shift) => (
+                <Card key={shift.id}>
+                  <CardContent className="p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-sm font-medium">
+                        <Calendar className="w-4 h-4 text-muted-foreground" />
+                        {new Date(shift.start_time).toLocaleString('id-ID')}
+                      </div>
+                      <Badge variant={shift.status === 'open' ? 'default' : 'secondary'}>
+                        {shift.status === 'open' ? 'Aktif' : 'Selesai'}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Selesai: {shift.end_time ? new Date(shift.end_time).toLocaleString('id-ID') : '-'}
+                    </p>
+                    <div className="grid grid-cols-3 gap-2 text-sm">
+                      <div>
+                        <p className="text-xs text-muted-foreground">Modal Awal</p>
+                        <p className="font-medium">{formatCurrency(Number(shift.initial_cash))}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Total Akhir</p>
+                        <p className="font-medium">{shift.final_cash ? formatCurrency(Number(shift.final_cash)) : '-'}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">Selisih</p>
+                        <p className={cn("font-medium", Number(shift.difference) !== 0 ? 'text-destructive' : 'text-success')}>
+                          {shift.difference ? formatCurrency(Number(shift.difference)) : '-'}
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))
+            )}
+          </div>
         </div>
+          </>
+        )}
       </div>
     </POSLayout>
   );
-}
-
-// Helper for class merging if not imported
-function cn(...classes: (string | undefined | null | false)[]) {
-  return classes.filter(Boolean).join(' ');
 }

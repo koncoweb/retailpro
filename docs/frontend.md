@@ -24,7 +24,7 @@
 | Build | `vite build` → `dist/` (satu bundle ±2 MB, ada peringatan ukuran chunk) |
 | Typecheck | `npx tsc --noEmit -p tsconfig.app.json` (terpisah dari build) |
 | Lint | `npm run lint` (ESLint 9, config datar) |
-| Test | `npm run test` (Vitest; **19 file, 263 test**) |
+| Test | `npm run test` (Vitest; **23 file, 316 test**) |
 | Test E2E | `npm run test:e2e` (tester.army; `tests/**/*.e2e.ts`, butuh dev server `:8080` dan kunci model di `.env` — lihat §12) |
 | Toko online | `cd tokoonline && npm run dev` → port **8082**, `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) |
 
@@ -37,7 +37,7 @@ src/
   App.tsx                  Tabel route + guard per izin
   main.tsx                 Bootstrap React
   contexts/TenantContext.tsx  Bootstrap tenant, RequireTenant
-  hooks/                   use-auth, use-mobile, use-theme, use-toast, use-permissions
+  hooks/                   use-auth, use-mobile, use-theme, use-toast, use-permissions, use-pos-branch
   config/roles.ts          Katalog izin (satu sumber), peran bawaan, izin default
   types/index.ts           Tipe domain
   lib/
@@ -96,7 +96,7 @@ adalah perubahan di Pengaturan → Role, bukan perubahan kode.
 | `/register-tenant` | `auth/RegisterTenant` | publik (butuh sesi) |
 | `/mode-select` | `ModeSelect` | semua (kartu dibuat dari `can(...)`) |
 | `/pos`, `/pos/shifts` | `POS`, `POSShifts` | `access_pos` |
-| `/pos/transactions` | `POSTransactions` | `view_dashboard` **atau** `view_inventory` (`anyOf`) |
+| `/pos/transactions` | `POSTransactions` | `access_pos` **atau** `view_dashboard` **atau** `view_inventory` (`anyOf`) — kasir tetap membuka buku transaksi till-nya sendiri walau dashboard-nya dicabut |
 | `/backoffice` | `Dashboard` | `view_analytics` |
 | `/backoffice/vendors`, `/vendors/:id`, `/crm/suppliers`, `/crm/customers` | `vendors/*`, `crm/Customers` | `view_finance` |
 | `/backoffice/branches`, `/branches/dashboard` | `Branches`, `branches/Dashboard` | `manage_branches` |
@@ -220,7 +220,8 @@ Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 ba
 | Barcode | `components/ui/BarcodeGenerator.tsx` | `react-barcode`, unduh PNG |
 | Import/Export Excel | `inventory/ProductImportExport.tsx` | `xlsx`; template + validasi baris |
 | Pembayaran | `pos/PaymentModal.tsx` | Validasi tunai, hitung kembalian, pilih metode |
-| Shift | `pos/ShiftModal.tsx` → `POSShifts` | Buka/tutup kas, ringkasan per metode bayar |
+| Shift | `pos/ShiftModal.tsx` → `POSShifts` | Buka/tutup kas, ringkasan per metode bayar. Modal hanya memvalidasi + menutup; toast "berhasil" dan **absensi otomatis** (`lib/shift-attendance.ts`) dikerjakan pemanggilnya setelah barisnya benar-benar ditulis. Uang tunai awal boleh kosong/`0` ("tanpa uang tunai awal", ada pintasan `Rp0`) di kedua jalur — modal POS maupun layar shift |
+| Cabang untuk seluruh POS | `hooks/use-pos-branch.ts` | Satu sumber kebenaran cabang aktif untuk till, meja shift, dan header: prioritas `session.branchId → user.assigned_branch_id → cabang pertama in-scope → baris pertama` (baris terakhir hanya untuk scope penuh), daftar cabang dipakai bersama lewat query `['pos-branches']`, pilihan manual per user disimpan di store modul (`useSyncExternalStore`) — bukan localStorage — supaya shift yang baru dibuka selalu terlihat oleh till. Bila user punya >1 cabang in-scope muncul pemilih cabang |
 | Detail cabang | `branches/BranchDetailModal.tsx` | Daftar karyawan cabang + edit |
 | Gudang & pemetaan | `pages/Warehouses.tsx` | CRUD gudang pusat/regional/toko, penanda gudang default, pemetaan ke cabang |
 | Metode pengeluaran stok | `settings/InventorySettings.tsx` | Tab **Inventori**; kartu radio FIFO/LIFO/FEFO, simpan saat diklik |
@@ -268,6 +269,11 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-11-06 | — (working tree) | **POS: satu sumber cabang**. Hook baru `src/hooks/use-pos-branch.ts` memuat daftar cabang sekali (query TanStack `['pos-branches']`) dan menentukan cabang aktif dengan prioritas `session.branchId → user.assigned_branch_id → cabang pertama in-scope → baris pertama` (baris terakhir hanya untuk scope penuh — scope kosong berarti *tidak* ada cabang, bukan "apa pun"), dengan pilihan manual per user lewat `useSyncExternalStore` (bukan localStorage). `POS.tsx`, `POSShifts.tsx`, `layout/POSLayout.tsx` membacanya dari satu tempat, jadi shift yang dibuka di meja shift selalu terlihat oleh till; pemilih cabang muncul bila user punya lebih dari satu cabang in-scope, dan buntu "Sesi tidak lengkap" diganti state kosong yang menjelaskan + tombol Muat Ulang. Unit: `src/hooks/use-pos-branch.test.ts` (7 kasus prioritas) |
+| 2026-11-06 | — (working tree) | **Buka/tutup shift = absensi otomatis** (`src/lib/shift-attendance.ts`, best-effort): `autoCheckInForShift()` membaca dulu baris `attendance` hari berjalan WIB lalu menyisipkan bila kosong (`status='present'`, `source='self'`, `location_type='branch'`, `notes='Otomatis dari buka shift'`); `autoCheckOutForShift()` mengisi `check_out` hanya yang masih NULL. Keduanya mengembalikan `{ ok, changed }` sehingga toast tidak mengklaim "absensi tercatat" ketika barisnya memang sudah ada; kegagalan tulis absensi hanya `toast.warning` dan tidak membatalkan shift. `AttendanceCheckIn.tsx` ikut menyeleksi `notes` dan menampilkannya di bawah badge Masuk/Keluar supaya asal baris terbaca. Unit: `src/lib/db/__tests__/shift-attendance.test.ts` (7 kasus, replay SQL ke DB sementara skema v8) |
+| 2026-11-06 | — (working tree) | **Kasir dibatasi ke transaksi saja**: `view_dashboard` dicabut dari default `cashier` di `src/config/roles.ts` **dan** dari snapshot `role_permissions` di `db/schema/seed.sql` — seed menyimpan matriks penuh sehingga pencabutan di kode saja tidak sampai ke tenant yang settings-nya sudah terbaca (merge per key: nilai eksplisit menang). Guard `/pos/transactions` kini `guardedAny(["access_pos", "view_dashboard", "view_inventory"])` agar buku transaksi till sendiri tetap terbuka. Uji: `db/__tests__/seed.test.ts` menambah penjaga bahwa seed tidak boleh bertentangan dengan `DEFAULT_ROLE_PERMISSIONS` |
+| 2026-11-06 | — (working tree) | **Notifikasi & state error POS** (`ShiftModal.tsx`, `POS.tsx`): petty cash kosong/`0` sah dengan tombol cepat `Rp0 (tanpa tunai)` dan pesan "tanpa uang tunai awal"; toast "berhasil" dipindah ke pemanggil setelah tulis DB (sebelumnya modal menutup dengan toast kemenangan prematur); `fetchBranches`/`fetchProducts` tidak lagi diam di `console.error` — ada banner "Gagal memuat data" + tombol Coba lagi dan toast berisi pesan asli; sebelum shift dibuka yang tampil banner blocking di atas grid ("Shift belum dibuka — transaksi tidak bisa diproses") beserta tombol Buka Shift, bukan redirect senyap; pesan stok saat bayar menyebut nama produk dan sisa stok. Perbaikan terpisah di `src/hooks/use-permissions.ts`: query grants di-*disable* selama `/api/tenant/bootstrap` belum menjawab, dan TanStack melaporkan itu sebagai `isLoading: false` tanpa data — `ModeSelect` membacanya sebagai "role tidak dikenali" sehingga setiap hard reload menampilkan panel "Belum ada layar untuk Anda" yang menyinggung, lalu `RoleBasedRoute` bisa memantul ke /mode-select untuk layar yang justru boleh dibuka. `loading` kini berarti "belum ada jawaban dan belum ada bacaan yang berjalan" (`data === undefined && (!getTenantSession() || isLoading)`), jadi yang muncul adalah "Memuat hak akses…" |
+| 2026-11-06 | — (working tree) | **POS responsif**: grid produk `grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5`; di bawah `lg` keranjang menjadi bar ringkas lengket (jumlah item + total + Bayar) yang membuka `Dialog` berisi baris yang sama, jadi grid tetap punya satu layar penuh; `POSShifts.tsx` riwayat shift jadi kartu di `<md` dan form satu kolom penuh; `POSTransactions.tsx` filter vertikal di mobile, baris transaksi jadi kartu, dialog detail layar penuh; semua dialog POS `max-w-[95vw]`, input pencarian `text-base` (tanpa zoom paksa di mobile), target sentuh `size="pos"` ≥44px dipertahankan. Spot-check viewport (Playwright, 390/662/768/820/1024/1440) menemukan tiga cacat yang ikut diperbaiki: header `POSLayout` 855px pada 820px (tab nav + label cabang pindah ke `lg`, bar navigasi lengket jadi `lg:hidden`, grup kiri `min-w-0` + cabang `truncate` sehingga tombol aksi tidak lagi mendorong header keluar layar), tabel 8 kolom `POSTransactions` yang di-clip `overflow-hidden` antara `md`–`lg` (kini `overflow-x-auto`), dan kartu statistik yang tidak bisa menyusut di bawah ±220px karena `Rp 113.063.000` memakai nbsp (kini `grid-cols-1 sm:grid-cols-2 lg:grid-cols-4`). Hasil ukur: `document.scrollWidth == innerWidth` di semua lebar, tanpa scroll menyamping di `main` |
 | 2026-11-06 | — (working tree) | **Izin khusus per karyawan (restrict-only) + tab Role responsif**. Resolver `permission-matrix.ts` menambah `effectiveUserPermissions(grant, restrictions)` dan `roleGrantedKeys()`; cache kembar `['tenant-user-permissions']` (`UserPermissionOverrides`, dipetai `userId→{key:false}`) di samping cache `grants` yang bentuknya tak berubah, sehingga seorang karyawan bisa dicabut sebagian izin role-nya tetapi **tidak pernah** ditambah (hanya `false` berarti, ditegakkan di resolver). Layar Karyawan: komponen `employees/IndividualPermissionEditor.tsx` + aksi baris "Izin khusus" (Shield, `can('edit_employee')`, disembunyikan untuk diri sendiri), badge "N pengecualian", hapus karyawan membersihkan entri via `clearUserPermissionOverrides`, audit `update_employee_permissions`. `bootstrap` kini memakai `readTenantAccess` (satu baca settings) dan mengembalikan slice `userPermissions` pemanggil; `TenantContext` men-seed query baru itu. Tab Role `EmployeeRoleSettings.tsx`: daftar role jadi **strip geser horizontal** di `md`/`lg` (satu kolom, tak lagi overflow vertikal di layar pendek), master/detail berdampingan tetap hanya di `xl`, `Sheet` mobile tak berubah. Uji: unit `effectiveUserPermissions` (5 kasus) + `tests/permissions.e2e.ts` "per-employee permission exceptions" |
 | 2026-11-05 | — (working tree) | **Absensi geolokasi & pengenal wajah (skema v8)**. Library baru: `src/lib/geolocation.ts` (`getCurrentCoords`, `haversineMeters`, `withinRadius`, `formatDistance`) dan `src/lib/face.ts` (`@vladmandic/face-api` dimuat lazy, `captureDescriptor`, encode/decode descriptor 128-float, `bestMatch`) + `src/lib/workplace.ts` (daftar cabang/gudang ber-koordinat). Layar baru: `/absen` (`AttendanceCheckIn.tsx`, self-service, hard-block di luar radius & wajah tak cocok, kartu "Absensi/Presensi" selalu tampil di `ModeSelect`), `/backoffice/hr/face` (`FaceEnrollment.tsx`, owner mendaftarkan 4 sampel wajah → descriptor, hapus data). Dialog Cabang & Gudang menambahkan input lat/lng + radius + tombol "Pakai GPS sekarang" + switch `require_geo`/`require_face`. `EmployeeReports.tsx` menampilkan kolom Sumber/Lokasi/Geo/Wajah (di tabel & ekspor XLSX) dan capture GPS opsional di jalur override owner. Kunci izin baru `manage_attendance`. Model face-api di-vendor ke `public/models/`. Jarak & kecocokan dihitung di perangkat (audit, bukan paksaan DB); kamera/GPS butuh secure context |
 | 2026-11-05 | — (working tree) | `EmployeeReports.tsx` (Absensi & Libur): field Tanggal modal Tambah Absensi dikunci read-only ke hari berjalan WIB (`attendanceToday()`, UTC+7 — sejalan dengan trigger `trg_attendance_today_only` di skema v7), dengan validasi ganda sebelum insert; tab Libur mengganti array statis 2026 dengan `src/lib/holidays.ts` (API Tanggal Merah per tahun + fallback bawaan) lewat TanStack Query, lengkap pemilih tahun, badge Libur Nasional/Cuti Bersama, dan banner saat fallback dipakai |
@@ -354,7 +360,7 @@ sungguhan; langkah yang butuh ketepatan selector ditulis deterministik, langkah 
 
 | Aspek | Nilai |
 |---|---|
-| Berkas uji | `tests/**/*.e2e.ts` — 8 berkas, 49 test (44 `test` + 5 `test.setup`): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac`, `permissions` |
+| Berkas uji | `tests/**/*.e2e.ts` — 9 berkas, 58 test (53 `test` + 5 `test.setup` yang mengembang satu per akun): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac`, `permissions`, `bulk-import` |
 | Konfigurasi | `e2e.config.ts` |
 | Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `kasir`, `gudang`, `purchasing`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts`; dibuat oleh `npm run e2e:users` |
 | Target | `APP_URL`, default `http://localhost:8080` (`npm run dev`) |
@@ -399,6 +405,25 @@ Aturan yang dipakai di repo ini:
     sebagai karyawan role custom lalu lihat kartu POS" sengaja tidak ditranskripsi sebagai tes UI
     karena tidak didukung model sesi; perilaku itu dijamin oleh `rbac` peran builtin + unit test
     resolver (`permission-matrix.test.ts`), bukan diabaikan.
+11. **Teks yang sama boleh muncul dua kali di DOM kalau itu responsif.** Layar POS menyimpan
+    ringkasan keranjang di dua tempat (panel samping `hidden lg:flex` dan bar lengket `lg:hidden`),
+    sehingga `getByText('1 item')` menabrak aturan "tepat satu node". Yang benar adalah
+    `getByText('1 item', { visible: true })`: yang harus dibaca pernyataan adalah node yang sungguh
+    terlihat, bukan node pertama dalam urutan DOM.
+12. **Layout responsif diverifikasi dengan pengukuran, bukan tatapan.** Selain spot-check manual,
+    lebar 390/662/768/820/1024/1440 diuji lewat `playwright-core` (chromium milik `ms-playwright`,
+    tanpa paket `playwright`) yang membandingkan `document.documentElement.scrollWidth` dengan
+    `innerWidth` dan mencari elemen yang `getBoundingClientRect().right` melewati viewport. Itulah
+    cara cacat header `POSLayout` (855px pada 820px) ditemukan; angka scroll, bukan estetika, yang
+    memutuskan sebuah perubahan responsif lulus.
+13. **`npm run dev` + e2e menunjuk tenant demo cloud, bukan `.data/demo/thalia.db`.** Baris
+    `tenant_databases` untuk slug `thalia` menyimpan `db_hostname` Turso cloud, jadi database file
+    lokal dan shim `dev:db` :8090 tidak berada di jalur itu — id produk pun berbeda. Konsekuensinya:
+    `tenants.settings` adalah **snapshot**, sehingga perubahan default izin (atau `pricing.auto_pack_price`)
+    tidak sampai ke tenant yang diuji hanya dengan mengubah `src/config/roles.ts`. Kalau tes gagal
+    tanpa sebab di kode, jajak settings tenant lebih dulu; perbaiki non-destruktif dengan
+    menghapus key yang kedaluwarsa (mis. `role_permissions.cashier.view_dashboard`) — `npm run
+    demo:cloud` juga bisa, tetapi ia mengganti data demo dan mewajibkan `npm run e2e:users` lagi.
 
 Menjalankan:
 
@@ -442,6 +467,11 @@ Aturan yang dijamin resolver (dan diuji di `src/lib/permission-matrix.test.ts` +
 Cara menambah izin baru: satu entri di `PERMISSION_CATALOG` (key, label, hint) + nilai default
 di `DEFAULT_ROLE_PERMISSIONS` untuk peran yang berhak. Guard route, sidebar, pratinjau role,
 dan tes katalog membaca dari sana, jadi tidak ada daftar kedua yang bisa tertinggal.
+
+Cara **mencabut** default: `db/schema/seed.sql` menyimpan snapshot matriks penuh untuk tenant
+baru, dan dokumen `settings.role_permissions` menimpa default per kunci — jadi mencabut hanya di
+kode tidak mengubah apa pun untuk tenant yang sudah ada. Cabut di **dua** tempat (lihat kasus
+`cashier.view_dashboard`), dan `db/__tests__/seed.test.ts` akan menolak kalau keduanya berbeda.
 
 Bentuk penyimpanan `role_permissions` / `custom_roles` / `role_scopes` dan batas
 `mergeTenantSettings` (satu level, last-write-wins) dijelaskan di

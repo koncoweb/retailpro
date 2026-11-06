@@ -129,6 +129,13 @@ export interface CartItem {
   variant_id?: string | null;
   /** "Susu 250ml" for the cart line and the receipt. */
   variant_name?: string;
+  /**
+   * Set when the auto pack-price rule repriced a base-unit line to a bulk deal:
+   * the bulk pack that won and the rupiah saved. Display-only, never persisted;
+   * it exists so the cashier sees WHY the unit price dropped below the shelf.
+   */
+  auto_pack_unit?: string;
+  auto_pack_saving?: number;
   // The cashier never picks a batch: the tenant's issue policy (FIFO / LIFO /
   // FEFO, stored in `tenants.settings.inventory.stock_issue_method`) decides
   // which batch leaves first when the sale is committed.
@@ -146,6 +153,8 @@ export interface Transaction {
   status: 'completed' | 'void';
   created_at: string;
   items: TransactionItem[];
+  /** Joined from `users` by the transaction reports query; display only. */
+  cashier_name?: string | null;
 }
 
 export interface TransactionItem {

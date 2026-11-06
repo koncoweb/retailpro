@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bestPackPriceFor,
   exceedsVarianceTolerance,
   isBlockingIssue,
   packEconomics,
@@ -185,5 +186,60 @@ describe('price variance', () => {
     expect(exceedsVarianceTolerance(260_000, 265_000, 2)).toBe(false);
     expect(exceedsVarianceTolerance(260_000, 270_000, 2)).toBe(true);
     expect(exceedsVarianceTolerance(260_000, 250_000, 2)).toBe(true);
+  });
+});
+
+describe('bestPackPriceFor', () => {
+  const pcs = { unitName: 'Pcs', conversionFactor: 1, cost: 12_000, price: 15_000 };
+  const carton = { unitName: 'Karton', conversionFactor: 40, cost: 400_000, price: 500_000 };
+
+  it('prices an exact carton quantity at the cheaper carton total', () => {
+    const deal = bestPackPriceFor({ packs: [pcs, carton], baseQty: 40 });
+    expect(deal).not.toBeNull();
+    expect(deal!.unitName).toBe('Karton');
+    expect(deal!.total).toBe(500_000);
+    expect(deal!.perBase).toBe(12_500);
+    expect(deal!.saving).toBe(100_000);
+  });
+
+  it('takes two whole cartons for 80 pcs rather than one', () => {
+    const deal = bestPackPriceFor({ packs: [pcs, carton], baseQty: 80 });
+    expect(deal!.total).toBe(1_000_000);
+    expect(deal!.saving).toBe(200_000);
+  });
+
+  it('returns null when a single piece does not fill any bulk pack', () => {
+    expect(bestPackPriceFor({ packs: [pcs, carton], baseQty: 1 })).toBeNull();
+  });
+
+  it('fills the remainder at the base price for a non-exact quantity', () => {
+    // 41 pcs = 1 carton (500k) + 1 pcs (15k) against 41 x 15k = 615k.
+    const deal = bestPackPriceFor({ packs: [pcs, carton], baseQty: 41 });
+    expect(deal!.total).toBe(515_000);
+    expect(deal!.saving).toBe(100_000);
+  });
+
+  it('returns null when the bulk pack is not cheaper per unit', () => {
+    const priceyCarton = { unitName: 'Karton', conversionFactor: 40, cost: 0, price: 600_000 };
+    expect(bestPackPriceFor({ packs: [pcs, priceyCarton], baseQty: 40 })).toBeNull();
+  });
+
+  it('ignores a bulk pack with no sell price', () => {
+    const freeCarton = { unitName: 'Karton', conversionFactor: 40, cost: 0, price: 0 };
+    expect(bestPackPriceFor({ packs: [pcs, freeCarton], baseQty: 40 })).toBeNull();
+  });
+
+  it('never dips below the per-base cost floor', () => {
+    // Deal total 500k would be 12.5k/pc; a 13k floor lifts it back to 520k.
+    const deal = bestPackPriceFor({ packs: [pcs, carton], baseQty: 40, costFloorPerBase: 13_000 });
+    expect(deal!.perBase).toBe(13_000);
+    expect(deal!.saving).toBe(80_000);
+  });
+
+  it('treats a zero or NaN factor as the base unit', () => {
+    const broken = { unitName: 'Bugs', conversionFactor: 0, cost: 0, price: 20_000 };
+    const deal = bestPackPriceFor({ packs: [broken, carton], baseQty: 40 });
+    // base is factor-1 (20k/pc); carton (12.5k/pc) still wins at 500k.
+    expect(deal!.total).toBe(500_000);
   });
 });

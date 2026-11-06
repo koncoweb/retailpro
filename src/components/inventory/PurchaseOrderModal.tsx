@@ -464,6 +464,83 @@ export function PurchaseOrderModal({
   };
 
   /**
+   * "Isi dari template" seeds one line per (variant, pack) this vendor agreed
+   * in `vendor_price_list` — the price list IS the PO template, so this reuses
+   * the `agreedPrices` map already loaded for the picker instead of a new query
+   * or table. Quantity starts at the agreement's minimum, cost at the agreed
+   * buy price. Lines already on the draft are left untouched, and the order
+   * stays a draft: nothing here moves stock or books an expense.
+   */
+  const handleFillFromTemplate = () => {
+    if (!selectedVendor) {
+      toast.error("Pilih vendor terlebih dahulu.");
+      return;
+    }
+    const entries = Object.entries(agreedPrices);
+    if (entries.length === 0) {
+      toast.error("Vendor ini belum punya template harga.");
+      return;
+    }
+
+    const byVariant = new Map<string, { product: Product; variant: ProductVariantOption }>();
+    for (const product of filteredProducts) {
+      for (const variant of product.variants ?? []) {
+        byVariant.set(variant.id, { product, variant });
+      }
+    }
+
+    const next = [...items];
+    let added = 0;
+    for (const [key, agreed] of entries) {
+      const sep = key.indexOf("|");
+      if (sep < 0) continue;
+      const variantId = key.slice(0, sep);
+      const unitName = key.slice(sep + 1);
+      const match = byVariant.get(variantId);
+      if (!match || !unitName) continue;
+      const { product, variant } = match;
+
+      if (
+        next.some(
+          (item) =>
+            item.productId === product.id &&
+            (item.variantId ?? null) === variant.id &&
+            item.unitName === unitName
+        )
+      ) {
+        continue;
+      }
+
+      const pack = (variant.units ?? []).find((unit) => unit.name === unitName);
+      const conversionFactor = Number(pack?.conversion_factor ?? 1) || 1;
+      const cost =
+        agreed.buyPrice > 0 ? Math.round(agreed.buyPrice) : Math.round(baseCostOf(product) * conversionFactor);
+      const qty = agreed.minQty > 0 ? agreed.minQty : 1;
+
+      next.push({
+        productId: product.id,
+        productName: product.name,
+        sku: variant.sku ?? product.sku,
+        variantId: variant.id,
+        variantName: variantLabel(variant.attributes),
+        quantity: qty,
+        unitName,
+        conversionFactor,
+        unitCost: cost,
+        subtotal: Math.round(qty * cost),
+      });
+      added += 1;
+    }
+
+    if (added === 0) {
+      toast.info("Semua baris template sudah ada di order ini.");
+      return;
+    }
+    setItems(next);
+    toast.success(`${added} baris diisi dari template harga vendor.`);
+  };
+
+  /**
    * "Tambahkan Semua" fills the destination's shortfall, priced at this
    * vendor's last cost and in the product's own base unit — the old version
    * assumed every product was `Pcs` at the average cost.
@@ -788,6 +865,18 @@ export function PurchaseOrderModal({
                   </>
                 )}
               </p>
+            )}
+            {selectedVendor && Object.keys(agreedPrices).length > 0 && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-2 gap-2"
+                onClick={handleFillFromTemplate}
+              >
+                <Package className="h-4 w-4" />
+                Isi dari template harga vendor
+              </Button>
             )}
           </div>
 

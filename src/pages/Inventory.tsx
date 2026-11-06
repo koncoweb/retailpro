@@ -53,6 +53,7 @@ import { PurchaseOrderPanel } from "@/components/inventory/PurchaseOrderPanel";
 import type { VendorOption } from "@/components/inventory/PurchaseOrderModal";
 import { toast } from "sonner";
 import { query, parseJson, runTransaction, batchQuery } from "@/lib/db";
+import { generateNextSku, skuPrefixForCategory } from "@/lib/inventory-utils";
 import { logAudit, logAuditTx } from "@/lib/audit";
 import {
   WAREHOUSES_SQL,
@@ -550,6 +551,12 @@ export default function Inventory() {
     minStock: number;
     supplier: string;
   }>) => {
+    // The product template (variants, packs, prices) is owner-managed; refuse
+    // the bulk write without the key, mirroring handleSaveProduct.
+    if (!can("manage_variants")) {
+      toast.error("Tidak berwenang mengelola template produk.");
+      return;
+    }
     try {
       // Initial stock has to land in a real warehouse. Prefer the one the
       // signed-in user's branch sells from; an owner without a branch gets the
@@ -557,7 +564,39 @@ export default function Inventory() {
       const receivingWarehouseId =
         (await resolveBranchWarehouse(user?.assigned_branch_id ?? null)) ?? warehouses[0]?.id ?? null;
 
+      // Additive import: an existing SKU is never overwritten. Rows carrying a
+      // SKU already present (or repeated inside the file) are skipped; rows with
+      // a blank SKU get the next number the app mints for their category,
+      // continuing past what the database holds and advancing across the batch.
+      const existing = await query<{ sku: string }>(`SELECT sku FROM products`);
+      const existingSkus = new Set(existing.rows.map((r) => r.sku.toLowerCase()));
+      const today = new Date();
+      const lastByPrefix = new Map<string, string | null>();
+      const planned = new Set<string>();
+      const toInsert: Array<{ p: (typeof importedProducts)[number]; sku: string; auto: boolean }> = [];
+
       for (const p of importedProducts) {
+        const given = (p.sku || "").trim();
+        if (given) {
+          const key = given.toLowerCase();
+          if (existingSkus.has(key) || planned.has(key)) continue;
+          planned.add(key);
+          toInsert.push({ p, sku: given, auto: false });
+          continue;
+        }
+        const category = (p.category || "").trim() || "Umum";
+        const prefix = skuPrefixForCategory(category, today);
+        if (!lastByPrefix.has(prefix)) {
+          const same = existing.rows.map((r) => r.sku).filter((s) => s.startsWith(prefix)).sort();
+          lastByPrefix.set(prefix, same.length ? same[same.length - 1] : null);
+        }
+        const next = generateNextSku(category, today, lastByPrefix.get(prefix) ?? null);
+        lastByPrefix.set(prefix, next);
+        planned.add(next.toLowerCase());
+        toInsert.push({ p, sku: next, auto: true });
+      }
+
+      for (const { p, sku } of toInsert) {
         // Find or Create Supplier
         let supplierId: string | null = null;
         if (p.supplier) {
@@ -570,52 +609,28 @@ export default function Inventory() {
           }
         }
 
-        // Product row and its opening batch commit together, so an import can
-        // never leave a product behind with no stock record.
+        // Additive: this SKU is guaranteed new (conflicts were skipped above),
+        // so always insert rather than update. Product row and its opening
+        // batch commit together, so an import can never leave a product behind
+        // with no stock record.
         await runTransaction(async (tx) => {
-          let productId: string;
-          const existingRes = await tx.query<{ id: string }>("SELECT id FROM products WHERE sku = $1", [p.sku]);
-          if (existingRes.rows.length > 0) {
-            // Update
-            productId = existingRes.rows[0].id;
-            await tx.query(
-              `UPDATE products SET name=$1, category=$2, cost_price=$3, min_stock_level=$4, supplier_id=$5 WHERE sku=$6`,
-              [p.name, p.category, p.cost, p.minStock, supplierId, p.sku]
-            );
-          } else {
-            // Insert
-            const res = await tx.query<{ id: string }>(
-              `INSERT INTO products (sku, name, category, cost_price, min_stock_level, supplier_id) 
-               VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-              [p.sku, p.name, p.category, p.cost, p.minStock, supplierId]
-            );
-            productId = res.rows[0].id;
-          }
+          const res = await tx.query<{ id: string }>(
+            `INSERT INTO products (sku, name, category, cost_price, min_stock_level, supplier_id) 
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+            [sku, p.name, p.category, p.cost, p.minStock, supplierId]
+          );
+          const productId = res.rows[0].id;
 
           // Every product owns at least one variant. An imported row has no
           // attribute axes, so it becomes the single `Default` variant — the
           // same shape migration 006 backfills.
-          const existingVariantRes = await tx.query<{ id: string }>(
-            `SELECT id FROM product_variants WHERE product_id = $1 ORDER BY created_at ASC LIMIT 1`,
-            [productId]
+          const variantRes = await tx.query<{ id: string }>(
+            `INSERT INTO product_variants (product_id, sku, name, attributes, cost_price, price)
+             VALUES ($1, $2, 'Default', '{}', $3, $4)
+             RETURNING id`,
+            [productId, sku, p.cost, p.price]
           );
-
-          let variantId: string;
-          if (existingVariantRes.rows.length > 0) {
-            variantId = existingVariantRes.rows[0].id;
-            await tx.query(
-              `UPDATE product_variants SET sku=$1, cost_price=$2, price=$3 WHERE id=$4`,
-              [p.sku, p.cost, p.price, variantId]
-            );
-          } else {
-            const variantRes = await tx.query<{ id: string }>(
-              `INSERT INTO product_variants (product_id, sku, name, attributes, cost_price, price)
-               VALUES ($1, $2, 'Default', '{}', $3, $4)
-               RETURNING id`,
-              [productId, p.sku, p.cost, p.price]
-            );
-            variantId = variantRes.rows[0].id;
-          }
+          const variantId = variantRes.rows[0].id;
 
           // The factor-1 pack is where a product's buy and sell price live; a
           // product without one has no price the POS could charge.
@@ -648,7 +663,12 @@ export default function Inventory() {
           }
         });
       }
-      toast.success(`${importedProducts.length} produk berhasil diimport`);
+      const skipped = importedProducts.length - toInsert.length;
+      const autoCount = toInsert.filter((t) => t.auto).length;
+      const parts = [`${toInsert.length} produk ditambahkan`];
+      if (autoCount > 0) parts.push(`${autoCount} SKU dibuat otomatis`);
+      if (skipped > 0) parts.push(`${skipped} dilewati (SKU sudah ada/kembar)`);
+      toast.success(parts.join(" · "));
       fetchProducts();
     } catch (error) {
       console.error("Import failed:", error);
@@ -665,6 +685,12 @@ export default function Inventory() {
    * without packs, or stock that finance never recorded.
    */
   const handleSaveProduct = async (productData: ProductFormPayload) => {
+    // The product template (variants, packs, prices) is owner-managed. Hide the
+    // controls above, and refuse the write here so a stale tab cannot post.
+    if (!can("manage_variants")) {
+      toast.error("Tidak berwenang mengelola template produk.");
+      return;
+    }
     try {
       // The product row, its units, every stock movement and the expense booked
       // for new stock are one unit of work. This used to be a series of
@@ -1259,6 +1285,10 @@ export default function Inventory() {
   };
 
   const handleDeleteProduct = async (productId: string) => {
+    if (!can("manage_variants")) {
+      toast.error("Tidak berwenang menghapus produk.");
+      return;
+    }
     if (!confirm("Apakah Anda yakin ingin menghapus produk ini?")) return;
     try {
       // Deleting the product without its batches/units would leave stock rows
@@ -1333,10 +1363,12 @@ export default function Inventory() {
               }))} 
               onImport={handleImport} 
             />
-            <Button className="gap-2" onClick={() => setIsAddProductOpen(true)}>
-              <Plus className="w-4 h-4" />
-              Tambah Produk
-            </Button>
+            {can("manage_variants") && (
+              <Button className="gap-2" onClick={() => setIsAddProductOpen(true)}>
+                <Plus className="w-4 h-4" />
+                Tambah Produk
+              </Button>
+            )}
           </div>
         </div>
 
@@ -1594,28 +1626,35 @@ export default function Inventory() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem>
-                                <Eye className="w-4 h-4 mr-2" />
-                                Lihat Detail
-                              </DropdownMenuItem>
                               <DropdownMenuItem onClick={() => {
                                 setEditingProduct(product);
                                 setIsAddProductOpen(true);
                               }}>
-                                <Edit className="w-4 h-4 mr-2" />
-                                Edit
+                                <Eye className="w-4 h-4 mr-2" />
+                                Lihat Detail
                               </DropdownMenuItem>
+                              {can("manage_variants") && (
+                                <DropdownMenuItem onClick={() => {
+                                  setEditingProduct(product);
+                                  setIsAddProductOpen(true);
+                                }}>
+                                  <Edit className="w-4 h-4 mr-2" />
+                                  Edit
+                                </DropdownMenuItem>
+                              )}
                               <DropdownMenuItem onClick={() => setIsTransferOpen(true)}>
                                 <ArrowLeftRight className="w-4 h-4 mr-2" />
                                 Transfer Stok
                               </DropdownMenuItem>
-                              <DropdownMenuItem 
-                                className="text-destructive"
-                                onClick={() => handleDeleteProduct(product.id)}
-                              >
-                                <Trash2 className="w-4 h-4 mr-2" />
-                                Hapus
-                              </DropdownMenuItem>
+                              {can("manage_variants") && (
+                                <DropdownMenuItem 
+                                  className="text-destructive"
+                                  onClick={() => handleDeleteProduct(product.id)}
+                                >
+                                  <Trash2 className="w-4 h-4 mr-2" />
+                                  Hapus
+                                </DropdownMenuItem>
+                              )}
                             </DropdownMenuContent>
                           </DropdownMenu>
                         </TableCell>
@@ -1737,6 +1776,8 @@ export default function Inventory() {
         warehouses={warehouses}
         mode={editingProduct ? "edit" : "add"}
         initialData={editingProduct}
+        canManageVariants={can("manage_variants")}
+        canManageSellPrices={can("manage_sell_prices")}
       />
 
       <StockTransferModal

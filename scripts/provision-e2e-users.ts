@@ -16,6 +16,7 @@
  * Accounts (override the prefix with E2E_USER_PREFIX, the password with
  * E2E_STAFF_PASSWORD):
  *   e2e.admin@tokobahankue.com   tenant_admin  -> back office, HR, settings
+ *   e2e.manager@tokobahankue.com store_manager -> back office + money, no template rights
  *   e2e.kasir@tokobahankue.com   cashier       -> POS only
  *   e2e.gudang@tokobahankue.com  warehouse     -> stock documents only
  *   e2e.purchasing@tokobahankue.com purchasing  -> purchase orders + receiving
@@ -32,13 +33,14 @@ const RESET = process.argv.includes('--reset');
 interface TestAccount {
   local: string;
   name: string;
-  role: 'tenant_admin' | 'cashier' | 'warehouse' | 'purchasing';
+  role: 'tenant_admin' | 'store_manager' | 'cashier' | 'warehouse' | 'purchasing';
   /** Branch code from the tenant `branches` table; null means tenant-wide. */
   branch: string | null;
 }
 
 const ACCOUNTS: TestAccount[] = [
   { local: 'e2e.admin', name: 'Admin E2E', role: 'tenant_admin', branch: 'THL-01' },
+  { local: 'e2e.manager', name: 'Manager E2E', role: 'store_manager', branch: 'THL-01' },
   { local: 'e2e.kasir', name: 'Kasir E2E', role: 'cashier', branch: 'THL-01' },
   { local: 'e2e.gudang', name: 'Gudang E2E', role: 'warehouse', branch: 'THL-01' },
   { local: 'e2e.purchasing', name: 'Purchasing E2E', role: 'purchasing', branch: 'THL-01' },

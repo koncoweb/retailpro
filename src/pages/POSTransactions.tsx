@@ -20,6 +20,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Search,
   Download,
   Eye,
@@ -65,6 +71,10 @@ export default function POSTransactions() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [totals, setTotals] = useState({ count: 0, sales: 0, card: 0, wallet: 0 });
   const [isLoading, setIsLoading] = useState(true);
+  // The receipt view the Eye button never opened. One dialog serves both
+  // desktop (button) and mobile (tapping the whole card), sized to the
+  // viewport on phones so a long item list scrolls instead of overflowing.
+  const [detailTx, setDetailTx] = useState<Transaction | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -203,7 +213,7 @@ export default function POSTransactions() {
       "Invoice": trx.invoice_number,
       "Tanggal": new Date(trx.created_at).toLocaleDateString('id-ID'),
       "Waktu": new Date(trx.created_at).toLocaleTimeString('id-ID'),
-      "Kasir": (trx as any).cashier_name || "Unknown",
+      "Kasir": trx.cashier_name || "Unknown",
       "Customer": trx.customer_id || "Walk-in",
       "Cabang": getBranchName(trx.branch_id),
       "Pembayaran": trx.payment_method,
@@ -268,8 +278,10 @@ export default function POSTransactions() {
           </div>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Stats: "Rp 113.063.000" carries a non-breaking space, so a card
+            cannot shrink below ~220px. Two columns inside a 390px phone were
+            therefore pushed sideways; phones get one card per row. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <div className="bg-card rounded-xl border p-4 animate-fade-in">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-primary/10">
@@ -320,19 +332,19 @@ export default function POSTransactions() {
           </div>
         </div>
 
-        {/* Search & Filter */}
+        {/* Search & Filter: stacked full-width on phones, inline from sm. */}
         <div className="flex flex-col sm:flex-row gap-4">
-          <div className="relative flex-1 max-w-md">
+          <div className="relative flex-1 sm:max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
               placeholder="Cari transaksi..."
-              className="pl-10"
+              className="pl-10 text-base"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
           <Select value={selectedPayment} onValueChange={(v) => { setSelectedPayment(v); setPage(0); }}>
-            <SelectTrigger className="w-40">
+            <SelectTrigger className="w-full sm:w-40">
               <SelectValue placeholder="Pembayaran" />
             </SelectTrigger>
             <SelectContent>
@@ -344,7 +356,7 @@ export default function POSTransactions() {
             </SelectContent>
           </Select>
           <Select value={selectedBranch} onValueChange={(v) => { setSelectedBranch(v); setPage(0); }}>
-            <SelectTrigger className="w-40">
+            <SelectTrigger className="w-full sm:w-40">
               <SelectValue placeholder="Cabang" />
             </SelectTrigger>
             <SelectContent>
@@ -358,8 +370,13 @@ export default function POSTransactions() {
           </Select>
         </div>
 
-        {/* Transactions Table */}
-        <div className="bg-card rounded-xl border overflow-hidden animate-fade-in">
+        {/* Transactions: the eight-column table from md up; on phones each
+            transaction is a compact card that opens the same detail dialog,
+            because an eight-column grid over 360px is not a table, it is
+            homework. Between md and lg the eight columns still want ~896px, so
+            the wrapper scrolls sideways rather than clipping the status column
+            off-screen. */}
+        <div className="hidden md:block bg-card rounded-xl border overflow-x-auto animate-fade-in">
           <Table>
             <TableHeader>
               <TableRow>
@@ -403,7 +420,7 @@ export default function POSTransactions() {
                         <div>
                             <p className="font-medium">{trx.customer_id || "Walk-in Customer"}</p>
                             <p className="text-sm text-muted-foreground">
-                            {(trx as any).cashier_name || trx.cashier_id} • {branchName}
+                            {trx.cashier_name || trx.cashier_id} • {branchName}
                             </p>
                         </div>
                         </TableCell>
@@ -435,7 +452,7 @@ export default function POSTransactions() {
                         </TableCell>
                         <TableCell>
                         <div className="flex gap-1">
-                            <Button variant="ghost" size="icon">
+                            <Button variant="ghost" size="icon" onClick={() => setDetailTx(trx)}>
                             <Eye className="w-4 h-4" />
                             </Button>
                             <Button variant="ghost" size="icon">
@@ -451,6 +468,53 @@ export default function POSTransactions() {
           </Table>
         </div>
 
+        {/* <md: the same rows as cards; tap opens the receipt detail. */}
+        <div className="md:hidden space-y-3">
+          {transactions.length === 0 ? (
+            <div className="bg-card rounded-xl border p-8 text-center text-muted-foreground">
+              Tidak ada transaksi ditemukan
+            </div>
+          ) : (
+            transactions.map((trx) => {
+              const PaymentIcon = paymentIcons[trx.payment_method] || Receipt;
+              const totalItems = trx.items.reduce((sum, item) => sum + item.quantity, 0);
+              const date = new Date(trx.created_at);
+              return (
+                <button
+                  key={trx.id}
+                  onClick={() => setDetailTx(trx)}
+                  className="w-full text-left bg-card rounded-xl border p-3 active:bg-muted/50"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs text-primary truncate">{trx.invoice_number || trx.id}</span>
+                    <Badge
+                      variant={trx.status === "completed" ? "default" : "destructive"}
+                      className={
+                        trx.status === "completed"
+                          ? "bg-success/20 text-success hover:bg-success/30 shrink-0"
+                          : "shrink-0"
+                      }
+                    >
+                      {trx.status === "completed" ? "Selesai" : "Void"}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center justify-between mt-2">
+                    <div className="text-xs text-muted-foreground">
+                      {date.toLocaleDateString('id-ID')} {date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                      {' · '}
+                      <span className="inline-flex items-center gap-1 capitalize">
+                        <PaymentIcon className="w-3.5 h-3.5" />{trx.payment_method}
+                      </span>
+                      {' · '}{totalItems} item
+                    </div>
+                    <p className="font-bold text-sm ml-2">{formatCurrency(trx.total_amount)}</p>
+                  </div>
+                </button>
+              );
+            })
+          )}
+        </div>
+
         {/* Pagination: the list is server-paged so a long history never loads
             all at once. */}
         <PaginationBar
@@ -461,6 +525,65 @@ export default function POSTransactions() {
           label="transaksi"
         />
       </div>
+
+      {/* Receipt detail: full-bleed on phones (`w-[95vw]`), bounded from sm. */}
+      <Dialog open={!!detailTx} onOpenChange={(open) => { if (!open) setDetailTx(null); }}>
+        <DialogContent className="w-[95vw] max-w-[95vw] sm:max-w-[520px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Receipt className="w-5 h-5" />
+              Detail Transaksi
+            </DialogTitle>
+          </DialogHeader>
+          {detailTx && (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <p className="text-xs text-muted-foreground">Invoice</p>
+                  <p className="font-medium break-all">{detailTx.invoice_number || detailTx.id}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Tanggal</p>
+                  <p>{new Date(detailTx.created_at).toLocaleString('id-ID')}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Kasir</p>
+                  <p>{detailTx.cashier_name || detailTx.cashier_id}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Cabang</p>
+                  <p>{getBranchName(detailTx.branch_id)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Pembayaran</p>
+                  <p className="capitalize">{detailTx.payment_method}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Status</p>
+                  <p>{detailTx.status === "completed" ? "Selesai" : "Void"}</p>
+                </div>
+              </div>
+              <div className="border rounded-lg divide-y">
+                {detailTx.items.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between gap-2 p-2 text-sm">
+                    <div className="min-w-0">
+                      <p className="truncate">{item.product_name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {item.quantity}{item.unit_name ? ` ${item.unit_name}` : ""} × {formatCurrency(item.unit_price)}
+                      </p>
+                    </div>
+                    <p className="font-medium shrink-0">{formatCurrency(item.subtotal)}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="flex justify-between text-lg font-bold border-t pt-3">
+                <span>Total</span>
+                <span className="text-primary">{formatCurrency(detailTx.total_amount)}</span>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </POSLayout>
   );
 }

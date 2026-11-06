@@ -147,7 +147,15 @@ export function usePermissions(): PermissionsApi {
 
   // Loading is only true while the very first read is in flight. `bootstrap`
   // seeds this cache, so a normal sign-in never paints an unknown state.
-  const loading = isLoading && data === undefined;
+  //
+  // `isLoading` alone is not enough: a query that is still `enabled: false`
+  // (no tenant session yet, which is every hard page reload until
+  // `/api/tenant/bootstrap` answers) reports *not* loading and no data. The
+  // mode chooser read that as "this role is unknown" and showed
+  // "Belum ada layar untuk Anda" for a second or two — an alarming, false
+  // answer about somebody's own access. Unknown without a read in flight is
+  // therefore still "still loading".
+  const loading = data === undefined && (!getTenantSession() || isLoading);
 
   const can = useCallback(
     (permission: string) => (loading ? false : granted[permission] === true),

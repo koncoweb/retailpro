@@ -403,3 +403,39 @@ describe('custom role lifecycle', { tags: ['permissions'], agentContext: APP_CON
     expect(await findCustomRoleKeyByLabel(label)).toBe(roleKey);
   });
 });
+
+/**
+ * The product/vendor template gating from plan G1, proven through the real
+ * screens a store manager actually reaches.
+ *
+ * `store_manager` holds `view_finance` and `view_inventory`, so it opens both
+ * the Vendors and Inventory screens, but it is default-closed for the three
+ * template permissions (`manage_variants`, `manage_vendor_prices`,
+ * `manage_sell_prices`). Gating is on mutations only, so the negative signal is
+ * that the create/edit *entry points* are gone — a manager cannot open the
+ * product or vendor form at all, which is stronger than a disabled field.
+ * Read access stays intact, and this asserts the manager can still load both
+ * pages.
+ */
+describe('template permissions are owner-only (store manager view)', { tags: ['permissions'], agentContext: APP_CONTEXT }, () => {
+  test('a store manager sees vendor/product create/edit controls removed but keeps read access', { session: 'manager' }, async ({ app, screen, browser }) => {
+    // Vendors is reachable via view_finance, but "Tambah Vendor" is gated by
+    // manage_vendor_prices, so it is absent for this role.
+    await app.open('/backoffice/vendors');
+    await expect(screen.getByRole('heading', 'Vendor', { level: 1 })).toBeVisible();
+    await expect(screen.getByRole('button', 'Tambah Vendor')).toBeHidden();
+
+    // So is the per-row edit (its accessible name comes from the `title`
+    // attribute) — the whole mutation surface is withdrawn, yet the table itself
+    // still renders for reading.
+    await expect(screen.getByRole('button', { name: 'Edit', exact: true })).toBeHidden();
+
+    // Inventory is reachable via view_inventory, but the product template is
+    // gated by manage_variants: no "Tambah Produk", and the page still loads.
+    await app.open('/backoffice/inventory/products');
+    await expect(screen.getByRole('heading', 'Inventory Produk', { level: 1 })).toBeVisible();
+    await expect(screen.getByRole('button', 'Tambah Produk')).toBeHidden();
+
+    await expect(browser).toHaveURL('/backoffice/inventory/products');
+  });
+});

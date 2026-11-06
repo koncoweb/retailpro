@@ -275,7 +275,11 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     // ...others false
   },
   cashier: {
-    view_dashboard: true,
+    // Transact, nothing else. `view_dashboard` used to be on here, which
+    // handed cashiers the whole back-office reading list; the till's own
+    // transaction book stays reachable through `access_pos` (App.tsx guards
+    // /pos/transactions with anyOf). An owner can still switch dashboard
+    // viewing back on per role in the matrix.
     access_pos: true,
     apply_discount: false,
     // ...others false

@@ -16,7 +16,7 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await expect(screen.getByRole('heading', 'Manajemen Shift', { level: 1 })).toBeVisible();
 
     if (await screen.getByText('Buka Shift Baru').isVisible()) {
-      await screen.getByPlaceholder('Contoh: 200000').fill('200000');
+      await screen.getByPlaceholder('Contoh: 200000 (0 = tanpa uang tunai)').fill('200000');
       await screen.getByRole('button', 'Buka Shift Sekarang').tap();
     }
     await expect(screen.getByText('Shift Aktif')).toBeVisible();
@@ -32,7 +32,9 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     const units = screen.getByRole('dialog', { name: /Pilih Satuan/ });
     await units.getByRole('button', { name: /Satuan Dasar/ }).tap();
 
-    await expect(screen.getByText('1 item')).toBeVisible();
+    // `visible: true` because the count prints twice from lg up: the side panel
+    // the cashier sees and the sticky summary bar that only shows below lg.
+    await expect(screen.getByText('1 item', { visible: true })).toBeVisible();
 
     // 3. Pay cash, exactly the amount due.
     await screen.getByRole('button', { name: /^Bayar / }).tap();
@@ -64,7 +66,7 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await app.open('/pos/shifts');
     await expect(screen.getByRole('heading', 'Manajemen Shift', { level: 1 })).toBeVisible();
     if (await screen.getByText('Buka Shift Baru').isVisible()) {
-      await screen.getByPlaceholder('Contoh: 200000').fill('200000');
+      await screen.getByPlaceholder('Contoh: 200000 (0 = tanpa uang tunai)').fill('200000');
       await screen.getByRole('button', 'Buka Shift Sekarang').tap();
     }
     await expect(screen.getByText('Shift Aktif')).toBeVisible();
@@ -96,7 +98,7 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await expect(packs).toBeHidden();
 
     // The line keeps the flavour beside the product and is priced as Cokelat.
-    await expect(screen.getByText('1 item')).toBeVisible();
+    await expect(screen.getByText('1 item', { visible: true })).toBeVisible();
     await expect(screen.getByText('Cokelat', { exact: true })).toBeVisible();
     await expect(screen.getByText('kaleng', { exact: true })).toBeVisible();
     await expect(screen.getByText(/16\.000/).first()).toBeVisible();
@@ -110,5 +112,94 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await expect(
       screen.getByText('Shift Aktif').or(screen.getByText('Shift Ditutup')),
     ).toBeVisible();
+  });
+
+  /**
+   * "Sold by piece, priced like a carton" (plan G5).
+   *
+   * Box Kue 20x20 is stocked per `pcs` (Rp7.000) and per `dus` of 50 (Rp215.000).
+   * The Thalia demo turns on `pricing.auto_pack_price`, so once the cashier
+   * takes a full dus worth of pieces the till must drop the LINE PRICE to the
+   * pack deal while the line stays `pcs` with conversion factor 1 — stock drain,
+   * the cart merge key and the receipt therefore behave exactly as a normal
+   * piece sale. Only the price moves.
+   */
+  test('a full carton of pieces is auto-priced like the carton', { session: 'kasir' }, async ({ app, screen }) => {
+    await app.open('/pos/shifts');
+    await expect(screen.getByRole('heading', 'Manajemen Shift', { level: 1 })).toBeVisible();
+    if (await screen.getByText('Buka Shift Baru').isVisible()) {
+      await screen.getByPlaceholder('Contoh: 200000 (0 = tanpa uang tunai)').fill('200000');
+      await screen.getByRole('button', 'Buka Shift Sekarang').tap();
+    }
+    await expect(screen.getByText('Shift Aktif')).toBeVisible();
+
+    await app.open('/pos');
+    const search = screen.getByPlaceholder('Cari produk...');
+    await expect(search).toBeVisible();
+    await search.fill('Box Kue 20x20 Putih');
+    await screen.getByRole('button', { name: /Box Kue 20x20 Putih/ }).tap();
+
+    // Sell it by the piece — the smallest pack, never the dus.
+    const units = screen.getByRole('dialog', { name: /Pilih Satuan/ });
+    await units.getByRole('button', { name: /Satuan Dasar/ }).tap();
+    await expect(units).toBeHidden();
+
+    // One piece is not a carton yet: the line stays at the shelf price, pcs.
+    await expect(screen.getByText('1 item', { visible: true })).toBeVisible();
+    await expect(screen.getByText('pcs', { exact: true })).toBeVisible();
+    await expect(screen.getByText(/otomatis/)).toBeHidden();
+
+    // Take a full dus worth (50 pcs). Only the cart line's quantity input is a
+    // number spinbutton on this screen, so this locator is unambiguous.
+    await screen.getByRole('spinbutton').fill('50');
+
+    // The advisor fires: the price dropped to the pack deal, but the unit is
+    // still the base `pcs` — the carton was never added as its own line.
+    await expect(screen.getByText(/otomatis/)).toBeVisible();
+    await expect(screen.getByText('pcs', { exact: true })).toBeVisible();
+    await expect(screen.getByText('dus', { exact: true })).toBeHidden();
+    // 50 pcs at the floored carton deal = Rp225.000, not 50 x Rp7.000 = Rp350.000.
+    await expect(screen.getByText(/Total: .*225\.000/)).toBeVisible();
+  });
+
+  /**
+   * Shift = kehadiran (§2 of the POS hardening plan), in both directions.
+   *
+   * An empty drawer is a normal Monday, so `Rp0` has to open the shift, and the
+   * same click has to put the day's check-in in the attendance table — the
+   * cashier sees it on their own /absen screen, labelled as coming from the
+   * shift rather than from a forgotten GPS punch.
+   */
+  test('an empty drawer opens the shift and books the day\'s check-in', { session: 'kasir' }, async ({ app, screen }) => {
+    await app.open('/pos/shifts');
+    await expect(screen.getByRole('heading', 'Manajemen Shift', { level: 1 })).toBeVisible();
+
+    // Whatever a previous run left open is closed first, so the Rp0 opening
+    // below is really exercised instead of skipped.
+    const openingForm = screen.getByText('Buka Shift Baru');
+    if ((await openingForm.isVisible()) === false) {
+      await screen.getByPlaceholder('Masukkan total uang tunai yang ada...').fill('0');
+      await screen.getByRole('button', 'Konfirmasi Tutup Shift').tap();
+    }
+    await expect(openingForm).toBeVisible();
+
+    await screen.getByRole('button', 'Rp0 (tanpa tunai)').tap();
+    await screen.getByRole('button', 'Buka Shift Sekarang').tap();
+
+    // One message proves both halves: the empty drawer was accepted (the old
+    // `<= 0` validation refused to even try) and the check-in was booked.
+    await expect(
+      screen.getByText(/Shift berhasil dibuka tanpa uang tunai awal/)
+    ).toBeVisible();
+    await expect(
+      screen.getByText(/Absensi tercatat otomatis|Absensi hari ini sudah tercatat/)
+    ).toBeVisible();
+    await expect(screen.getByText('Shift Aktif')).toBeVisible();
+
+    // The attendance half of the same click, on the cashier's own screen.
+    await app.open('/absen');
+    await expect(screen.getByText('Status hari ini')).toBeVisible();
+    await expect(screen.getByText(/^Masuk \d{2}:\d{2}$/)).toBeVisible();
+    await expect(screen.getByText('Otomatis dari buka shift')).toBeVisible();
   });
 });

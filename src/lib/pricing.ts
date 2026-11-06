@@ -288,3 +288,95 @@ export function exceedsVarianceTolerance(
 ): boolean {
   return Math.abs(priceVariancePercent(agreed, invoiced)) > tolerancePercent;
 }
+
+export interface BestPackPriceArgs {
+  /** Every pack of this variant, each carrying its per-pack sell `price`. */
+  packs: readonly PackInput[];
+  /** How many base units the customer is buying (e.g. 40 pcs). */
+  baseQty: number;
+  /**
+   * Never let the auto price fall below this per-base cost. Typically the
+   * derived `product_units.cost / factor` of the base pack, so a volume
+   * discount can never be booked as a loss by accident.
+   */
+  costFloorPerBase?: number;
+}
+
+export interface BestPackPrice {
+  /** The bulk pack that wins, for the cashier's badge label. */
+  unitName: string;
+  /** Total sell price for `baseQty` after trading up to the bulk pack. */
+  total: number;
+  /** `total / baseQty`, rounded to whole rupiah. */
+  perBase: number;
+  /** Rupiah saved against buying everything at the base pack price. */
+  saving: number;
+}
+
+/**
+ * "Sold by piece, but priced like a carton."
+ *
+ * When a customer takes enough base units to fill a bigger pack, and that pack
+ * is genuinely cheaper per unit, this returns the bulk deal so POS can drop
+ * the LINE PRICE while keeping the unit as the base pack (pcs). It never
+ * merges or splits the cart line — only the price changes.
+ *
+ * Method: for each bulk pack, use as many whole packs as fit and price the
+ * remainder at the base (smallest-factor) pack, then keep the cheapest total
+ * that is strictly better than pricing everything at base. Returns null when
+ * nothing beats the base price, so callers fall back to the verbatim pack.
+ */
+export function bestPackPriceFor({
+  packs,
+  baseQty,
+  costFloorPerBase,
+}: BestPackPriceArgs): BestPackPrice | null {
+  const qty = Number(baseQty);
+  if (!Number.isFinite(qty) || qty <= 0) return null;
+
+  const priced = packs
+    .map((pack) => ({ pack, factor: factorOf(pack), price: Number(pack.price) || 0 }))
+    .filter((entry) => entry.price > 0);
+  if (priced.length === 0) return null;
+
+  // The base (retail) pack is the smallest factor; its per-unit price is the
+  // reference everything else must beat.
+  const base = priced.reduce((smallest, entry) =>
+    entry.factor < smallest.factor ? entry : smallest
+  );
+  const basePerUnit = base.price / base.factor;
+  const allBaseTotal = basePerUnit * qty;
+
+  let best: { entry: (typeof priced)[number]; total: number } | null = null;
+  for (const entry of priced) {
+    if (entry.factor <= base.factor) continue;
+    const whole = Math.floor(qty / entry.factor);
+    if (whole <= 0) continue;
+    const remainder = qty - whole * entry.factor;
+    const total = whole * entry.price + remainder * basePerUnit;
+    // Strictly cheaper, otherwise a same-priced pack is not a deal.
+    if (total < allBaseTotal - 1 && (!best || total < best.total)) {
+      best = { entry, total };
+    }
+  }
+  if (!best) return null;
+
+  let total = money(best.total);
+  // A volume discount may not dip below cost: clamp to the floor and re-check
+  // that the deal is still better than the base price after clamping.
+  const floor = Number(costFloorPerBase);
+  if (Number.isFinite(floor) && floor > 0) {
+    const minTotal = money(floor * qty);
+    if (total < minTotal) total = minTotal;
+  }
+
+  const saving = money(allBaseTotal - total);
+  if (saving <= 0) return null;
+
+  return {
+    unitName: best.entry.pack.unitName,
+    total,
+    perBase: money(total / qty),
+    saving,
+  };
+}

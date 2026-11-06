@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { PermissionGate } from "@/components/auth/PermissionGate";
 import { useAuth } from "@/hooks/use-auth";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
@@ -34,12 +34,24 @@ import {
   ShoppingBag,
   Calendar,
   Download,
+  Upload,
+  FileSpreadsheet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { query, batchQuery } from "@/lib/db";
 import { PaginationBar } from "@/components/ui/pagination-bar";
 import { logAudit } from "@/lib/audit";
 import * as XLSX from "xlsx";
+import {
+  CUSTOMER_COLUMNS,
+  CUSTOMER_TEMPLATE_ROWS,
+  dateStamp,
+  downloadCsv,
+  downloadXlsx,
+  normalizeRows,
+  readRows,
+  resolveCollisions,
+} from "@/lib/bulk-io";
 
 /** Rows per page for the customer list. */
 const PAGE_SIZE = 25;
@@ -67,6 +79,7 @@ export default function Customers() {
   const [searchTerm, setSearchTerm] = useState("");
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Dialog State
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -261,9 +274,10 @@ export default function Customers() {
         details: { name },
         userId: user?.id
       });
-    } catch (error: any) {
+    } catch (error) {
       console.error("Failed to delete customer:", error);
-      if (error.message?.includes("violates foreign key constraint")) {
+      const message = error instanceof Error ? error.message : "";
+      if (message.includes("violates foreign key constraint")) {
         toast.error("Tidak dapat menghapus pelanggan karena memiliki riwayat transaksi.");
       } else {
         toast.error("Gagal menghapus pelanggan");
@@ -307,6 +321,101 @@ export default function Customers() {
     toast.success("Berhasil export data pelanggan");
   };
 
+  const customerToRow = (c: Customer): Record<string, string> => ({
+    name: c.name,
+    phone: c.phone ?? "",
+    email: c.email ?? "",
+    address: "",
+    notes: c.preferences?.notes ?? "",
+  });
+
+  // CSV export is import-shaped so a downloaded file can be edited and pushed
+  // back; the Excel export above stays a full report with the derived columns.
+  const handleExportCsv = () => {
+    if (customers.length === 0) {
+      toast.error("Tidak ada data pelanggan untuk diexport");
+      return;
+    }
+    downloadCsv(`Data_Pelanggan_${dateStamp()}.csv`, customers.map(customerToRow), CUSTOMER_COLUMNS);
+    toast.success("Export CSV berhasil");
+  };
+
+  const handleTemplate = (format: "xlsx" | "csv") => {
+    const filename = `template_pelanggan.${format}`;
+    if (format === "csv") downloadCsv(filename, CUSTOMER_TEMPLATE_ROWS, CUSTOMER_COLUMNS);
+    else downloadXlsx(filename, CUSTOMER_TEMPLATE_ROWS, CUSTOMER_COLUMNS, "Template");
+    toast.success("Template berhasil didownload");
+  };
+
+  /**
+   * Additive bulk import. A customer has no human ID, so "no collision" means
+   * de-duplication: a row whose phone (or name, when phone is blank) already
+   * exists in the database, or repeats in the file, is skipped rather than
+   * creating a duplicate.
+   */
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    if (!file) return;
+
+    try {
+      const raw = await readRows(file);
+      const parsed = normalizeRows(raw, CUSTOMER_COLUMNS).map((r) => ({
+        name: (r.name || "").trim(),
+        phone: (r.phone || "").trim(),
+        email: (r.email || "").trim(),
+        address: (r.address || "").trim(),
+        notes: (r.notes || "").trim(),
+      }));
+
+      const valid = parsed.filter(
+        (c) => c.name && (!c.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c.email))
+      );
+      const invalid = parsed.length - valid.length;
+
+      const ex = await query<{ name: string; phone: string | null }>("SELECT name, phone FROM customers");
+      const existing = new Set<string>();
+      ex.rows.forEach((row) => {
+        if (row.phone) existing.add(row.phone.toLowerCase());
+        existing.add(row.name.toLowerCase());
+      });
+
+      const { fresh, conflicts } = resolveCollisions({
+        incoming: valid,
+        keysOf: (c) => [c.phone || c.name],
+        existingKeys: existing,
+      });
+
+      let added = 0;
+      for (const c of fresh) {
+        const preferences = JSON.stringify({ notes: c.notes });
+        await query(
+          `INSERT INTO customers (name, phone, email, address, preferences, total_spent)
+           VALUES ($1, $2, $3, $4, $5, 0)`,
+          [c.name, c.phone || null, c.email || null, c.address || null, preferences]
+        );
+        added++;
+      }
+
+      const parts = [`${added} pelanggan ditambahkan`];
+      if (conflicts.length > 0) parts.push(`${conflicts.length} dilewati (sudah ada)`);
+      if (invalid > 0) parts.push(`${invalid} baris tidak valid dibuang`);
+      (added > 0 ? toast.success : toast)(parts.join(" · "));
+
+      await logAudit({
+        action: "create",
+        entity: "customers",
+        entityId: "bulk-import",
+        details: { added, skipped: conflicts.length, invalid },
+        userId: user?.id,
+      });
+      fetchCustomers();
+    } catch (error) {
+      console.error("Customer import failed:", error);
+      toast.error("Gagal mengimport pelanggan");
+    }
+  };
+
   return (
     <BackOfficeLayout>
       <div className="flex flex-col gap-6">
@@ -333,12 +442,47 @@ export default function Customers() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,.xlsx,.xls"
+            onChange={handleImportFile}
+            className="hidden"
+          />
+          <PermissionGate permission="view_finance">
+            <Button variant="outline" className="gap-2" onClick={() => fileInputRef.current?.click()}>
+              <Upload className="w-4 h-4" />
+              Import
+            </Button>
+          </PermissionGate>
           <PermissionGate permission="export_reports">
             <Button variant="outline" className="gap-2" onClick={handleExport}>
               <Download className="w-4 h-4" />
               Export Excel
             </Button>
+            <Button variant="outline" className="gap-2" onClick={handleExportCsv}>
+              <Download className="w-4 h-4" />
+              Export CSV
+            </Button>
           </PermissionGate>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1 text-muted-foreground"
+            onClick={() => handleTemplate("csv")}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            Template CSV
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1 text-muted-foreground"
+            onClick={() => handleTemplate("xlsx")}
+          >
+            <FileSpreadsheet className="w-4 h-4" />
+            Template Excel
+          </Button>
         </div>
 
         <div className="rounded-md border bg-card">

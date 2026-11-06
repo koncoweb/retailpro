@@ -81,6 +81,8 @@ interface AttendanceRow {
   check_out: string | null;
   status: string;
   source: string | null;
+  /** Why the row exists — e.g. `Otomatis dari buka shift` from the POS. */
+  notes?: string | null;
 }
 
 /** The running WIB date + clock, matching the DB trigger's day. */
@@ -125,7 +127,7 @@ export default function AttendanceCheckIn() {
       if (!user) return null;
       const { date } = wibParts();
       const res = await query<Record<string, unknown>>(
-        `SELECT id, date, check_in, check_out, status, source
+        `SELECT id, date, check_in, check_out, status, source, notes
          FROM attendance WHERE employee_id = $1 AND date = $2 LIMIT 1`,
         [user.id, date]
       );
@@ -138,6 +140,7 @@ export default function AttendanceCheckIn() {
             check_out: r.check_out ? String(r.check_out) : null,
             status: String(r.status),
             source: r.source ? String(r.source) : null,
+            notes: r.notes ? String(r.notes) : null,
           } as AttendanceRow)
         : null;
     },
@@ -404,12 +407,20 @@ export default function AttendanceCheckIn() {
             <div>
               <p className="text-sm text-muted-foreground">Status hari ini</p>
               {today ? (
-                <div className="mt-1 flex items-center gap-2">
-                  <Badge className="bg-success/20 text-success">
-                    Masuk {today.check_in ?? "-"}
-                  </Badge>
-                  {today.check_out ? (
-                    <Badge className="bg-info/20 text-info">Pulang {today.check_out}</Badge>
+                <div className="mt-1 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Badge className="bg-success/20 text-success">
+                      Masuk {today.check_in ?? "-"}
+                    </Badge>
+                    {today.check_out ? (
+                      <Badge className="bg-info/20 text-info">Pulang {today.check_out}</Badge>
+                    ) : null}
+                  </div>
+                  {/* Say where the day came from: a shift-written check-in is
+                      not a forgotten /absen punch, and the person should be
+                      able to see that without asking the owner. */}
+                  {today.notes ? (
+                    <p className="text-xs text-muted-foreground">{today.notes}</p>
                   ) : null}
                 </div>
               ) : (

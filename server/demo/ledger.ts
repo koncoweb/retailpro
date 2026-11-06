@@ -341,6 +341,9 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       receipt: { footer: 'Terima kasih, selamat memanggang!', show_logo: true },
       bank: { name: 'BCA', account_number: '437 0012 889', account_holder: identity.owner.name },
       payroll_config: { overtime_rate: 1.5, work_hours_per_day: 8, work_days_per_month: 22 },
+      // Thalia sells by the piece but honours the case price automatically once
+      // enough pieces fill a carton, so the demo shows the auto pack-price rule.
+      pricing: { auto_pack_price: true },
     }),
     identity.tenantId,
   ]);

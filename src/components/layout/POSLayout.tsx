@@ -1,13 +1,12 @@
-import { ReactNode, useState, useEffect } from "react";
+import { ReactNode } from "react";
 // Layout component for Point of Sale pages
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { ShoppingCart, FileText, Clock, LogOut, Store, Moon, Sun, MapPin, ArrowLeftRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/hooks/use-theme";
-import { useAuth } from "@/hooks/use-auth";
 import { useSignOut } from "@/hooks/use-sign-out";
-import { query } from "@/lib/db";
+import { usePosBranch } from "@/hooks/use-pos-branch";
 
 interface POSLayoutProps {
   children: ReactNode;
@@ -22,51 +21,23 @@ const posNavItems = [
 export function POSLayout({ children }: POSLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
-  const { user } = useAuth();
   const signOut = useSignOut();
-  const [branchName, setBranchName] = useState<string>("Loading...");
-
-  useEffect(() => {
-    const fetchBranch = async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const branchId = (user as any)?.assigned_branch_id;
-      
-      if (branchId) {
-        try {
-          const res = await query('SELECT name FROM branches WHERE id = $1', [branchId]);
-          if (res.rows.length > 0) {
-            setBranchName(res.rows[0].name);
-          } else {
-             setBranchName("Unknown Branch");
-          }
-        } catch (err) {
-          console.error("Failed to fetch branch:", err);
-          setBranchName("Error loading branch");
-        }
-      } else {
-        // Fallback if no assigned branch
-        try {
-            const res = await query('SELECT name FROM branches LIMIT 1');
-            if (res.rows.length > 0) {
-                setBranchName(res.rows[0].name);
-            } else {
-                setBranchName("RetailPro");
-            }
-        } catch (e) {
-            setBranchName("RetailPro");
-        }
-      }
-    };
-
-    fetchBranch();
-  }, [user]);
+  // The header names the same branch the till and the shift desk are using.
+  // It used to run its own `assigned_branch_id` query, which could disagree
+  // with both — the label then lied about where a shift was being opened.
+  const { branchName, loading: branchLoading } = usePosBranch();
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
       {/* POS Header */}
-      <header className="h-14 bg-card border-b flex items-center justify-between px-4">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2">
+      {/* The inline tabs need room the tablet classes never had: at `md` (768px)
+         brand + branch + three tabs + the action buttons measured 855px, which
+         pushed the whole header past the viewport and gave every POS screen a
+         horizontal scrollbar. Tabs therefore start at `lg`, and the compact bar
+         below covers everything under it. */}
+      <header className="h-14 bg-card border-b flex items-center justify-between gap-2 px-4">
+        <div className="flex min-w-0 items-center gap-4">
+          <div className="flex shrink-0 items-center gap-2">
             <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center">
               <Store className="w-5 h-5 text-primary-foreground" />
             </div>
@@ -74,12 +45,12 @@ export function POSLayout({ children }: POSLayoutProps) {
             <span className="text-xs bg-primary/20 text-primary px-2 py-0.5 rounded-full">POS</span>
           </div>
           
-          <div className="hidden md:flex items-center gap-2 text-sm text-muted-foreground border-l pl-4 ml-2">
-            <MapPin className="w-4 h-4" />
-            <span>{branchName}</span>
+          <div className="hidden lg:flex min-w-0 items-center gap-2 text-sm text-muted-foreground border-l pl-4 ml-2">
+            <MapPin className="w-4 h-4 shrink-0" />
+            <span className="truncate">{branchLoading ? "Memuat…" : branchName ?? "RetailPro"}</span>
           </div>
 
-          <nav className="hidden md:flex items-center gap-1 ml-4">
+          <nav className="hidden lg:flex shrink-0 items-center gap-1 ml-4">
             {posNavItems.map((item) => (
               <Link
                 key={item.path}
@@ -98,7 +69,7 @@ export function POSLayout({ children }: POSLayoutProps) {
           </nav>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <Button
             variant="ghost"
             size="icon"
@@ -125,8 +96,8 @@ export function POSLayout({ children }: POSLayoutProps) {
         </div>
       </header>
 
-      {/* Mobile Navigation */}
-      <div className="md:hidden flex items-center justify-center gap-2 p-2 border-b bg-card">
+      {/* Navigation */}
+      <div className="lg:hidden flex items-center justify-center gap-2 p-2 border-b bg-card">
         {posNavItems.map((item) => (
           <Link
             key={item.path}

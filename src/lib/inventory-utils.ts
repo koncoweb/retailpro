@@ -1,8 +1,24 @@
 
 /**
+ * The stable head of a generated SKU: `PREFIX-YYYYMMDD-`.
+ *
+ * Exported so a bulk import can look up the last SKU the app minted for a
+ * category on a given day (a `LIKE prefix%` query) and continue that sequence,
+ * instead of colliding with what already exists.
+ */
+export function skuPrefixForCategory(categoryName: string, date: Date): string {
+  let prefix = categoryName.substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, "CAT");
+  if (prefix.length < 3) {
+    prefix = prefix.padEnd(3, 'X');
+  }
+  const dateStr = date.toISOString().slice(0, 10).replace(/-/g, "");
+  return `${prefix}-${dateStr}-`;
+}
+
+/**
  * Generates a new SKU based on the category, date, and the last known SKU sequence.
- * Format: KAT-YYMMDD-XXX
- * 
+ * Format: PREFIX-YYYYMMDD-XXX
+ *
  * @param categoryName - The name of the category (e.g., "Electronics")
  * @param date - The date object to use for generation
  * @param lastSku - The last SKU found in the database for this pattern (or null/undefined if none)
@@ -11,16 +27,7 @@
 export function generateNextSku(categoryName: string, date: Date, lastSku?: string | null): string {
   if (!categoryName) throw new Error("Category name is required");
 
-  // Generate prefix: First 3 chars of category, uppercase, replace non-alphanumeric with CAT
-  let prefix = categoryName.substring(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, "CAT");
-  if (prefix.length < 3) {
-      prefix = prefix.padEnd(3, 'X');
-  }
-
-  // Generate date part: YYYYMMDD
-  const dateStr = date.toISOString().slice(0, 10).replace(/-/g, "");
-
-  const baseSku = `${prefix}-${dateStr}-`;
+  const baseSku = skuPrefixForCategory(categoryName, date);
 
   let sequence = 1;
   if (lastSku) {

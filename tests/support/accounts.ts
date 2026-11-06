@@ -25,6 +25,7 @@ export interface TestAccount {
 export const ACCOUNTS: readonly TestAccount[] = [
   { session: 'owner', label: 'owner', credential: 'owner' },
   { session: 'admin', label: 'tenant admin', credential: 'admin' },
+  { session: 'manager', label: 'store manager', credential: 'manager' },
   { session: 'kasir', label: 'cashier', credential: 'kasir' },
   { session: 'gudang', label: 'warehouse staff', credential: 'gudang' },
   { session: 'purchasing', label: 'purchasing desk', credential: 'purchasing' },
