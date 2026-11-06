@@ -60,26 +60,29 @@ describe('owner', { tags: ['owner'], agentContext: APP_CONTEXT }, () => {
     await app.open('/backoffice/hr/employees');
     await expect(screen.getByRole('heading', 'Data Karyawan', { level: 1 })).toBeVisible();
 
-    await expect(screen.getByText('Bayu Pratama')).toBeVisible();
-    await expect(screen.getByText('Kasir E2E')).toBeVisible();
+    // `identity(emp)` renders twice — desktop `<Table>` and mobile card
+    // (`md:hidden`) — so `exact: true` still matches 2 nodes. Scope to the
+    // wide-screen table so the strict locator has exactly one node to check.
+    const roster = screen.getByRole('table');
+    await expect(roster.getByText('Bayu Pratama', { exact: true })).toBeVisible();
+    await expect(roster.getByText('Kasir E2E', { exact: true })).toBeVisible();
   });
 
-  test('the role table opens the permission matrix for a role', { session: 'owner' }, async ({ app, screen, agent }) => {
+  test('the role table opens the permission matrix for a role', { session: 'owner' }, async ({ app, screen }) => {
     await app.open('/backoffice/settings');
     await expect(screen.getByRole('heading', 'Pengaturan', { level: 1 })).toBeVisible();
 
     await screen.getByRole('tab', 'Karyawan & Role').tap();
     await expect(screen.getByRole('heading', 'Role & Permission')).toBeVisible();
 
-    // The matrix is per role, behind the row's edit control.
-    await screen.getByRole('button', { name: 'Ubah permission Cashier' }).tap();
-    const dialog = screen.getByRole('dialog', { name: 'Edit Permission: Cashier' });
-    await expect(dialog).toBeVisible();
+    // The role-card button selects a role and renders its editor inline (md+).
+    // The accessible name is the text content of the card: label + meta lines.
+    await screen.getByRole('button', { name: /Cashier/ }).tap();
 
-    // Permissions sit in collapsed groups; the owner opens what they came for.
-    await agent.act('expand every collapsed permission group in the dialog');
-    await expect(dialog.getByText('Akses POS')).toBeVisible();
-    await expect(dialog.getByText('Setujui Purchase Order')).toBeVisible();
+    // Permission groups are always visible (no collapse) so the editor's rows
+    // are queryable right after the card tap.
+    await expect(screen.getByText('Akses POS', { exact: true })).toBeVisible();
+    await expect(screen.getByText('Setujui Purchase Order', { exact: true })).toBeVisible();
   });
 
   /**

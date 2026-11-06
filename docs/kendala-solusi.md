@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/kendala-solusi.md` |
-| Terakhir diperbarui | **2026-11-05** |
+| Terakhir diperbarui | **2026-11-06** |
 | Isi | Masalah, bug, error, dan ketidaksesuaian yang benar-benar dihadapi — beserta cara mengatasi dan pelajarannya |
 
 ## Cara memakai log ini
@@ -56,6 +56,7 @@
 | KS-37 | 2026-11-05 | Tiga mesin izin berbeda (hook, branch-orders, procurement) + daftar hard-coded → tidak sinkron | Selesai |
 | KS-38 | 2026-11-05 | Simpan matriks membekukan default semua role ke dokumen (snapshot) | Selesai |
 | KS-39 | 2026-11-05 | `/api/tenant/bootstrap` 500 di produksi: modul src yang dijangkau server memakai alias `@/` | Selesai |
+| KS-40 | 2026-11-06 | E2E locator gagal: komponen responsif me-render teks yang sama dua kali di DOM (table + card) | Selesai |
 
 ---
 
@@ -522,6 +523,18 @@
 | **Solusi** | Ganti ke impor relatif berekstensi `.js` (`from "../config/roles.js"`), bentuk yang sama dengan setiap modul src lain yang dijangkau server (`variants.js`, `password.js`). Vite tetap bisa menyelesaikannya untuk browser |
 | **Bukti** | `npx vercel logs <url> --json` menampilkan `Cannot find package '@/config' imported from /var/task/src/lib/permission-matrix.js`. Setelah perbaikan: bootstrap produksi `401` tanpa sesi, dan login owner nyata mendarat di `/mode-select` (`200`) |
 | **Pelajaran** | Hijau di lokal bukan bukti fungsi bisa dimuat di produksi: `tsx` menghormati alias `@/`, bundel serverless tidak. Aturan turunannya — setiap modul src yang dijangkau (transitif) dari `api/`/`server/` wajib memakai impor relatif `.js`, tidak pernah `@/`. Uji satu request ke endpoint ter-deploy setiap push, jangan percaya status "completed" (perluas KS-26) |
+
+---
+
+## KS-40 · 2026-11-06 · E2E locator `getByText` ambigu karena komponen responsif me-render dua kali — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Setelah redesign `EmployeeRoleSettings` (dialog → inline editor) dan penghapusan `view_dashboard` dari default cashier, 4 tes e2e gagal: `LOCATOR_NOT_FOUND` untuk "Ubah permission Cashier", `LOCATOR_AMBIGUOUS` untuk `getByText('Bayu Pratama')` dan `getByText('Staff Baru E2E')` meskipun `{ exact: true }` sudah ditambahkan, dan `getByRole('option', 'Staff')` tidak cocok karena accessible name Radix Select sekarang "Staff Karyawan biasa" |
+| **Akar masalah** | Komponen `identity(emp)` di `Employees.tsx` dipanggil dua kali: sekali di `<TableCell>` (table desktop `md:block`) dan sekali di `<div md:hidden>` (kartu ponsel). Keduanya ada di DOM secara bersamaan; Playwright strict mode melihat 2 node dengan textContent persis sama, tidak peduli mana yang terlihat CSS |
+| **Solusi** | (a) Scope locator ke container semantik yang benar: `screen.getByRole('table').getByText('Bayu Pratama', { exact: true })`. (b) Ganti tombol dialog lama dengan regex role-card: `getByRole('button', { name: /Cashier/ })` lalu assert teks inline. (c) Opsi Radix Select di-match dengan regex prefix: `getByRole('option', { name: /^Staff/ })`. (d) `view_dashboard` → `toBeHidden()` |
+| **Bukti** | Full e2e suite 2026-11-06: 53 passed / 6 failed (semua `ExceededBudget`), tidak ada LOCATOR_AMBIGUOUS atau NOT_FOUND |
+| **Pelajaran** | `{ exact: true }` saja tidak menyelesaikan duplikasi responsif karena kedua `<p>` punya textContent identik di DOM; solusinya **scoping** (getByRole table) atau filter visibilitas (`visible: true`). Tambahkan aturan baru di `frontend.md` §12 poin 11 |
 
 ---
 

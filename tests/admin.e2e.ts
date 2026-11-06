@@ -34,9 +34,10 @@ describe('tenant admin', { tags: ['admin'], agentContext: APP_CONTEXT }, () => {
     await form.getByLabel('Gaji Pokok').fill('4500000');
 
     // Both pickers are Radix Selects: the trigger is a combobox, the choices
-    // are options rendered in a portal.
+    // are options rendered in a portal. Accessible names include the role
+    // description (e.g. "Staff Karyawan biasa"), so match by label prefix.
     await form.getByRole('combobox').first().tap();
-    await screen.getByRole('option', 'Staff').tap();
+    await screen.getByRole('option', { name: /^Staff/ }).tap();
 
     await form.getByRole('button', 'Simpan').tap();
     created.push(email);
@@ -52,8 +53,10 @@ describe('tenant admin', { tags: ['admin'], agentContext: APP_CONTEXT }, () => {
 
     await credentials.getByRole('button', { name: 'Tutup' }).tap();
 
-    // The roster was reloaded, so the new person is in it.
-    await expect(screen.getByText('Staff Baru E2E')).toBeVisible();
+    // The roster was reloaded, so the new person is in it. `identity(emp)`
+    // renders in both the desktop table and the `md:hidden` card stack, so
+    // scope to the table to keep the strict locator down to one node.
+    await expect(screen.getByRole('table').getByText('Staff Baru E2E', { exact: true })).toBeVisible();
     await expect(browser).toHaveURL('/backoffice/hr/employees');
   });
 
@@ -109,15 +112,17 @@ describe('tenant admin', { tags: ['admin'], agentContext: APP_CONTEXT }, () => {
     await form.getByRole('combobox').first().tap();
 
     // Every role the roster form offers; `tenant_owner` is deliberately absent.
-    await expect(screen.getByRole('option', 'Cashier')).toBeVisible();
-    await expect(screen.getByRole('option', 'Warehouse Staff')).toBeVisible();
-    await expect(screen.getByRole('option', 'Store Manager')).toBeVisible();
+    // Options carry a description line so the accessible name is "Label desc".
+    await expect(screen.getByRole('option', { name: /^Cashier/ })).toBeVisible();
+    await expect(screen.getByRole('option', { name: /^Warehouse Staff/ })).toBeVisible();
+    await expect(screen.getByRole('option', { name: /^Store Manager/ })).toBeVisible();
 
-    await screen.getByRole('option', 'Cashier').tap();
+    await screen.getByRole('option', { name: /^Cashier/ }).tap();
 
     // Choosing a role renders its permission list, so the admin knows what it grants.
     await expect(form.getByText('Akses POS')).toBeVisible();
-    await expect(form.getByText('Lihat Dashboard')).toBeVisible();
+    // view_dashboard was revoked from cashier (transactions-only policy).
+    await expect(form.getByText('Lihat Dashboard')).toBeHidden();
 
     await form.getByRole('button', 'Batal').tap();
     await expect(form).toBeHidden();

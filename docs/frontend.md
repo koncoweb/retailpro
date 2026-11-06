@@ -360,9 +360,9 @@ sungguhan; langkah yang butuh ketepatan selector ditulis deterministik, langkah 
 
 | Aspek | Nilai |
 |---|---|
-| Berkas uji | `tests/**/*.e2e.ts` — 9 berkas, 58 test (53 `test` + 5 `test.setup` yang mengembang satu per akun): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac`, `permissions`, `bulk-import` |
+| Berkas uji | `tests/**/*.e2e.ts` — 9 berkas, 59 test (53 `test` + 6 `test.setup` yang mengembang satu per akun): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac`, `permissions`, `bulk-import` |
 | Konfigurasi | `e2e.config.ts` |
-| Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `kasir`, `gudang`, `purchasing`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts`; dibuat oleh `npm run e2e:users` |
+| Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `manager`, `kasir`, `gudang`, `purchasing`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts`; dibuat oleh `npm run e2e:users` |
 | Target | `APP_URL`, default `http://localhost:8080` (`npm run dev`) |
 | Model agent | Provider OpenAI-compatible dari `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL`; bawaan SumoPod + `deepseek-v4.1-flash:netra` |
 | Perintah | `npm run test:e2e`, atau `npx e2e run --grep login` untuk sebagian |
@@ -407,9 +407,12 @@ Aturan yang dipakai di repo ini:
     resolver (`permission-matrix.test.ts`), bukan diabaikan.
 11. **Teks yang sama boleh muncul dua kali di DOM kalau itu responsif.** Layar POS menyimpan
     ringkasan keranjang di dua tempat (panel samping `hidden lg:flex` dan bar lengket `lg:hidden`),
-    sehingga `getByText('1 item')` menabrak aturan "tepat satu node". Yang benar adalah
-    `getByText('1 item', { visible: true })`: yang harus dibaca pernyataan adalah node yang sungguh
-    terlihat, bukan node pertama dalam urutan DOM.
+    sehingga `getByText('1 item')` menabrak aturan "tepat satu node". Ada dua pola untuk ini:
+    (a) filter visibilitas — `getByText('1 item', { visible: true })` — cocok bila node tersembunyi
+    hanya alternatif tampilan;
+    (b) scope ke container semantik — `getByRole('table').getByText('Bayu Pratama', { exact: true })`
+    — cocok bila kedua node hidup di wilayah berbeda ( Employees table + card) dan maksud tes hanya
+    memverifikasi salah satu. Pilih (b) bila viewport tidak dijamin; pilih (a) untuk kesederhanaan.
 12. **Layout responsif diverifikasi dengan pengukuran, bukan tatapan.** Selain spot-check manual,
     lebar 390/662/768/820/1024/1440 diuji lewat `playwright-core` (chromium milik `ms-playwright`,
     tanpa paket `playwright`) yang membandingkan `document.documentElement.scrollWidth` dengan
