@@ -155,6 +155,8 @@ export interface Transaction {
   items: TransactionItem[];
   /** Joined from `users` by the transaction reports query; display only. */
   cashier_name?: string | null;
+  /** Joined from `customers` by the transaction reports query; display only. */
+  customer_name?: string | null;
 }
 
 export interface TransactionItem {

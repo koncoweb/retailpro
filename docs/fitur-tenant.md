@@ -236,6 +236,20 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-11-06 | — (working tree) | Uji | Unit baru `src/hooks/use-pos-branch.test.ts` (7 kasus prioritas cabang) dan `src/lib/db/__tests__/shift-attendance.test.ts` (7 kasus, replay SQL aslinya ke database v8 sementara); `db/__tests__/seed.test.ts` menambah penjaga bahwa seed tidak boleh membantah matriks kode. E2E `tests/kasir.e2e.ts` menambah alur "drawer kosong tetap bisa buka shift + absensi tercatat otomatis" | Baru |
 | 2026-11-06 | — (working tree) | Uji | **Perbaikan locator e2e yang sudah usang**: 4 tes di `owner.e2e.ts` dan `admin.e2e.ts` diperbarui menyusul redesign `EmployeeRoleSettings` (dialog → inline editor, tanpa `agent.act`), penghapusan `view_dashboard` dari default cashier, dan opsi Radix Select yang accessible name-nya kini menyertakan deskripsi. Pola baru `getByRole('table').getByText(...)` dipakai untuk menghindari ambiguitas dual-render (KS-40) | Perbaikan |
 
+### 2026-11-06 — sistem cetak struk & Z-report thermal (`3cd1804`)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-06 | 3cd1804 | Cetak | **Document model + 2 renderer + 3 transport** di `src/lib/print/*`: `PrintDoc` murni (48 kolom untuk 80mm, 32 untuk 58mm), renderer HTML 80mm (`window.print()`) dan encoder byte ESC/POS in-house (`escpos.ts`: init, alignment, bold, double-size, `GS V` cut, `ESC p` kick drawer, rupiah ASCII), transport driver/WebUSB/Web Bluetooth + fallback unduh `.prn`. Tanpa dependency baru | Baru |
+| 2026-11-06 | 3cd1804 | POS | **Auto-print struk pelanggan setelah checkout** (`receipt-doc.ts` + `POS.tsx`): setelah transaksi commit, struk 80mm direkonstruksi dari `transactions`/`transaction_items` (item+varian+satuan, kembalian, metode, kasir/cabang/pelanggan, footer "TERIMA KASIH") lalu `printDocument` bila Cetak Otomatis aktif. Fire-and-forget — printer mati tidak memblokir penjualan yang sudah tersimpan | Baru |
+| 2026-11-06 | 3cd1804 | POS/Shift | **Cetak Z-report langsung saat tutup shift** (`zreport-doc.ts` + `POS.tsx`/`POSShifts.tsx`): laporan ringkas & terstruktur di nota 80mm — identitas shift, durasi, penjualan per metode (tunai/kartu/e-wallet/QRIS) + total, kas awal/seharusnya/fisik/selisih, catatan shift | Baru |
+| 2026-11-06 | 3cd1804 | Riwayat | **Cetak ulang struk & Z-report**: tombol Printer per baris + dialog "Cetak Struk" di `POSTransactions.tsx` (rekomposisi struk dari data invoice, `customer_name` di-join via LEFT JOIN, fallback "Walk-in"), dan reprint Z-report per shift tertutup (desktop + kartu mobile) di `POSShifts.tsx` (`receipt-printer.ts` queries by id) | Baru |
+| 2026-11-06 | 3cd1804 | Pengaturan | **Seksi "Printer & Koneksi"** di `ReceiptSettings.tsx`: pilih mode driver/USB/Bluetooth, lebar kertas 80mm (default)/58mm, tombol Sambungkan Printer (gesture `requestDevice`) + status terhubung, dan Cetak Tes. Preferensi disimpan di `tenants.settings.printer` tanpa perubahan skema DB | Baru |
+| 2026-11-06 | 3cd1804 | Uji | Unit vitest pure-node untuk jalur cetak: `escpos.test.ts` (init, Rp ASCII, cut/drawer kondisional, degradasi non-ASCII), `receipt-doc.test.ts`, `zreport-doc.test.ts` (baris `cols` rata-kanan muat dalam lebar, selisih nol & tidak nol) — 15 tes lulus; gates `tsc` app+node dan `eslint` bersih | Baru |
+| 2026-11-06 | 3cd1804 | Cetak/Pengaturan | **Ukuran kertas nota diperluas**: selain 58mm (32 kolom) & 80mm (48 kolom) kini tersedia 60mm (32), 72mm (42), dan 76mm (44) — tipe `PaperWidth` + pemeta kolom di `document.ts`, picker "Lebar Kertas" di `ReceiptSettings.tsx` membaca dari `PAPER_WIDTHS`; nilai tersimpan tak-valid di-`normalizePaperWidth` ke 80mm agar layout tak rusak. +3 unit tes (18 lulus) | Ubah |
+| 2026-11-06 | 3cd1804 | Cetak/Z-report | **Rekonsiliasi penjualan per metode diperbaiki**: POS menyimpan pembayaran kartu sebagai `payment_method='debit'/'credit'` dan e-wallet (termasuk QRIS via e-wallet) sebagai `'ewallet'`, tetapi SQL Z-report hanya menghitung `'card'/'ewallet'/'qris'` sehingga kolom "Kartu" selalu Rp 0 dan penjualan debit/credit hilang dari laporan. SQL `receipt-printer.ts` kini mem-bucket `card←{card,debit,credit}`, `ewallet←{ewallet,e-wallet,ovo,gopay,dana,shopeepay}`, plus bucket **Lainnya** (`total − keempatnya`) agar rincian **selalu** sama dengan TOTAL PENJUALAN. Baris Lainnya hanya tampil bila > 0. +1 unit tes rekonsiliasi | Perbaikan |
+| 2026-11-06 | 3cd1804 | Cetak/HTML | **Renderer HTML menyesuaikan ukuran font ke lebar roll**: sebelumnya terpaku 9pt yang membuat 48 kolom (80mm) — dan lebih parah 72/76mm — meluber melebar. `renderReceiptHtml` menghitung `font-size` dari `columns` × lebar cetak (Courier 0.6em, 1mm=72/25.4pt, faktor aman 0.98, dijepit 4–11pt) dan header ukuran-2 kini `2em` (ikut skala). Diverifikasi di browser: 58/76/80mm **nihil overflow horizontal**. +7 unit tes `html-render.test.ts` | Perbaikan |
+
 ### Riwayat commit (aplikasi sebelum migrasi)
 
 | Waktu | Ref | Modul | Perubahan | Status |
@@ -304,12 +318,35 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Kembalian tunai | Ada | `amount_paid - total_amount` |
 | Pilih pelanggan (member) | Belum | `customer_id` sudah ada di skema |
 | Scan barcode | Sebagian | Barcode bisa dibuat & dicetak; input scanner belum ditangani |
-| Cetak struk | Belum | Pengaturan struk sudah tersimpan, renderer belum ada |
+| Cetak struk pelanggan (80mm) | Ada | Prioritas kertas 80mm (48 kolom); opsi lebar 58/60/72/76/80mm. Auto-print setelah transaksi (toggle Cetak Otomatis) + cetak ulang dari Riwayat. Builder murni di `src/lib/print/receipt-doc.ts` |
+| Cetak laporan tutup shift (Z-report) | Ada | Ringkas & terstruktur di nota 80mm: identitas shift, penjualan per metode, kas awal/seharusnya/fisik/selisih. Otomatis saat tutup shift + cetak ulang dari riwayat shift (`src/lib/print/zreport-doc.ts`) |
+| Mode printer: driver / USB / Bluetooth | Ada | `driver` = `window.print()` ke printer OS (USB/kabel/jaringan/Bluetooth pair, semua browser); `usb` = ESC/POS via WebUSB (Chrome/Edge); `bluetooth` = ESC/POS via Web Bluetooth (Android). Disimpan di `tenants.settings.printer`; bila perangkat belum tersambung otomatis fallback ke driver |
+| Renderer ESC/POS + file .prn | Ada | Encoder byte in-house (`src/lib/print/escpos.ts`): init, alignment, bold, double-size, cut (`GS V`), kick drawer (`ESC p`); rupiah ASCII ("Rp") agar tak bergantung code page. Fallback unduh `.prn` untuk printer yang tak bisa dijangkau API browser |
+| Pengaturan printer & cetak tes | Ada | Seksi "Printer & Koneksi" di Pengaturan → Struk: pilih mode, lebar kertas (58/60/72/76/80mm), tombol Sambungkan Printer (gesture `requestDevice`), dan Cetak Tes |
 | Shift: buka/tutup kas | Ada | Kas awal (0 = tanpa uang tunai), kas akhir, kas seharusnya, selisih |
 | Satu sumber cabang POS | Ada | `use-pos-branch`: till, layar shift, dan header selalu cabang yang sama; pemilih cabang bila role melintas beberapa cabang |
 | Absensi otomatis dari shift | Ada | Buka shift = check-in, tutup shift = check-out (`source='self'`, `notes='Otomatis dari buka shift'`), best-effort tanpa membatalkan shift |
 | Riwayat transaksi & detail | Ada | Dengan pagination |
 | Void/refund transaksi | Belum | Status `void` ada di skema, belum ada aksi UI |
+
+#### 2.2.1 Sistem Cetak Struk & Z-Report
+
+Satu **document model** murni (`src/lib/print/document.ts`, `PrintDoc`) dipakai semua jalur: satu baris adalah teks (`text`) atau pasangan rata-kiri/rata-kanan (`cols`). Dari model ini ada **dua renderer** dan **tiga transport**, dipilih per tenant lewat Pengaturan → Struk (key `tenants.settings.printer`). Lebar kertas menentukan jumlah kolom karakter (Font A 203 dpi, ±1,5mm/karakter): **58mm & 60mm = 32 kolom**, **72mm = 42**, **76mm = 44**, **80mm = 48** (prioritas). Opsi dibaca UI dari `PAPER_WIDTHS` di `document.ts`; nilai tak-valid di-`normalizePaperWidth` ke 80mm.
+
+- **Renderer HTML** (`html-render.ts`) → `window.print()` di iframe tersembunyi (`@page size:{width}mm auto`), dengan **ukuran font yang dihitung otomatis** agar `columns` karakter pas persis di lebar roll (bukan 9pt terpaku — mencegah 48 kolom / 72–76mm meluber). Ini **jalur universal**: printer USB/kabel, jaringan, dan Bluetooth yang sudah di-pair lewat driver OS.
+- **Renderer ESC/POS** (`escpos.ts`, encoder byte in-house, tanpa dependency baru) untuk semua lebar (48/44/42/32 kolom). Rupiah dicetak sebagai ASCII `"Rp"` sehingga tidak bergantung code page; karakter non-ASCII didegradasi ke `?` agar stream tidak desync. Perintah: `ESC @` init, `ESC a` alignment, `ESC E` bold, `GS !` ukuran 1/2, `GS V B 0` cut (bila autoCut), `ESC p 0 25 250` kick drawer (bila openDrawer + penjualan tunai).
+- **Transport** (`print-bridges.ts` + `print-service.ts`): mode `driver` (HTML/`window.print`), `usb` (WebUSB, vendor 0x0483/0x1244/0x28E9, class 7), `bluetooth` (Web Bluetooth, service 49572fc4…/FFF1/FFE0). Aturan fallback: mode `usb`/`bluetooth` tapi perangkat belum tersambung → otomatis pakai `driver`, bukan error. Gagal cetak tidak pernah melempar ke alur bisnis — hanya toast, struk tetap bisa dicetak ulang dari Riwayat.
+
+**Matriks dukungan printer umum di Indonesia:**
+
+| Jenis printer | Windows (Chrome/Edge/Firefox) | Android (Chrome) |
+|---|---|---|
+| USB/kabel (Epson TM-T82/TM-U220, XPrinter, dll) | Driver OS → `driver`; atau WebUSB → `usb` | — |
+| Jaringan/LAN (XP-N160I, dll) | Driver OS → `driver` | Driver OS → `driver` |
+| Bluetooth yang sudah di-pair ke OS | Driver OS → `driver` | Web Bluetooth → `bluetooth` |
+| Bluetooth thermal langsung (ZJ-58/80, Sinjuxson, XPrinter BT) | **Tidak ada API serial Bluetooth** → fallback `.prn` (drag ke queue printer) | Web Bluetooth → `bluetooth` |
+
+**Batasan & catatan:** browser desktop Windows tidak punya API Bluetooth serial langsung, karena itu Bluetooth di PC lewat driver OS (route `driver`) atau unduh file `.prn`; di Android lewat Web Bluetooth. WebUSB/Web Bluetooth wajib satu tombol **Sambungkan Printer** (gesture `requestDevice`) per sesi browser; setelah itu transaksi berikutnya cetak otomatis. Auto-print dan cetak Z-report tutup shift bersifat fire-and-forget: printer mati tidak memblokir transaksi yang sudah commit.
 
 ### 2.3 Inventori & pengadaan
 

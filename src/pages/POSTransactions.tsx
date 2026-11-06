@@ -42,6 +42,12 @@ import { PaginationBar } from "@/components/ui/pagination-bar";
 import { batchQuery, parseJson } from "@/lib/db";
 import * as XLSX from 'xlsx';
 import { toast } from "sonner";
+import {
+  loadPrintContext,
+  viaLabel,
+  type PrintContext,
+} from "@/lib/print/print-service";
+import { printSaleReceipt } from "@/lib/print/receipt-printer";
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -75,6 +81,42 @@ export default function POSTransactions() {
   // desktop (button) and mobile (tapping the whole card), sized to the
   // viewport on phones so a long item list scrolls instead of overflowing.
   const [detailTx, setDetailTx] = useState<Transaction | null>(null);
+  // Print context + which row is mid-print so the button can show a spinner and
+  // a double-tap cannot queue two struks for one invoice.
+  const [printCtx, setPrintCtx] = useState<PrintContext | null>(null);
+  const [printingId, setPrintingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadPrintContext()
+      .then((ctx) => {
+        if (!cancelled) setPrintCtx(ctx);
+      })
+      .catch((error) => console.error("Failed to load print settings:", error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleReprint = async (trx: Transaction) => {
+    if (!printCtx) {
+      toast.error("Pengaturan printer belum termuat. Muat ulang halaman lalu coba lagi.");
+      return;
+    }
+    setPrintingId(trx.id);
+    try {
+      // Re-query by id (not from the list row) so variant labels and the
+      // member name match the receipt that printed at the till.
+      const result = await printSaleReceipt(trx.id, printCtx);
+      if (result.ok) toast.success(`Struk ${trx.invoice_number} tercetak via ${viaLabel(result.via)}.`);
+      else toast.error(result.error ?? "Gagal mencetak struk.");
+    } catch (error) {
+      console.error("Reprint failed:", error);
+      toast.error(error instanceof Error ? error.message : "Gagal mencetak struk.");
+    } finally {
+      setPrintingId(null);
+    }
+  };
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -122,6 +164,7 @@ export default function POSTransactions() {
                 t.id, t.branch_id, t.cashier_id, t.customer_id, 
                 t.invoice_number, t.total_amount, t.amount_paid, t.payment_method, t.status, t.created_at,
                 u.name as cashier_name,
+                c.name as customer_name,
                 COALESCE(
                   json_group_array(
                     json_object(
@@ -140,8 +183,9 @@ export default function POSTransactions() {
               LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
               LEFT JOIN products p ON ti.product_id = p.id
               LEFT JOIN users u ON t.cashier_id = u.id
+              LEFT JOIN customers c ON t.customer_id = c.id
               ${whereSql}
-              GROUP BY t.id, u.name
+              GROUP BY t.id, u.name, c.name
               ORDER BY t.created_at DESC
               LIMIT $${limitIdx} OFFSET $${offsetIdx}
             `,
@@ -214,7 +258,7 @@ export default function POSTransactions() {
       "Tanggal": new Date(trx.created_at).toLocaleDateString('id-ID'),
       "Waktu": new Date(trx.created_at).toLocaleTimeString('id-ID'),
       "Kasir": trx.cashier_name || "Unknown",
-      "Customer": trx.customer_id || "Walk-in",
+      "Customer": trx.customer_name || "Walk-in",
       "Cabang": getBranchName(trx.branch_id),
       "Pembayaran": trx.payment_method,
       "Total Items": trx.items.reduce((sum, item) => sum + item.quantity, 0),
@@ -418,7 +462,7 @@ export default function POSTransactions() {
                         </TableCell>
                         <TableCell>
                         <div>
-                            <p className="font-medium">{trx.customer_id || "Walk-in Customer"}</p>
+                            <p className="font-medium">{trx.customer_name || "Walk-in Customer"}</p>
                             <p className="text-sm text-muted-foreground">
                             {trx.cashier_name || trx.cashier_id} • {branchName}
                             </p>
@@ -455,8 +499,19 @@ export default function POSTransactions() {
                             <Button variant="ghost" size="icon" onClick={() => setDetailTx(trx)}>
                             <Eye className="w-4 h-4" />
                             </Button>
-                            <Button variant="ghost" size="icon">
-                            <Printer className="w-4 h-4" />
+                            <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Cetak ulang struk"
+                            aria-label="Cetak ulang struk"
+                            disabled={printingId === trx.id}
+                            onClick={() => handleReprint(trx)}
+                            >
+                            {printingId === trx.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                                <Printer className="w-4 h-4" />
+                            )}
                             </Button>
                         </div>
                         </TableCell>
@@ -580,6 +635,14 @@ export default function POSTransactions() {
                 <span>Total</span>
                 <span className="text-primary">{formatCurrency(detailTx.total_amount)}</span>
               </div>
+              <Button className="w-full gap-2" disabled={printingId === detailTx.id} onClick={() => handleReprint(detailTx)}>
+                {printingId === detailTx.id ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Printer className="w-4 h-4" />
+                )}
+                Cetak Struk
+              </Button>
             </div>
           )}
         </DialogContent>

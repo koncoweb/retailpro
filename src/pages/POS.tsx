@@ -37,6 +37,13 @@ import { sortBatchesForIssue } from "@/lib/stock-issue";
 import { parseVariantAttributes, parseVariantGroups, variantLabel } from "@/lib/variants";
 import { bestPackPriceFor, PRICING_SETTING_KEY, type PackInput } from "@/lib/pricing";
 import { unitLabel } from "@/lib/units";
+import {
+  loadPrintContext,
+  printDocument,
+  viaLabel,
+  type PrintContext,
+} from "@/lib/print/print-service";
+import { buildSaleReceiptDoc, buildZReportDoc } from "@/lib/print/receipt-printer";
 
 // Mock Session Data (In real app, this comes from Context/Auth)
 const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
@@ -110,6 +117,13 @@ export default function POS() {
    * never asked for it keeps charging the verbatim pack price.
    */
   const [autoPackPrice, setAutoPackPrice] = useState(false);
+
+  /**
+   * Print preferences (auto-print flag, transport, paper). Loaded once per
+   * mount; a null context means settings have not answered yet, in which case
+   * we skip the auto-print rather than guess a transport.
+   */
+  const [printCtx, setPrintCtx] = useState<PrintContext | null>(null);
 
   /**
    * Register load is a single batch carrying
@@ -319,6 +333,21 @@ export default function POS() {
       .catch(() => {
         if (!cancelled) setAutoPackPrice(false);
       });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Print preferences load once per mount alongside the pricing flag. A null
+  // on failure simply disables auto-print (the reprint button still works from
+  // history), which is safer than printing on a guessed transport.
+  useEffect(() => {
+    let cancelled = false;
+    loadPrintContext()
+      .then((ctx) => {
+        if (!cancelled) setPrintCtx(ctx);
+      })
+      .catch((error) => console.error("Failed to load print settings:", error));
     return () => {
       cancelled = true;
     };
@@ -643,6 +672,10 @@ export default function POS() {
         // over, not the cart total (they differ for every cash sale).
         const amountPaid = details.received ?? total;
 
+        // Surfaces the committed id out of the transaction callback so the
+        // auto-print below can fetch the exact row it just wrote.
+        let committedTransactionId: string | null = null;
+
         // Pre-flight stock check. It must happen before the transaction opens:
         // a shortage discovered halfway through used to leave a committed
         // transaction with only part of its stock deducted.
@@ -693,6 +726,7 @@ export default function POS() {
             `, [currentBranchId, cashierId, invoiceNumber, total, finalMethod, amountPaid, currentShiftId]);
             
             const transactionId = trxRes.rows[0].id;
+            committedTransactionId = transactionId;
 
             // 2. Process Items
             for (const item of cart) {
@@ -797,6 +831,31 @@ export default function POS() {
         setIsPaymentOpen(false);
         // Refresh products to show updated stock
         fetchProducts();
+
+        // Auto-print is fire-and-forget: the sale is already committed, so a
+        // dead printer must never delay or fail the checkout. It reads back the
+        // row it just wrote so the struk matches Riwayat exactly.
+        if (printCtx?.receipt.autoPrint && committedTransactionId) {
+          const txId = committedTransactionId;
+          const ctx = printCtx;
+          const isCash = finalMethod === "cash";
+          void (async () => {
+            try {
+              const doc = await buildSaleReceiptDoc(txId, ctx);
+              if (!doc) return;
+              const result = await printDocument(doc, ctx, { isCashSale: isCash });
+              if (!result.ok) {
+                toast.warning(
+                  `Transaksi sukses, tapi struk gagal dicetak (${result.error ?? "printer tak tersedia"}). Cetak ulang di Riwayat Transaksi.`
+                );
+              } else {
+                toast.info(`Struk tercetak via ${viaLabel(result.via)}.`);
+              }
+            } catch (error) {
+              console.error("Auto-print failed:", error);
+            }
+          })();
+        }
         return true;
         
     } catch (error) {
@@ -899,6 +958,25 @@ export default function POS() {
             WHERE id = $4`,
           [actualCash, expectedCash, actualCash - expectedCash, currentShiftId]
         );
+
+        // The drawer just closed; print the Z-report off the persisted shift so
+        // the paper reconciles to exactly what the `shifts` row now holds.
+        // Fire-and-forget for the same reason as the struk.
+        const closedShiftId = currentShiftId;
+        const ctx = printCtx;
+        if (ctx) {
+          void (async () => {
+            try {
+              const doc = await buildZReportDoc(closedShiftId, ctx);
+              if (!doc) return;
+              const result = await printDocument(doc, ctx);
+              if (!result.ok)
+                toast.warning(`Laporan shift gagal dicetak (${result.error ?? "printer tak tersedia"}).`);
+            } catch (error) {
+              console.error("Z-report print failed:", error);
+            }
+          })();
+        }
       }
 
       setCurrentShiftId(null);

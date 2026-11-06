@@ -27,7 +27,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2, MapPin } from "lucide-react";
+import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2, MapPin, Printer } from "lucide-react";
 import { toast } from "sonner";
 import { query, runTransaction } from "@/lib/db";
 import { useAuth } from "@/hooks/use-auth";
@@ -39,6 +39,13 @@ import {
 } from "@/lib/shift-attendance";
 import { Shift } from "@/types";
 import { cn, formatCurrency } from "@/lib/utils";
+import {
+  loadPrintContext,
+  printDocument,
+  viaLabel,
+  type PrintContext,
+} from "@/lib/print/print-service";
+import { buildZReportDoc } from "@/lib/print/receipt-printer";
 
 export default function POSShifts() {
   const { user } = useAuth();
@@ -70,6 +77,48 @@ export default function POSShifts() {
     qris: 0,
     total: 0,
   });
+
+  // Print context + which history row is printing. The context is read once;
+  // a null simply means the desk falls back to no auto-print, not a failure.
+  const [printCtx, setPrintCtx] = useState<PrintContext | null>(null);
+  const [reprintingShiftId, setReprintingShiftId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadPrintContext()
+      .then((ctx) => {
+        if (!cancelled) setPrintCtx(ctx);
+      })
+      .catch((error) => console.error("Failed to load print settings:", error));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /**
+   * Print a Z-report for any shift id. Used both by the live close (right
+   * after the UPDATE lands) and by the history reprint, so both read the same
+   * persisted row rather than two different in-memory summaries.
+   */
+  const printZReportFor = async (shiftId: string): Promise<void> => {
+    if (!printCtx) {
+      toast.error("Pengaturan printer belum termuat. Muat ulang halaman ini.");
+      return;
+    }
+    try {
+      const doc = await buildZReportDoc(shiftId, printCtx);
+      if (!doc) {
+        toast.error("Data shift tidak ditemukan untuk dicetak.");
+        return;
+      }
+      const result = await printDocument(doc, printCtx);
+      if (result.ok) toast.success(`Laporan shift tercetak via ${viaLabel(result.via)}.`);
+      else toast.error(result.error ?? "Gagal mencetak laporan shift.");
+    } catch (error) {
+      console.error("Z-report print failed:", error);
+      toast.error(error instanceof Error ? error.message : "Gagal mencetak laporan shift.");
+    }
+  };
 
   useEffect(() => {
     if (!user || branchLoading) return;
@@ -249,6 +298,11 @@ export default function POSShifts() {
       } else {
         toast.success("Shift berhasil ditutup");
       }
+
+      // Print the Z-report off the just-closed row (UPDATE already committed,
+      // so the persisted figures are what the paper reconciles to).
+      await printZReportFor(activeShift.id);
+
       setFinalCash("");
       setNotes("");
       fetchShiftData();
@@ -482,12 +536,13 @@ export default function POSShifts() {
                   <TableHead className="text-right">Total Akhir</TableHead>
                   <TableHead className="text-right">Selisih</TableHead>
                   <TableHead className="text-center">Status</TableHead>
+                  <TableHead className="w-16 text-center">Cetak</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {shiftHistory.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                       Belum ada riwayat shift.
                     </TableCell>
                   </TableRow>
@@ -512,6 +567,33 @@ export default function POSShifts() {
                         <Badge variant={shift.status === 'open' ? 'default' : 'secondary'}>
                           {shift.status === 'open' ? 'Aktif' : 'Selesai'}
                         </Badge>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {shift.status === 'closed' ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="Cetak laporan shift"
+                            aria-label="Cetak laporan shift"
+                            disabled={reprintingShiftId === shift.id}
+                            onClick={async () => {
+                              setReprintingShiftId(shift.id);
+                              try {
+                                await printZReportFor(shift.id);
+                              } finally {
+                                setReprintingShiftId(null);
+                              }
+                            }}
+                          >
+                            {reprintingShiftId === shift.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Printer className="w-4 h-4" />
+                            )}
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">-</span>
+                        )}
                       </TableCell>
                     </TableRow>
                   ))
@@ -558,6 +640,29 @@ export default function POSShifts() {
                         </p>
                       </div>
                     </div>
+                    {shift.status === 'closed' && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full gap-2 mt-1"
+                        disabled={reprintingShiftId === shift.id}
+                        onClick={async () => {
+                          setReprintingShiftId(shift.id);
+                          try {
+                            await printZReportFor(shift.id);
+                          } finally {
+                            setReprintingShiftId(null);
+                          }
+                        }}
+                      >
+                        {reprintingShiftId === shift.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Printer className="w-4 h-4" />
+                        )}
+                        Cetak Laporan
+                      </Button>
+                    )}
                   </CardContent>
                 </Card>
               ))
