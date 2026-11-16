@@ -33,7 +33,16 @@
  * Usage:
  *   node scripts/verify-production.mjs
  *   $env:DEMO_PASSWORD='…'; npm run verify:prod
- *   node scripts/verify-production.mjs --base https://<preview-url> --require-perm void_transaction
+ *   node scripts/verify-production.mjs --base http://localhost:3000 --require-perm void_transaction
+ *
+ * --base points at any host that serves this API surface without its own auth
+ * wall, e.g. the local dev API on http://localhost:3000. It does NOT work
+ * against a Vercel per-deployment URL: those sit behind Deployment Protection,
+ * and every check then fails with "Protected by Vercel Authentication" — which
+ * is a property of the URL, not of the build. Verify the alias instead, or
+ * disable protection for that deployment. The tenant-token assertion scopes
+ * itself to the base, because the local shim legitimately returns an http
+ * dbUrl and a short dummy token.
  *
  * Exit codes: 0 all checks passed · 1 a check failed · 2 ran, auth skipped
  */
@@ -121,14 +130,22 @@ check('sign-in', signIn.status === 200 && cookie.length > 0,
   `HTTP ${signIn.status}${signInBody.message ? ` "${signInBody.message}"` : ''} role=${signInBody.user?.role ?? '-'} cookieChars=${cookie.length}`);
 
 // 6. Registry lookup + Turso Platform API mint a tenant token.
+//    The https + real-JWT expectations are production invariants: against the
+//    local dev API the dbUrl is the Hrana shim (http://127.0.0.1:8090) with a
+//    short dummy token, which is correct there, so scope the assertion to the
+//    base instead of failing a healthy local run.
 const boot = await get('/api/tenant/bootstrap', { cookie });
 const token = boot.body.token ?? '';
 const dbUrl = String(boot.body.dbUrl ?? '');
+const againstTls = /^https:/i.test(base);
+const tokenShapeOk = againstTls
+  ? /^https:\/\//.test(dbUrl) && token.length >= 100
+  : dbUrl.length > 0 && token.length > 0;
 const expiresInMin = boot.body.expiresAt
   ? (new Date(boot.body.expiresAt).getTime() - Date.now()) / 60000
   : -1;
-check('tenant bootstrap', boot.res.status === 200 && /^https:\/\//.test(dbUrl) && token.length >= 100,
-  `HTTP ${boot.res.status} tenant=${boot.body.tenant?.slug ?? '-'} dbUrl=${dbUrl.slice(0, 28) || '-'} tokenChars=${token.length} ttlMin=${expiresInMin > 0 ? Math.round(expiresInMin) : 'EXPIRED'}`);
+check('tenant bootstrap', boot.res.status === 200 && tokenShapeOk && expiresInMin > 0,
+  `HTTP ${boot.res.status} tenant=${boot.body.tenant?.slug ?? '-'} dbUrl=${dbUrl.slice(0, 30) || '-'} tokenChars=${token.length} ttlMin=${expiresInMin > 0 ? Math.round(expiresInMin) : 'EXPIRED'} expecting=${againstTls ? 'https dbUrl + >=100-char token' : 'any dbUrl + non-empty token'}`);
 
 // 7. The grant payload every client-side guard reads.
 const grants = boot.body.grants ?? {};

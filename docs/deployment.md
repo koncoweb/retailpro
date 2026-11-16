@@ -262,9 +262,17 @@ npm run verify:prod -- --require-perm void_transaction,manage_vendor_prices,mana
 
 Keluar **0** = semua pemeriksaan lolos; **1** = ada yang gagal (namanya disebut); **2** = berjalan
 tapi pemeriksaan sesi **dilewati** karena `DEMO_PASSWORD` tidak dipasang — keluar 2 bukan deploy
-sehat, hanya verifikasi tidak lengkap. `--base https://<url-deployment>` mengarahkan pemeriksaan ke
-deployment tertentu (mis. URL `dpl_…` hasil build GitHub) alih-alih alias; `--require-perm` adalah
-tempat kunci izin rilis berjalan diperiksa, sehingga skripnya tidak perlu diedit tiap rilis.
+sehat, hanya verifikasi tidak lengkap. `--require-perm k1,k2` adalah tempat kunci izin rilis
+berjalan diperiksa, sehingga skripnya tidak perlu diedit tiap rilis.
+
+`--base` dipakai untuk host lain yang menyajikan permukaan API yang sama — terukur terhadap API
+dev lokal (`--base http://localhost:3000`, 7/7 lolos). `--base` **tidak** bisa menunjuk URL
+per-deployment Vercel (`https://retailpro-thalia-<hash>-koncowebs-projects.vercel.app`): URL itu
+dikunci Deployment Protection sehingga **semua** pemeriksaan gagal dengan `Protected by Vercel
+Authentication` — itu sifat URL-nya, bukan sifat build-nya. Verifikasi build GitHub lewat alias
+`retailpro-thalia.vercel.app`, atau matikan protection untuk deployment itu. Pemeriksa token tenant
+menyesuaikan dirinya: `https` + token ≥100 karakter hanya dituntut kalau basisnya `https`, karena
+shim Hrana lokal memang mengembalikan `http://127.0.0.1:8090` dengan token pendek.
 
 Catatan header untuk verifikasi berbasis skrip: Better Auth menolak POST yang **berpola browser**
 — membawa `Sec-Fetch-Mode` — tanpa `Origin` yang cocok, dengan `403 MISSING_OR_NULL_ORIGIN`.

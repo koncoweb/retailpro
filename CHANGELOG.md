@@ -10,7 +10,7 @@ Runbook §7 `docs/deployment.md` yang tadinya enam perintah `curl` di sana sekar
 ### Added
 
 - **`scripts/verify-production.mjs`** + `npm run verify:prod` — tujuh pemeriksaan tetap (health + control DB, bootstrap tanpa sesi harus **401 bukan 500**, marketplace, katalog, sign-in, token tenant termasuk cek `https`/panjang token/TTL, grants per peran) ditambah satu pemeriksaan per kunci yang lewat `--require-perm`. Satu baris `ok`/`FAIL` per pemeriksaan **beserta detailnya**, karena "OK" tanpa angka yang diukur tidak bisa dibedakan dari pemeriksaan yang tidak membaca apa pun.
-- **Tiga jalur keluar**: `0` semua lolos · `1` ada yang gagal (namanya disebut) · **`2` pemeriksaan sesi dilewati** karena `DEMO_PASSWORD` tidak dipasang — hijau tidak boleh berarti "belum dicek". `--base <url>` mengarahkan ke deployment tertentu (mis. URL `dpl_…` hasil build GitHub, bukan alias); `--require-perm k1,k2` menampung kunci izin rilis berjalan sehingga skripnya tidak perlu diedit tiap rilis.
+- **Tiga jalur keluar**: `0` semua lolos · `1` ada yang gagal (namanya disebut) · **`2` pemeriksaan sesi dilewati** karena `DEMO_PASSWORD` tidak dipasang — hijau tidak boleh berarti "belum dicek". `--require-perm k1,k2` menampung kunci izin rilis berjalan sehingga skripnya tidak perlu diedit tiap rilis; `--base <url>` memindahkan pemeriksaan ke host lain yang menyajikan permukaan API yang sama.
 - **KS-50 + pelajaran umum no. 17** di `docs/kendala-solusi.md`, dan §7.0 di `docs/deployment.md`.
 
 ### Fixed
@@ -21,6 +21,11 @@ Runbook §7 `docs/deployment.md` yang tadinya enam perintah `curl` di sana sekar
 ### Catatan
 
 - Kredensial hanya dibaca dari environment; nilai demo tetap tinggal di blok credentials `e2e.config.ts` dan tidak diduplikasi ke berkas baru.
+
+### Koreksi pasca-`1de90d2` (temuan saat `--base` pertama dipakai)
+
+- Kalimat asli di bagian *Added* mengklaim bahwa `--base` bisa menunjuk **URL per-deployment Vercel** (mis. hasil build GitHub) alih-alih alias. Itu **salah**, dan klaimnya keluar dari kebetulan yang sama seperti KS-50: dijalankan → **10/10 pemeriksaan FAIL** dengan `Protected by Vercel Authentication`. URL deployment memang dikunci Deployment Protection; yang sehat-sehat saja adalah build-nya, dan itu dibuktikan oleh pemeriksaan lewat alias (**10/10 lolos, keluar 0**). Kalimat di atas sudah diganti ke yang terukur.
+- `--base http://localhost:3000` justru menghasilkan satu **cacat di pemeriksaan saya sendiri**: `tenant bootstrap` menuntut `dbUrl` `https` + token ≥100 karakter — invarian **produksi** — sementara API dev mengembalikan shim Hrana (`http://127.0.0.1:8090`, token 9 karakter) yang memang benar di sana. Sekarang pemeriksaan itu menyesuaikan diri dengan basisnya (`https` hanya dituntut kalau basisnya `https`): produksi **8/8 lolos**, dev lokal **7/7 lolos**.
 
 ## [dabf287] — 17 November 2026 — Vendor–Produk Terintegrasi (satu penulis, vendor otomatis di PO)
 
