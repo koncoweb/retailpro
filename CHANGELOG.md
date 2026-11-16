@@ -3,7 +3,7 @@
 Semua perubahan penting pada RetailPro didokumentasikan di sini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [uncommitted] — 17 November 2026 — Vendor–Produk Terintegrasi (satu penulis, vendor otomatis di PO)
+## [dabf287] — 17 November 2026 — Vendor–Produk Terintegrasi (satu penulis, vendor otomatis di PO)
 
 Input vendor (form **atau** sheet) sekaligus bisa input produk, dan PO memilih vendor sendiri begitu produk dipilih. Skema **v10** — **tabel dan kolom tidak ada yang baru**, migrasi `010` hanya menambah dua indeks. 14 berkas diubah (±1.054 baris ditambah, 634 dihapus) + 11 berkas baru (±4.163 baris, termasuk 1.449 baris test).
 
@@ -57,7 +57,7 @@ Rilis ini sendiri yang menghasilkan tiga cacat kelas sama — tabel markdown ter
 - **Re-sync**: `docs/backend.md` (§5.12 katalog vendor + §8.1 modul penulis domain + invariant 16 + riwayat skema v10), `docs/frontend.md` (§2 peta modul baru, §8 tiga fitur baru, §10 log, §12 aturan e2e 14–16 + hitungan berkas uji + keadaan lint sebenarnya), `docs/fitur-tenant.md` (§1 log 2026-11-17, §2.3 & §2.4), `docs/arsitektur.md` (alur kritis baru **§4.9** katalog vendor–produk + versi skema + angka verifikasi), `docs/spec-varian-harga-vendor.md` dan `docs/spec-purchase-order.md` (catatan status bertanggal, isinya tetap beku), `docs/deployment.md` (contoh naik versi jadi v9 → v10 + perbedaan "indeks saja" di runbook), serta versi skema di `README.md` dan `requirement.md` dinaikkan ke v10 (`README.md` ikut menambah alur vendor–produk, paragraf demo, dan baris spec baru di indeks dokumen).
 - **Di luar scope** (ditulis eksplisit di spec): PO multi-vendor, impor varian/atribut, tier harga per qty, PPN/landed cost, otorisasi sisi server, dan dedup vendor yang sudah terlanjur punya dua ejaan.
 
-## [uncommitted] — 16 November 2026 — Void Transaksi (per Item & per Bon)
+## [dabf287] — 16 November 2026 — Void Transaksi (per Item & per Bon)
 
 Pembatalan penjualan di Riwayat Kasir, skema **v9**. ±991 baris ditambah, 170 dihapus; 41 berkas diubah + 5 berkas baru.
 
