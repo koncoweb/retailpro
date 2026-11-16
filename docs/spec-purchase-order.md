@@ -3,11 +3,42 @@
 | | |
 |---|---|
 | Document | `docs/spec-purchase-order.md` |
-| Status | **Proposed** — spec only, no code written yet |
+| Status | **Shipped** — rollout §11 phases 1–4 all landed (verified 2026-11-16) |
 | Date | 2026-10-30 |
 | Replaces | the single-step behaviour in `Inventory.tsx` → `handlePO` |
 | Reference implementation | branch replenishment: `stock_requests` → `stock_transfers` |
-| Schema impact | migration `005`, schema version 4 → **5** |
+| Schema impact | migration `005`, schema version 4 → **5** (today v10 / 34 tables, after `006`, `009` and `010`) |
+
+> **Status note (2026-11-16).** The body below is kept as written — it is a point-in-time design
+> record. Everything it specifies is now in the codebase: `goods_receipts` / `goods_receipt_items`
+> (migration `005_procurement_lifecycle.sql`), the state machine and numbering helper in
+> `src/lib/procurement.ts`, the write path in `src/lib/goods-receipt.ts`, `GoodsReceiptModal`,
+> `PurchaseOrderPanel` and `PurchaseOrderDetail` under `src/components/inventory/`, the route
+> `/backoffice/inventory/po`, the `purchasing` role, and `src/pages/finance/ApAr.tsx` reading the
+> receipt FK. Two deltas since this spec was written: `ordered` was **retired** (approval is the
+> commitment, so legacy rows normalize to `approved` via `normalizePurchaseOrderStatus()`), and buy
+> prices are no longer per product but per (variant, pack) in `vendor_price_list` — see
+> [spec-varian-harga-vendor.md](spec-varian-harga-vendor.md).
+
+> **Status note (2026-11-17).** Two assumptions in the body changed direction, both recorded in
+> [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md).
+>
+> 1. **The template the PO reads is now filled where the price is actually agreed.** `vendor_price_list`
+>    was designed here as the source of agreed buy prices, but until this release only goods receipt
+>    wrote it (gap-only, from a delivery that already happened) — the product form, the vendor link
+>    dialog, the import and the seeder each had their own copy of the *vendor link* and none of them
+>    touched the price list, so a vendor's per-pack price could be entered twice without ever becoming
+>    something this screen could read. All of them now call `src/lib/vendor-catalog.ts`.
+> 2. **The vendor is no longer a decision the user has to make first.** Picking a product applies that
+>    product's vendor (`defaultVendorFor()`: preferred → main → the sole active linked vendor), prefills
+>    `expectedDate` from `lead_time_days` and loads the agreed price into `unit_cost`. Changing vendor
+>    while the basket holds another vendor's lines asks through an `AlertDialog` instead of dropping
+>    them silently, and the resulting vendor is shown as "Vendor (otomatis dari produk)" with an
+>    **Ubah** escape hatch.
+>
+> A PO still carries exactly one `supplier_id` (`validatePurchaseOrder`), so a mixed basket is split
+> into separate orders rather than merged — multi-vendor orders remain out of scope, and this release
+> adds no table or column: migration `010` only added the two indexes the auto-fill reads through.
 
 ---
 

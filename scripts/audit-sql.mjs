@@ -7,6 +7,12 @@
  * means a call site no longer matches the schema.
  *
  * Usage: node scripts/audit-sql.mjs
+ *        node scripts/audit-sql.mjs --show-comments
+ *
+ * `--show-comments` lists every SQL-shaped literal that was dropped because it
+ * sits inside a comment. The exclusion is a judgement call, so it has to be
+ * auditable: without a listing, "that literal is documentation" is an
+ * unverifiable claim, and a real call site could hide behind it.
  */
 import { readFileSync, readdirSync, statSync, rmSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -47,6 +53,56 @@ function translate(sql, params = []) {
   return { text: out, args };
 }
 
+/**
+ * Ranges of `//`…EOL and `/*`…`*`/ comments in a source file.
+ *
+ * The collector below scans quoted text, and documentation quotes real
+ * statements: a JSDoc that says a page used to run `UPDATE users` was collected
+ * as if it were a call site and reported as `SYNTAX | incomplete input`. Only
+ * code can be a call site, so comment ranges are excluded. Strings are stepped
+ * over while scanning so a `//` inside a URL or a SQL literal does not open a
+ * comment. A quote inside a regular-expression literal can still desync this
+ * scan; the auditor is a safety net, not a parser, and the worst case is that
+ * one literal near it is skipped.
+ */
+function commentRanges(src) {
+  const ranges = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    const next = src[i + 1];
+    if (ch === '/' && next === '/') {
+      const end = src.indexOf('\n', i);
+      const stop = end === -1 ? src.length : end;
+      ranges.push([i, stop]);
+      i = stop;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const end = src.indexOf('*/', i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      ranges.push([i, stop]);
+      i = stop;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      let j = i + 1;
+      while (j < src.length) {
+        if (src[j] === '\\') { j += 2; continue; }
+        // Single- and double-quoted strings cannot span a line: if the quote
+        // was not a string after all, resume one character later.
+        if (src[j] === '\n' && ch !== '`') { j = i + 1; break; }
+        if (src[j] === ch) { j += 1; break; }
+        j += 1;
+      }
+      i = Math.max(j, i + 1);
+      continue;
+    }
+    i += 1;
+  }
+  return ranges;
+}
+
 const root = process.cwd();
 const sqlDir = path.join(root, '.data');
 mkdirSync(sqlDir, { recursive: true });
@@ -68,10 +124,28 @@ function walk(dir, out = []) {
 
 const files = walk(path.join(root, 'src'));
 const collected = [];
+const commentSkips = [];
+let inComments = 0;
+const showComments = process.argv.includes('--show-comments');
+const lineOf = (src, index) => src.slice(0, index).split('\n').length;
 for (const file of files) {
   const src = readFileSync(file, 'utf8');
+  const ranges = commentRanges(src);
+  const insideComment = (index) => ranges.some(([start, end]) => index >= start && index < end);
   let m;
+  includeRe.lastIndex = 0;
   while ((m = includeRe.exec(src))) {
+    // A statement quoted in documentation is not a call site.
+    if (insideComment(m.index)) {
+      const body = (m[1] ?? m[2] ?? '').trim();
+      if (sqlHead.test(body)) {
+        inComments += 1;
+        commentSkips.push(
+          `${path.relative(root, file)}:${lineOf(src, m.index)}: ${body.replace(/\s+/g, ' ').slice(0, 110)}`
+        );
+      }
+      continue;
+    }
     const body = (m[1] ?? m[2] ?? '').trim();
     if (!sqlHead.test(body)) continue;
     collected.push({ file: path.relative(root, file), sql: body });
@@ -132,6 +206,10 @@ for (const { file, sql } of collected) {
 console.log(`statements collected: ${collected.length}`);
 console.log(`statements checked  : ${checked}`);
 console.log(`skipped (dynamic)   : ${skippedDynamic}`);
+console.log(`skipped (comments)  : ${inComments}`);
+if (showComments) {
+  for (const site of commentSkips) console.log(`  ~ ${site}`);
+}
 console.log(`distinct findings   : ${findings.size}`);
 for (const [key, sites] of findings) {
   console.log(`\n### ${key}`);

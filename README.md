@@ -30,6 +30,30 @@ links the two so the stock math is never written twice. Stock leaves the gudang 
 till then sells from — the gudang supplies, the shelf sells. Every batch movement
 goes through `src/lib/stock-movement.ts`; no page carries its own copy.
 
+Vendors and products are one catalogue. The links between them — `vendor_products` (vendor SKU, last
+cost, minimum order, preferred flag) and `vendor_price_list` (the agreed buy price per variant and
+pack, which is the purchase-order template) — are written by exactly one module,
+`src/lib/vendor-catalog.ts`, that every path now calls: the product form, the vendor screen, the flat
+vendor+product CSV/Excel import, goods receipt and the demo seeder. Choosing a product in a purchase
+order therefore chooses its vendor (`defaultVendorFor()`: preferred → main → the only active linked
+vendor) and pulls in the agreed price, while switching away from that vendor asks before dropping the
+lines it owns. Schema v10 only added the two indexes this reads through — no table and no column
+changed.
+
+A sale can be cancelled without erasing it. Voiding (`src/lib/void.ts`, schema v9)
+marks rows — per line or per whole bon — instead of deleting them: stock returns
+to the batch the line was picked from, `total_amount` is reduced by that line's
+subtotal so a bon-level discount survives, the audit trail records who and why,
+and the receipt prints the line struck through. Every revenue query therefore
+filters `status = 'completed'`, and per-line aggregates also filter
+`transaction_items.voided = 0`.
+
+Printing is in-house (`src/lib/print/`, no extra dependency): one character-based
+document model feeds two renderers — HTML through the OS printer driver, and an
+ESC/POS byte stream for thermal printers over WebUSB/Web Bluetooth or a downloadable
+`.prn` — for both receipts and the Z-report. `printDocument()` never throws, so a
+missing printer can't fail a committed sale.
+
 ## Requirements
 
 - Node.js >= 20
@@ -69,13 +93,14 @@ Turso secret. Never import anything from `server/` in `src/`.
 | `npm run dev` | Vite dev server (SPA) |
 | `npm run dev:api` | Local auth/provisioning API on port 3000 |
 | `npm run build` | Production build |
-| `npm test` | Vitest (schema, seed, SQL translation, date range, inventory utils, stock issue, demo tenant) |
+| `npm test` | Vitest — 30 files / 419 tests (schema + migrations, seed, demo tenant, SQL translation, date range, inventory/stock-issue/stock-movement, permissions & roles, variants/units/pricing, procurement & goods receipt, vendor catalogue + vendor/product import, vendors, branch orders, bulk import, password, geolocation/face, shift attendance, the print model + both renderers, void) |
 | `npm run typecheck` | TypeScript, app project |
 | `npm run lint` | ESLint |
 | `npm run test:e2e` | End-to-end tests (tester.army), see below |
 | `npm run bootstrap:control` | Create/schema the control database |
 | `npm run schema:apply-all` | Dry-run drift report per tenant; `--apply` runs pending `db/migrations/*.sql` then `db/schema/tenant.sql` (`--only <slug>` for one tenant) |
-| `npm run audit:sql` | Replay every SQL literal against the tenant schema |
+| `npm run audit:sql` | Replay every SQL literal against the tenant schema; literals inside comments are skipped, `npm run audit:sql -- --show-comments` lists what was dropped |
+| `npm run docs:check` | Documentation gate: markdown table shape, one schema version in its three places, README doc index covers `docs/`, cross-doc `§N` anchors resolve. It prints its own coverage and ships with a positive control — `node scripts/check-docs.mjs --root scripts/__fixtures__/docs-check` must report exactly 8 problems |
 | `npm run demo:tenant` | Seed the demo tenant (see below) |
 | `npm run demo:cloud` | Create/reseed the demo tenant in Turso cloud; `-- --write-env` also rewrites `.env` |
 | `cd tokoonline && npm run dev` | Storefront for the online branch on port 8082 |
@@ -137,22 +162,31 @@ What gets seeded (anchored to the run date, nothing future-dated):
   **one** central warehouse (Gudang Pusat Depok, Jl. Arif Rahman Hakim near Toko
   Pusat) plus **two racks**, one `type = 'store'` shelf per walk-in shop: the
   gudang supplies, each shop's till sells from its own shelf, and the online
-  channel sells straight from the gudang; 9 users across the five roles, 5 vendors
+  channel sells straight from the gudang; 9 users across six roles, 5 vendors
   with full master data (code, terms, bank, lead time, rating), 6 bakery customers
-- 7 categories, 28 products with 50 selling units; stock is authored per location
-  (~40% in the gudang, the rest split between the two shelves) and split into
-  batches at each location with shelf-life-derived received/expiry dates
-- 21 days of shifts and ~217 sales (open shifts today, so the POS is usable),
-  plus 40 older sales for period comparisons
-- **4 branch orders**: 1 draft and 1 submitted (urgent) waiting on the gudang, 1
-  already dispatched to Toko Pusat with a linked in-transit transfer, and 1
-  received from Thalia Online (shipped straight out of the gudang, no rack to move
-  to) — each with its per-line requested/approved/dispatched/received quantities
-- 5 credit sales with due dates, 4 purchase orders (2 received and unpaid or
-  part-paid, 1 ordered, 1 draft), attendance, leave requests
-  and audit-log entries; every product is linked to its vendor's catalogue and
-  the part-paid PO leaves a row in the vendor payment ledger
-- Rent, utilities and payroll for the month, 5 one-off operating costs
+- 7 categories, 28 products with 55 selling units across 32 variants; stock is
+  authored per location (~40% in the gudang, the rest split between the two
+  shelves) and split into batches at each location with shelf-life-derived
+  received/expiry dates
+- 63 till sessions over 21 days (~240 sales, open shifts today so the POS is
+  usable) plus 60 older sales without a shift for period comparisons — the
+  generator is a seeded PRNG anchored to the run date, so the totals drift a
+  little between runs (304 transactions, 768 lines on the 2026-11-16 run)
+- ~190 stock batches (`product_batches`). **4 branch orders**: 1 draft and 1
+  submitted
+  (urgent) waiting on the gudang, 1 already dispatched to Toko Pusat with a linked
+  in-transit transfer, and 1 received from Thalia Online (shipped straight out of
+  the gudang, no rack to move to) — each with its per-line
+  requested/approved/dispatched/received quantities
+- 5 credit sales with due dates, and 7 purchase orders spanning the whole
+  lifecycle (2 received — one unpaid, one part-paid — 1 partially received, 1
+  approved, 1 submitted, 1 draft, 1 rejected) backed by 3 goods receipts; attendance,
+  leave requests and audit-log entries; every product is linked to its vendor's
+  catalogue and has an agreed buy price on its base pack — written through the same
+  `src/lib/vendor-catalog.ts` helpers the screens use, so the demo data cannot be a
+  catalogue the app itself could not have produced; and the part-paid PO leaves a row in the
+  vendor payment ledger
+- Rent, utilities and payroll booked monthly, plus a few one-off operating costs
 
 Each item is booked the way the UI reads it: purchase liabilities go to
 `expenses` (the table Hutang/AP, Cashflow and Journal query), credit sales stay
@@ -163,8 +197,10 @@ as unpaid `transactions` for Piutang/AR, and shift cash is reconciled as
 consistent (stock matches the catalog once the per-location split is summed,
 invoice totals equal their line items, shifts reconcile, low-stock SKUs are
 exactly the intended four **in the gudang**, every branch order agrees with the
-movement it produced and never dispatches more than the gudang holds, re-seeding
-refuses without `--reset`), so the catalog in `server/demo/catalog.ts` cannot
+movement it produced and never dispatches more than the gudang holds, every
+catalogue link carries a base-pack buy price and every product has **exactly
+one** preferred vendor, re-seeding refuses without `--reset`), so the catalog in
+`server/demo/catalog.ts` cannot
 drift from the data without a test failing.
 
 ## Storefront online (`tokoonline/`)
@@ -239,7 +275,7 @@ requests, rollback, release checklist): **[docs/deployment.md](docs/deployment.m
 ## Repository layout
 
 ```
-db/schema/tenant.sql     one-database-per-tenant schema (version 4, 29 tables)
+db/schema/tenant.sql     one-database-per-tenant schema (version 10, 34 tables)
 db/migrations/           stepwise migrations for databases already on an older
                          schema version, applied by `npm run schema:apply-all`
 db/schema/seed.sql       provisioning seed with {{TOKEN}} placeholders
@@ -254,20 +290,31 @@ docs/                    architecture, feature logs, problem register, deploy ru
 
 ## Documentation
 
-The reference set lives in `docs/` (written in Indonesian). Each file carries a
-"Terakhir diperbarui" date; the feature logs and the problem register are
-append-only logs, so read the newest rows first.
+The reference set lives in `docs/` (written in Indonesian). Every living document
+carries a "Terakhir diperbarui" date; the `spec-*.md` files carry their
+original date plus a dated status note. The feature logs and the problem register
+are append-only logs, so read the newest rows first.
 
 | Document | Contents | Updated |
 | --- | --- | --- |
-| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows, isolation, decisions | 2026-11-01 |
-| [docs/deployment.md](docs/deployment.md) | Deployment runbook: Turso cloud setup, both Vercel projects, env per project, `vercel.json` contract, verification, rollback | 2026-11-01 |
-| [docs/backend.md](docs/backend.md) | Backend and database: API surface, server modules, full 33-table schema (v6), env vars, schema change history, deploy constraints on the code | 2026-11-01 |
-| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and allowed roles, data patterns, formatting, the marketplace app, limits | 2026-11-01 |
-| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-11-01 |
-| [docs/fitur-platform.md](docs/fitur-platform.md) | Platform owner capabilities, gaps and roadmap, same dated log format | 2026-10-28 |
-| [docs/kendala-solusi.md](docs/kendala-solusi.md) | Problems, bugs and mismatches actually hit (KS-01…KS-34), with cause, fix, evidence and lesson | 2026-11-01 |
-| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-11-01 |
+| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows (incl. printing, void and the vendor catalogue), isolation, decisions | 2026-11-17 |
+| [docs/deployment.md](docs/deployment.md) | Deployment runbook: Turso cloud setup, both Vercel projects, env per project, schema migration rollout, `vercel.json` contract, verification, rollback | 2026-11-17 |
+| [docs/backend.md](docs/backend.md) | Backend and database: API surface, server modules, full 34-table schema (v10), the single vendor-catalogue writer and the domain writer modules, env vars, invariants, schema change history, deploy constraints on the code | 2026-11-17 |
+| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and allowed roles, data patterns, formatting, printing & void UI, vendor/product entry and import, the marketplace app, limits | 2026-11-17 |
+| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-11-17 |
+| [docs/fitur-platform.md](docs/fitur-platform.md) | Platform owner capabilities, gaps and roadmap, same dated log format | 2026-11-16 |
+| [docs/kendala-solusi.md](docs/kendala-solusi.md) | Problems, bugs and mismatches actually hit (KS-01…KS-49), with cause, fix, evidence and lesson | 2026-11-17 |
+| [docs/spec-purchase-order.md](docs/spec-purchase-order.md) | Design record for the PO lifecycle: four documents, state machine, goods receipt, accounting split — **shipped** as migration `005` | 2026-10-30, status 2026-11-17 |
+| [docs/spec-varian-harga-vendor.md](docs/spec-varian-harga-vendor.md) | Design record for variants, per-pack buy prices and the vendor price list as PO template; §16 lists what actually landed — **shipped** as migration `006` | 2026-10-31, status 2026-11-17 |
+| [docs/spec-vendor-produk-terintegrasi.md](docs/spec-vendor-produk-terintegrasi.md) | Design record for the integrated vendor↔product catalogue: where the relation leaked, the four locked decisions, the flat 18-column sheet, PO vendor auto-fill order, why no table or column changed — **shipped** as migration `010`; §9 maps every number it quotes to the command that proves it | 2026-11-17 |
+| [docs/ringkasan-fitur-2026-11-05-06.md](docs/ringkasan-fitur-2026-11-05-06.md) | Frozen sprint summary for 5–6 November (RBAC consolidation, printing, POS/shift hardening) | 2026-11-16 |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes grouped by branch/commit, newest first, with the gate results each release shipped with | 2026-11-17 |
+| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-11-17 |
+
+The `spec-*.md` files are point-in-time design records: their bodies are never
+rewritten, only given a dated status note, so the reasoning behind a decision
+survives the release that implemented it. Everything else in `docs/` describes
+the code as it is today.
 
 `Backend.md` and `TECHNICAL_DOCS.md` in the repository root are now dated
 pointers to these documents; `TECHNICAL_ISSUES.md` is kept as the archive of the

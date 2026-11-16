@@ -101,4 +101,31 @@ describe('buildShiftZReport', () => {
     const noOther = buildShiftZReport(baseInput, CFG);
     expect(noOther.body.some((l) => l.cols?.[0] === 'Lainnya')).toBe(false);
   });
+
+  it('reports whole-bon voids as excluded, never as takings', () => {
+    const withVoids = buildShiftZReport(
+      { ...baseInput, voidCount: 2, voidAmount: 150000 },
+      CFG
+    );
+    // A named section so the reconciliation reads as "these are not revenue".
+    expect(withVoids.body.some((l) => l.text === 'VOID (TIDAK DIHITUNG)')).toBe(true);
+    const row = withVoids.body.find((l) => l.cols?.[0]?.startsWith('Pembatalan'));
+    expect(row?.cols).toEqual(['Pembatalan (2 bon)', 'Rp 150.000']);
+    // The sales total is untouched by the voids — the money query filters them
+    // out, so the printed section is information, never an adjustment.
+    expect(withVoids.body.find((l) => l.cols?.[0] === 'TOTAL PENJUALAN')?.cols?.[1]).toBe(
+      'Rp 1.885.000'
+    );
+
+    // A shift without voids prints no void section at all.
+    const clean = buildShiftZReport(baseInput, CFG);
+    expect(clean.body.some((l) => l.cols?.[0]?.startsWith('Pembatalan'))).toBe(false);
+    expect(clean.body.some((l) => l.text === 'VOID (TIDAK DIHITUNG)')).toBe(false);
+
+    // Even with the extra block, nothing overruns the paper.
+    for (const line of [...withVoids.header, ...withVoids.body, ...withVoids.footer]) {
+      if (!line.cols) continue;
+      expect(resolveLineText(line, withVoids.columns).length).toBeLessThanOrEqual(withVoids.columns);
+    }
+  });
 });

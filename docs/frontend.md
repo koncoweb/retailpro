@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/frontend.md` |
-| Terakhir diperbarui | **2026-11-06** |
+| Terakhir diperbarui | **2026-11-17** |
 | Stack | React 18 + Vite 5 + TypeScript, shadcn/ui, Tailwind, React Router 6 |
 | Bahasa UI | Indonesia (label, pesan, format Rupiah) |
 
@@ -23,8 +23,8 @@
 | Tema | `ThemeProvider` dari `hooks/use-theme`, default **dark**, key `erp-theme` |
 | Build | `vite build` → `dist/` (satu bundle ±2 MB, ada peringatan ukuran chunk) |
 | Typecheck | `npx tsc --noEmit -p tsconfig.app.json` (terpisah dari build) |
-| Lint | `npm run lint` (ESLint 9, config datar) |
-| Test | `npm run test` (Vitest; **23 file, 316 test**) |
+| Lint | `npm run lint` (ESLint 9, config datar) — **0 error pada 20 berkas yang diubah rilis v10** (1 warning lama: `react-hooks/exhaustive-deps` di `AddProductModal.tsx` L344-348). `eslint .` repo-wide masih memuat **25 error** `@typescript-eslint/no-explicit-any` di berkas yang tidak disentuh rilis ini (`src/components/dashboard/*`, `SalesReport`, `InventoryReport`, `src/lib/db/json.ts`) — jumlahnya sama dengan di `HEAD`, jadi bukan regresi dan tercatat sebagai pekerjaan terpisah |
+| Test | `npm run test` (Vitest; **30 file, 419 test**) |
 | Test E2E | `npm run test:e2e` (tester.army; `tests/**/*.e2e.ts`, butuh dev server `:8080` dan kunci model di `.env` — lihat §12) |
 | Toko online | `cd tokoonline && npm run dev` → port **8082**, `VITE_CATALOG_API_URL` (bawaan `http://localhost:3000`) |
 
@@ -50,22 +50,36 @@ src/
     stock-movement.ts      Satu-satunya penulis perpindahan stok (transfer, kirim, terima, batal)
     branch-orders.ts       Mesin status pesanan cabang: canPerform, validate*, nextOrderNumber
     procurement.ts         Mesin purchase order: status, nomor, hak setuju
+    goods-receipt.ts       Mesin penerimaan barang (GRN) di atas PO
     vendor.ts              Kode vendor, termin, kategori, saldo hutang
+    vendor-catalog.ts      SATU penulis relasi vendor⇄produk: resolve-or-create vendor, tautan katalog, is_preferred, harga beli (overwrite/gap-only), defaultVendorFor
+    vendor-catalog-sql.ts  Statement builder murni (nol import) untuk tulis di atas — dipakai bersama server/demo/ledger.ts
+    product-write.ts       Satu penulis produk: saveProductDraft() (form) + insertImportedProduct() (sheet) — diekstraksi dari Inventory.tsx
+    vendor-import.ts       Perencana sheet vendor+produk: groupVendorProductRows() + planVendorProductImport()
+    pricing.ts             Harga beli/jual per pecahan, margin, pembulatan, harga pack otomatis
+    variants.ts            Parsing atribut & label varian
+    units.ts               Daftar satuan ritel Indonesia + label turunan ("Isi 40 pcs")
+    shift-attendance.ts    Absensi otomatis dari buka/tutup shift (best-effort)
+    holidays.ts            Hari libur nasional + cuti bersama per tahun (API Tanggal Merah)
+    bulk-io.ts             Impor/ekspor massal CSV & Excel
+    password.ts            Pembuatan password sementara
     audit.ts               logAudit / logAuditTx
     date-range.ts          Rentang periode laporan + koreksi zona waktu
     formatters.ts          formatRupiah, formatTanggal
     inventory-utils.ts     SKU otomatis, validasi barcode
+    void.ts                Aturan void (guard, penurunan total, restock batch) + SQL yang bisa di-replay
     geolocation.ts         getCurrentCoords (navigator.geolocation), haversineMeters, withinRadius, formatDistance; error bertipe + pesan "butuh HTTPS" saat bukan secure context
     face.ts                Loader @vladmandic/face-api (lazy), captureDescriptor, encodeDescriptors/decodeDescriptors, bestMatch (jarak L2 < threshold); bagian matematika murni bisa diuji tanpa model
     workplace.ts           Daftar lokasi kerja (branches+warehouses ber-koordinat), locationKey, fetchLocationNames/fetchWorkplaceLocations untuk absensi & geofence
+    print/                 Subsistem cetak: document.ts (model kolom), html-render.ts, escpos.ts, print-bridges.ts, print-service.ts, receipt-doc.ts, zreport-doc.ts, receipt-printer.ts (muat data untuk cetak ulang)
   components/
     auth/{RoleBasedRoute,PermissionGate}.tsx
     layout/{POSLayout,BackOfficeLayout,Header,Sidebar}.tsx, nav-items.ts
     dashboard/*            Kartu statistik, grafik, modal detail
     inventory/*            AddProduct, StockTransfer, StockOpname, PurchaseOrder, Import/Export
-    pos/{PaymentModal,ShiftModal}.tsx
+    pos/{PaymentModal,ShiftModal,VoidDialog}.tsx
     branches/BranchDetailModal.tsx
-    vendors/*              Daftar & detail vendor
+    vendors/*              Daftar & detail vendor + VendorProductImport (sheet flat vendor+produk)
     settings/{Receipt,TaxDiscount,Bank,EmployeeRole,Inventory}Settings.tsx
     ui/*                   shadcn/ui (51 komponen, termasuk pagination-bar.tsx, permission-row.tsx)
   pages/                   Satu file per layar (lihat §3)
@@ -193,8 +207,9 @@ dipakai editor individu). Setiap simpanan layar Karyawan memanggil `useInvalidat
 | Refetch manual | Setelah mutasi berhasil (`fetchX()` dipanggil ulang) |
 | `parseJson*` | Membaca kolom JSON (`settings`, `preferences`, `details`) |
 
-Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 baris),
-`EmployeeReports.tsx` (~1.109), `Branches.tsx` (~896), `Employees.tsx` (~861), `POS.tsx` (~792).
+Halaman terbesar (perlu kehati-hatian saat mengubah): `VendorDetail.tsx` (~1.977 baris),
+`Inventory.tsx` (~1.832), `POS.tsx` (~1.348), `EmployeeReports.tsx` (~1.285), `Employees.tsx` (~1.260),
+`Branches.tsx` (~1.046), `BranchOrders.tsx` (~1.024), `POSTransactions.tsx` (~816).
 
 ---
 
@@ -218,7 +233,12 @@ Halaman terbesar (perlu kehati-hatian saat mengubah): `Inventory.tsx` (~1.462 ba
 | SKU otomatis | `lib/inventory-utils.ts` + `AddProductModal` | Format `PREFIX-YYYYMMDD-SEQ`; prefix 3 huruf dari nama kategori |
 | Combobox kategori/supplier | `AddProductModal` | Bisa menambah entri baru; disimpan saat submit |
 | Barcode | `components/ui/BarcodeGenerator.tsx` | `react-barcode`, unduh PNG |
+| Cetak struk & Z-report | `lib/print/*` + `settings/ReceiptSettings.tsx` | Satu **model dokumen berbasis karakter** (`PrintDoc`: baris `text` atau `cols` kiri-kanan) → dua renderer (HTML di iframe tersembunyi + `window.print()`; byte ESC/POS in-house) → empat transport (`driver`, WebUSB, Web Bluetooth, unduh `.prn`). Lebar roll menentukan kolom (58/60 = 32, 72 = 42, 76 = 44, 80 = 48) dan renderer HTML menghitung ukuran font agar kolom itu benar-benar muat. `printDocument()` **tidak pernah melempar** ke alur bisnis — hasil `PrintResult` menjadi toast, penjualan yang sudah commit tidak dibatalkan printer mati. Dipakai di `POS.tsx` (auto-print setelah checkout), `POSShifts.tsx` (Z-report saat tutup shift + cetak ulang), `POSTransactions.tsx` (cetak ulang struk per bon) |
+| Void transaksi | `components/pos/VoidDialog.tsx` + `lib/void.ts` | Dialog konfirmasi beralasan (min. 3 karakter) dengan pratinjau baris yang akan dicoret dan besarnya pengurangan; tombol **Void** per baris item dan **Void Bon** di modal detail `POSTransactions.tsx`. Aturan (izin `void_transaction`, batas shift `open`, owner-tier override) hidup di `voidGuard()` sebagai fungsi murni, bukan di JSX. Baris void dirender `line-through` + badge `VOID` + alasan; filter status Semua/Selesai/Void; struk void otomatis dicetak ulang bila Cetak Otomatis aktif |
 | Import/Export Excel | `inventory/ProductImportExport.tsx` | `xlsx`; template + validasi baris |
+| Import vendor + produk satu sheet | `components/vendors/VendorProductImport.tsx` + `lib/vendor-import.ts` | Tombol **Import Vendor + Produk** di `pages/vendors/Vendors.tsx`: satu baris = vendor × produk × pecahan (18 kolom `VENDOR_PRODUCT_COLUMNS`), pratinjau "N vendor baru · M produk ditautkan · K harga diperbarui" sebelum ada yang ditulis, lalu **satu `runTransaction()` per blok vendor**. Template CSV/Excel dan **Ekspor Katalog** memakai header yang sama, jadi hasil ekspor bisa diimpor balik |
+| Vendor otomatis di PO | `inventory/PurchaseOrderModal.tsx` + `lib/vendor-catalog.ts` | Belum ada vendor → picker menampilkan semua produk dengan caption vendornya; memilih produk memanggil `defaultVendorFor()` (preferred → `products.supplier_id` → vendor tunggal aktif) sehingga field vendor terisi sendiri dengan caption **"Vendor (otomatis dari produk)"** + tombol **Ubah**, tanggal diharapkan ikut terisi dari `lead_time_days`, dan harga kesepakatan pecahan itu ikut masuk. Ganti vendor saat keranjang berisi baris vendor lain memunculkan `AlertDialog` yang menghitung barisnya — bukan lagi hilang diam-diam |
+| Produk baru dari layar vendor | `pages/vendors/VendorDetail.tsx` + `inventory/AddProductModal.tsx` | Menyimpan vendor di daftar melempar ke detail vendor dengan `?tambah-produk=1` (dibaca sekali lalu dibersihkan) dan membuka `AddProductModal` yang sudah terisi vendor itu (`defaultSupplier`); tab **Produk** punya **Tambah Produk Baru** dan dialog **Hubungkan Produk** kini mendapat switch **Jadikan vendor utama** |
 | Pembayaran | `pos/PaymentModal.tsx` | Validasi tunai, hitung kembalian, pilih metode |
 | Shift | `pos/ShiftModal.tsx` → `POSShifts` | Buka/tutup kas, ringkasan per metode bayar. Modal hanya memvalidasi + menutup; toast "berhasil" dan **absensi otomatis** (`lib/shift-attendance.ts`) dikerjakan pemanggilnya setelah barisnya benar-benar ditulis. Uang tunai awal boleh kosong/`0` ("tanpa uang tunai awal", ada pintasan `Rp0`) di kedua jalur — modal POS maupun layar shift |
 | Cabang untuk seluruh POS | `hooks/use-pos-branch.ts` | Satu sumber kebenaran cabang aktif untuk till, meja shift, dan header: prioritas `session.branchId → user.assigned_branch_id → cabang pertama in-scope → baris pertama` (baris terakhir hanya untuk scope penuh), daftar cabang dipakai bersama lewat query `['pos-branches']`, pilihan manual per user disimpan di store modul (`useSyncExternalStore`) — bukan localStorage — supaya shift yang baru dibuka selalu terlihat oleh till. Bila user punya >1 cabang in-scope muncul pemilih cabang |
@@ -247,7 +267,11 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 ## 9. Batasan frontend saat ini
 
-1. **Belum ada renderer struk** — pengaturan struk tersimpan, cetak belum ada.
+1. **Dukungan perangkat keras cetak diuji manual per tipe printer** — jalur `driver` (HTML) jalan di semua
+   browser, tetapi `usb` (WebUSB) dan `bluetooth` (Web Bluetooth) butuh Chrome/Edge + secure context +
+   satu gesture **Sambungkan Printer** per sesi; printer Bluetooth murni di Windows desktop tidak punya
+   API serial Bluetooth, jadi jalur resurnya unduh `.prn`. Code page ESC/POS tidak diimplementasikan
+   (rupiah ASCII `"Rp"`, karakter non-ASCII → `?`) dan belum ada logo raster / barcode di struk.
 2. **Belum ada scanner barcode** — barcode bisa dibuat, input scanner belum ditangani.
 3. **Pemilihan pelanggan di POS belum ada** — `customer_id` sudah disiapkan di skema.
 4. **Belum ada error boundary** — kegagalan render memutihkan halaman.
@@ -262,6 +286,9 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
    tenantnya lewat konsol. Yang ditegakkan di server adalah **identitas** (bootstrap + endpoint
    admin); pintuan aksi bisnis (`can(...)`) mengatur apa yang ditawarkan aplikasi. Lihat
    §13 dan [arsitektur.md](arsitektur.md).
+10. **Void tidak membalik pembayaran gateway** — QRIS/kartu harus dikembalikan manual di terminal
+    provider; laci kas sengaja tidak dibuka saat void. Retur tanpa restock dan alokasi diskon
+    proporsional per item belum ada (`src/lib/void.ts` §Di luar cakupan di [fitur-tenant.md](fitur-tenant.md) 2.2.2).
 
 ---
 
@@ -269,10 +296,13 @@ Konvensi destruktif: gunakan `AlertDialog`, bukan `window.confirm()`.
 
 | Waktu | Ref | Perubahan |
 |---|---|---|
+| 2026-11-17 | — (working tree) | **Vendor–produk terintegrasi (skema v10, indeks saja).** Jalur tulis: `src/lib/vendor-catalog.ts` + `src/lib/vendor-catalog-sql.ts` menjadi satu-satunya penulis `vendor_products` / `vendor_price_list` / `is_preferred`, `src/lib/product-write.ts` menjadi satu-satunya penulis produk (form produk, impor massal, dan tab Produk vendor memakai fungsi yang sama), `src/lib/vendor-import.ts` memisahkan rencana dari eksekusi. UI baru: tombol **Import Vendor + Produk** + dialog pratinjau (`components/vendors/VendorProductImport.tsx`, 766 baris) dengan template CSV/Excel dan **Ekspor Katalog** berbentuk sama; menyimpan vendor di daftar kini **melempar ke detail vendor dengan form produk terbuka** (`?tambah-produk=1`, dibaca sekali lalu dibersihkan); `AddProductModal` menerima `defaultSupplier`; dialog Hubungkan Produk mendapat switch **Jadikan vendor utama**. PO: memilih produk memilih vendor (`defaultVendorFor`: preferred → supplier_id → vendor tunggal aktif) dengan caption "Vendor (otomatis dari produk)" + **Ubah**, prefill `expectedDate` dan harga kesepakatan, serta `AlertDialog` saat mengganti vendor yang akan menghapus baris vendor lain — menggantikan drop senyap. Aksesibilitas yang dibutuhkan tes: `htmlFor`/`id` pada `#product-category`, `#product-supplier`, `#po-product-picker`, `#vendor-product-import-file`. Unit: `vendor-catalog.test.ts` (25), `vendor-import.test.ts` (24), `bulk-io.test.ts` (19, header baru), `demo-tenant.test.ts` (+3 invarian katalog⇄harga/`is_preferred`/provenance `seed demo`); browser: `tests/vendor-catalog.e2e.ts` (4 kasus). Desain dibekukan di [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md) |
+| 2026-11-16 | — (working tree) | **Void transaksi di Riwayat Kasir (skema v9)**. Modal detail `POSTransactions.tsx` mendapat tombol **Void** per baris item dan **Void Bon**; dialog baru `components/pos/VoidDialog.tsx` mewajibkan alasan (min. 3 karakter) dan menampilkan pratinjau baris yang dicoret + besar pengurangannya. Seluruh aturan di `src/lib/void.ts` (`voidGuard`, `nextTotalAfterVoid`, `baseQtyForRestock`, SQL diekspor sebagai konstanta) sehingga test bisa memutar ulang query-nya tanpa React. UI: baris void `line-through` + badge `VOID` + alasan, blok jejak pembatalan (alasan/pelaku/waktu), filter status **Semua/Selesai/Void**, kolom "N bon di-void (tidak dihitung)" di ringkasan, hint bila shift tertutup. Cetak: primitif `strikethrough` di model dokumen → `ESC G 1` / `text-decoration:line-through` + penanda teks `[VOID]`, banner **TRANSAKSI DIBATALKAN** untuk bon void. Akuntansi: seluruh agregasi halaman kini memfilter `status='completed'` (Dashboard, Reports, Branches, POS/POSShifts, Cashflow, Piutang, totals riwayat) — angka pendapatan berubah bukan karena bug, tapi karena void tidak lagi dihitung. Unit: `src/lib/__tests__/void.test.ts` (16 tes) + tambahan di `receipt-doc`/`zreport-doc`/`escpos`/`html-render` |
+| 2026-11-06 | `1340350` | **Sistem cetak struk & Z-report** (`src/lib/print/*`, tanpa dependency baru): `document.ts` (model `PrintDoc` + `PAPER_WIDTHS`/`normalizePaperWidth`), `html-render.ts` (iframe tersembunyi, ukuran font dihitung dari jumlah kolom agar 32–48 kolom benar-benar muat), `escpos.ts` (encoder byte in-house: `ESC @`, `ESC a`, `ESC E`, `GS !`, `GS V B 0` cut, `ESC p 0 25 250` kick drawer, rupiah ASCII), `print-bridges.ts` + `print-service.ts` (mode driver/usb/bluetooth, fallback `.prn`, `PrintResult` tak pernah melempar), `receipt-doc.ts`/`zreport-doc.ts`/`receipt-printer.ts`. Integrasi: auto-print setelah checkout di `POS.tsx`, Z-report saat tutup shift & reprint di `POSShifts.tsx`, tombol Printer + dialog Cetak Struk di `POSTransactions.tsx`, Seksi **Printer & Koneksi** di `ReceiptSettings.tsx` (mode, lebar 58/60/72/76/80mm, `requestDevice`, Cetak Tes) — preferensi di `settings.printer`/`settings.receipt`. Rekonsiliasi bucket Z-report diperbaiki (`card←{card,debit,credit}`, `ewallet←{…}`, bucket **Lainnya** agar rincian = TOTAL). Unit: `escpos`/`receipt-doc`/`zreport-doc`/`html-render` |
 | 2026-11-06 | — (working tree) | **POS: satu sumber cabang**. Hook baru `src/hooks/use-pos-branch.ts` memuat daftar cabang sekali (query TanStack `['pos-branches']`) dan menentukan cabang aktif dengan prioritas `session.branchId → user.assigned_branch_id → cabang pertama in-scope → baris pertama` (baris terakhir hanya untuk scope penuh — scope kosong berarti *tidak* ada cabang, bukan "apa pun"), dengan pilihan manual per user lewat `useSyncExternalStore` (bukan localStorage). `POS.tsx`, `POSShifts.tsx`, `layout/POSLayout.tsx` membacanya dari satu tempat, jadi shift yang dibuka di meja shift selalu terlihat oleh till; pemilih cabang muncul bila user punya lebih dari satu cabang in-scope, dan buntu "Sesi tidak lengkap" diganti state kosong yang menjelaskan + tombol Muat Ulang. Unit: `src/hooks/use-pos-branch.test.ts` (7 kasus prioritas) |
 | 2026-11-06 | — (working tree) | **Buka/tutup shift = absensi otomatis** (`src/lib/shift-attendance.ts`, best-effort): `autoCheckInForShift()` membaca dulu baris `attendance` hari berjalan WIB lalu menyisipkan bila kosong (`status='present'`, `source='self'`, `location_type='branch'`, `notes='Otomatis dari buka shift'`); `autoCheckOutForShift()` mengisi `check_out` hanya yang masih NULL. Keduanya mengembalikan `{ ok, changed }` sehingga toast tidak mengklaim "absensi tercatat" ketika barisnya memang sudah ada; kegagalan tulis absensi hanya `toast.warning` dan tidak membatalkan shift. `AttendanceCheckIn.tsx` ikut menyeleksi `notes` dan menampilkannya di bawah badge Masuk/Keluar supaya asal baris terbaca. Unit: `src/lib/db/__tests__/shift-attendance.test.ts` (7 kasus, replay SQL ke DB sementara skema v8) |
 | 2026-11-06 | — (working tree) | **Kasir dibatasi ke transaksi saja**: `view_dashboard` dicabut dari default `cashier` di `src/config/roles.ts` **dan** dari snapshot `role_permissions` di `db/schema/seed.sql` — seed menyimpan matriks penuh sehingga pencabutan di kode saja tidak sampai ke tenant yang settings-nya sudah terbaca (merge per key: nilai eksplisit menang). Guard `/pos/transactions` kini `guardedAny(["access_pos", "view_dashboard", "view_inventory"])` agar buku transaksi till sendiri tetap terbuka. Uji: `db/__tests__/seed.test.ts` menambah penjaga bahwa seed tidak boleh bertentangan dengan `DEFAULT_ROLE_PERMISSIONS` |
-| 2026-11-06 | — (working tree) | **Notifikasi & state error POS** (`ShiftModal.tsx`, `POS.tsx`): petty cash kosong/`0` sah dengan tombol cepat `Rp0 (tanpa tunai)` dan pesan "tanpa uang tunai awal"; toast "berhasil" dipindah ke pemanggil setelah tulis DB (sebelumnya modal menutup dengan toast kemenangan prematur); `fetchBranches`/`fetchProducts` tidak lagi diam di `console.error` — ada banner "Gagal memuat data" + tombol Coba lagi dan toast berisi pesan asli; sebelum shift dibuka yang tampil banner blocking di atas grid ("Shift belum dibuka — transaksi tidak bisa diproses") beserta tombol Buka Shift, bukan redirect senyap; pesan stok saat bayar menyebut nama produk dan sisa stok. Perbaikan terpisah di `src/hooks/use-permissions.ts`: query grants di-*disable* selama `/api/tenant/bootstrap` belum menjawab, dan TanStack melaporkan itu sebagai `isLoading: false` tanpa data — `ModeSelect` membacanya sebagai "role tidak dikenali" sehingga setiap hard reload menampilkan panel "Belum ada layar untuk Anda" yang menyinggung, lalu `RoleBasedRoute` bisa memantul ke /mode-select untuk layar yang justru boleh dibuka. `loading` kini berarti "belum ada jawaban dan belum ada bacaan yang berjalan" (`data === undefined && (!getTenantSession() || isLoading)`), jadi yang muncul adalah "Memuat hak akses…" |
+| 2026-11-06 | — (working tree) | **Notifikasi & state error POS** (`ShiftModal.tsx`, `POS.tsx`): petty cash kosong/`0` sah dengan tombol cepat `Rp0 (tanpa tunai)` dan pesan "tanpa uang tunai awal"; toast "berhasil" dipindah ke pemanggil setelah tulis DB (sebelumnya modal menutup dengan toast kemenangan prematur); `fetchBranches`/`fetchProducts` tidak lagi diam di `console.error` — ada banner "Gagal memuat data" + tombol Coba lagi dan toast berisi pesan asli; sebelum shift dibuka yang tampil banner blocking di atas grid ("Shift belum dibuka — transaksi tidak bisa diproses") beserta tombol Buka Shift, bukan redirect senyap; pesan stok saat bayar menyebut nama produk dan sisa stok. Perbaikan terpisah di `src/hooks/use-permissions.ts`: query grants di-*disable* selama `/api/tenant/bootstrap` belum menjawab, dan TanStack melaporkan itu sebagai `isLoading: false` tanpa data — `ModeSelect` membacanya sebagai "role tidak dikenali" sehingga setiap hard reload menampilkan panel "Belum ada layar untuk Anda" yang menyinggung, lalu `RoleBasedRoute` bisa memantul ke /mode-select untuk layar yang justru boleh dibuka. `loading` kini berarti "belum ada jawaban dan belum ada bacaan yang berjalan" (`data === undefined && (!getTenantSession() \|\| isLoading)`), jadi yang muncul adalah "Memuat hak akses…" |
 | 2026-11-06 | — (working tree) | **POS responsif**: grid produk `grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5`; di bawah `lg` keranjang menjadi bar ringkas lengket (jumlah item + total + Bayar) yang membuka `Dialog` berisi baris yang sama, jadi grid tetap punya satu layar penuh; `POSShifts.tsx` riwayat shift jadi kartu di `<md` dan form satu kolom penuh; `POSTransactions.tsx` filter vertikal di mobile, baris transaksi jadi kartu, dialog detail layar penuh; semua dialog POS `max-w-[95vw]`, input pencarian `text-base` (tanpa zoom paksa di mobile), target sentuh `size="pos"` ≥44px dipertahankan. Spot-check viewport (Playwright, 390/662/768/820/1024/1440) menemukan tiga cacat yang ikut diperbaiki: header `POSLayout` 855px pada 820px (tab nav + label cabang pindah ke `lg`, bar navigasi lengket jadi `lg:hidden`, grup kiri `min-w-0` + cabang `truncate` sehingga tombol aksi tidak lagi mendorong header keluar layar), tabel 8 kolom `POSTransactions` yang di-clip `overflow-hidden` antara `md`–`lg` (kini `overflow-x-auto`), dan kartu statistik yang tidak bisa menyusut di bawah ±220px karena `Rp 113.063.000` memakai nbsp (kini `grid-cols-1 sm:grid-cols-2 lg:grid-cols-4`). Hasil ukur: `document.scrollWidth == innerWidth` di semua lebar, tanpa scroll menyamping di `main` |
 | 2026-11-06 | — (working tree) | **Izin khusus per karyawan (restrict-only) + tab Role responsif**. Resolver `permission-matrix.ts` menambah `effectiveUserPermissions(grant, restrictions)` dan `roleGrantedKeys()`; cache kembar `['tenant-user-permissions']` (`UserPermissionOverrides`, dipetai `userId→{key:false}`) di samping cache `grants` yang bentuknya tak berubah, sehingga seorang karyawan bisa dicabut sebagian izin role-nya tetapi **tidak pernah** ditambah (hanya `false` berarti, ditegakkan di resolver). Layar Karyawan: komponen `employees/IndividualPermissionEditor.tsx` + aksi baris "Izin khusus" (Shield, `can('edit_employee')`, disembunyikan untuk diri sendiri), badge "N pengecualian", hapus karyawan membersihkan entri via `clearUserPermissionOverrides`, audit `update_employee_permissions`. `bootstrap` kini memakai `readTenantAccess` (satu baca settings) dan mengembalikan slice `userPermissions` pemanggil; `TenantContext` men-seed query baru itu. Tab Role `EmployeeRoleSettings.tsx`: daftar role jadi **strip geser horizontal** di `md`/`lg` (satu kolom, tak lagi overflow vertikal di layar pendek), master/detail berdampingan tetap hanya di `xl`, `Sheet` mobile tak berubah. Uji: unit `effectiveUserPermissions` (5 kasus) + `tests/permissions.e2e.ts` "per-employee permission exceptions" |
 | 2026-11-05 | — (working tree) | **Absensi geolokasi & pengenal wajah (skema v8)**. Library baru: `src/lib/geolocation.ts` (`getCurrentCoords`, `haversineMeters`, `withinRadius`, `formatDistance`) dan `src/lib/face.ts` (`@vladmandic/face-api` dimuat lazy, `captureDescriptor`, encode/decode descriptor 128-float, `bestMatch`) + `src/lib/workplace.ts` (daftar cabang/gudang ber-koordinat). Layar baru: `/absen` (`AttendanceCheckIn.tsx`, self-service, hard-block di luar radius & wajah tak cocok, kartu "Absensi/Presensi" selalu tampil di `ModeSelect`), `/backoffice/hr/face` (`FaceEnrollment.tsx`, owner mendaftarkan 4 sampel wajah → descriptor, hapus data). Dialog Cabang & Gudang menambahkan input lat/lng + radius + tombol "Pakai GPS sekarang" + switch `require_geo`/`require_face`. `EmployeeReports.tsx` menampilkan kolom Sumber/Lokasi/Geo/Wajah (di tabel & ekspor XLSX) dan capture GPS opsional di jalur override owner. Kunci izin baru `manage_attendance`. Model face-api di-vendor ke `public/models/`. Jarak & kecocokan dihitung di perangkat (audit, bukan paksaan DB); kamera/GPS butuh secure context |
@@ -360,7 +390,7 @@ sungguhan; langkah yang butuh ketepatan selector ditulis deterministik, langkah 
 
 | Aspek | Nilai |
 |---|---|
-| Berkas uji | `tests/**/*.e2e.ts` — 9 berkas, 59 test (53 `test` + 6 `test.setup` yang mengembang satu per akun): `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac`, `permissions`, `bulk-import` |
+| Berkas uji | `tests/**/*.e2e.ts` — 11 berkas: 60 `test` + 1 `test.setup` yang mengembang satu per akun (6), jadi 66 saat dijalankan penuh: `login`, `auth.setup`, `owner`, `admin`, `kasir`, `gudang`, `rbac`, `permissions`, `bulk-import`, `pos-printing`, `vendor-catalog` |
 | Konfigurasi | `e2e.config.ts` |
 | Akun uji | Blok `credentials` di `e2e.config.ts` (`owner`, `admin`, `manager`, `kasir`, `gudang`, `purchasing`), diselesaikan lewat `signIn()` di `tests/support/accounts.ts`; dibuat oleh `npm run e2e:users` |
 | Target | `APP_URL`, default `http://localhost:8080` (`npm run dev`) |
@@ -428,6 +458,39 @@ Aturan yang dipakai di repo ini:
     menghapus key yang kedaluwarsa (mis. `role_permissions.cashier.view_dashboard`) — `npm run
     demo:cloud` juga bisa, tetapi ia mengganti data demo dan mewajibkan `npm run e2e:users` lagi.
 
+14. **Assertion database harus mengikuti plane yang sama dengan aplikasi.** Aturan 13 di atas punya
+    konsekuensi praktis: `.env` bisa menyimpan `CONTROL_DB_URL` Turso cloud sementara tenant yang
+    benar-benar dipakai SPA terdaftar di control DB file (`local-thalia` → shim `:8090` →
+    `.data/demo/thalia.db`), dan membaca `CONTROL_DB_URL` mentah menghasilkan tes yang "berhasil di
+    layar, gagal di database". `tenantClient()` di `tests/support/db.ts` sekarang mengenali
+    `file:`/loopback lewat `isLocalDatabase()` dan connect **tanpa** token platform untuk itu. Dua
+    jebakan yang terbukti: `process.loadEnvFile()` **tidak** menimpa variabel shell yang sudah di-set
+    (jadi `$env:CONTROL_DB_URL='file:.data/control.db'` memang menang), dan
+    `npm run schema:apply-all` hanya tahu cara mint token Turso — plane lokal tidak bisa di-migrate
+    lewat runner itu, tapi `npm run demo:local` menerapkannya ulang dari `tenant.sql`.
+15. **`role="combobox"` pada `<Button>` menampilkan isinya sebagai *value*, bukan *name*.**
+    `getByRole('combobox', { name: 'Pilih produk...' })` tidak akan pernah cocok
+    (`combobox expandable haspopup="dialog" value="Pilih produk..."`). Yang bisa: asosiasi
+    `<Label htmlFor>` (maka `#product-category`, `#product-supplier`), atau id pada pemicunya
+    (`#po-vendor`, `#po-product-picker`, `#vendor-product-import-file`). Konsekuensi lain: input file
+    yang `hidden` tidak muncul di pohon aksesibilitas, jadi tes menyerahkan sheet ke inputnya langsung
+    lewat `setInputFiles` alih-alih menekan tombol yang membuka picker OS.
+16. **Satu tes impor harus bersih saat dimulai.** Kebijakan "master aditif" berarti baris yang sudah
+    ada tidak pernah ditimpa, termasuk telepon yang sengaja diubah tes lain — jadi
+    `tests/vendor-catalog.e2e.ts` menyapu universe fixture (`purgeFixtureRows()`, termasuk vendor sisa
+    percobaan yang gagal di tengah jalan) sebelum kasus pertama, dan kasus re-import tetap membuktikan
+    harganya mengikuti sheet.
+17. **Kalau view Browser IDE tersembunyi, `take_screenshot` gagal — dan itu bukan kegagalan aplikasi.**
+    `browser-use` membalas `NATIVE_BROWSER_VIEWPORT_UNAVAILABLE (visible=false, visibilityState=hidden)`
+    selama panel Browser tidak terlihat di layar, dan `click` pada elemen di dalam popover bisa `Timed out`.
+    Bukti visual tetap bisa didapat tanpa itu: jalankan chromium milik `ms-playwright` lewat
+    `playwright-core` (`executablePath` = `…\ms-playwright\chromium-<rev>\chrome-win64\chrome.exe`,
+    `headless: true`, viewport 1440×900) dan tulis PNG ke `.data/evidence/` — skripnya di
+    `.data/evidence.mjs`, artefaknya tidak ikut di-commit. Untuk periksa **isi** layar, `take_snapshot`
+    dan `evaluate_script` tetap jalan tanpa view yang terlihat; catatan: item `cmdk` tidak muncul di
+    pohon aksesibilitas, jadi baca `[cmdk-item]` lewat DOM. Assertions tetap milik
+    `tests/*.e2e.ts`, bukan skrip bukti.
+
 Menjalankan:
 
 ```sh
@@ -466,18 +529,36 @@ Aturan yang dijamin resolver (dan diuji di `src/lib/permission-matrix.test.ts` +
    lain jadi kosong.
 5. Baris **tanpa lokasi** tidak muncul untuk peran ber-scope sempit — "bagaimana stok di
    tempat saya" tidak dijawab oleh angka tanpa cabang/gudang.
+6. **Deklarasi ≠ penegakan.** Kunci yang muncul di `PERMISSION_CATALOG` hanya berpengaruh kalau
+   ada yang membacanya — guard route (`permission`/`anyOf`), item `nav-items.ts`, `can(key)` di
+   layar, atau aturan bisnis di modul murni. Hari ini tepat satu kunci belum punya konsumen:
+   `stock_opname` (dinyatakan dan default `true` untuk `warehouse`, tidak dibaca kode mana pun) —
+   layar opname sendiri terbuka lewat `view_inventory`. Jadi klaim "satu katalog jadi sumber
+   tunggal" berlaku untuk **penyimpanan & tampilan matriks**, bukan untuk jaminan bahwa setiap
+   sakelar benar-benar menggembok sesuatu.
 
 Cara menambah izin baru: satu entri di `PERMISSION_CATALOG` (key, label, hint) + nilai default
 di `DEFAULT_ROLE_PERMISSIONS` untuk peran yang berhak. Guard route, sidebar, pratinjau role,
 dan tes katalog membaca dari sana, jadi tidak ada daftar kedua yang bisa tertinggal.
 
-Cara **mencabut** default: `db/schema/seed.sql` menyimpan snapshot matriks penuh untuk tenant
-baru, dan dokumen `settings.role_permissions` menimpa default per kunci — jadi mencabut hanya di
-kode tidak mengubah apa pun untuk tenant yang sudah ada. Cabut di **dua** tempat (lihat kasus
-`cashier.view_dashboard`), dan `db/__tests__/seed.test.ts` akan menolak kalau keduanya berbeda.
+Cara **mencabut** default: `db/schema/seed.sql` menyimpan snapshot `role_permissions` untuk tenant
+baru, dan dokumen itu **boleh kurang kunci** (yang ditulis hanya yang ada saat seed disusun —
+owner-tier 18 kunci, `store_manager` 10, `warehouse` 4, `cashier` 2, `staff` 0, dari 31 kunci
+catalog) karena resolver menggabung per kunci: kunci yang tidak ditulis memakai default kode.
+Yang tidak boleh adalah **membantah**: kunci yang ditulis harus sama nilainya dengan
+`DEFAULT_ROLE_PERMISSIONS`, dan `db/__tests__/seed.test.ts` menguji dua arah itu. Karena itu
+mencabut izin dari satu tempat saja tidak lengkap — kalau seed masih menulis `true`, tenant baru
+kembali mendapat izin itu di belakang default kode (lihat kasus `cashier.view_dashboard`).
 
 Bentuk penyimpanan `role_permissions` / `custom_roles` / `role_scopes` dan batas
 `mergeTenantSettings` (satu level, last-write-wins) dijelaskan di
-[backend.md](backend.md) §pengaturan-tenant; endpoint tulisnya (`/api/admin/users`,
+[backend.md](backend.md) §5.11; endpoint tulisnya (`/api/admin/users`,
 `/api/admin/users/[id]`) juga di sana.
+
+Tidak semua kunci izin menjaga sebuah **route**. Sebagian menjaga **tombol di dalam layar**, dan
+kunci semacam itu tidak muncul di peta route §3: `apply_discount` dan `void_transaction` di POS /
+Riwayat Kasir, `create_po`/`approve_po`/`receive_po`/`cancel_po` di layar PO, `export_reports` di
+tombol ekspor. Polanya selalu sama — `PermissionGate`/`can(key)` untuk UI, aturan bisnisnya sendiri
+hidup di modul murni (`src/lib/void.ts`, `src/lib/procurement.ts`, `src/lib/branch-orders.ts`) agar
+bisa diuji tanpa React dan tidak bisa dilewati oleh komponen yang lupa memanggil `can`.
 

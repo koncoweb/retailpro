@@ -933,13 +933,16 @@ export default function POS() {
 
       // Closing: expected cash is recomputed from the ledger, not from the
       // modal's client-side running total, so a missed refresh cannot fake a
-      // balanced drawer.
+      // balanced drawer. Only `completed` bons count: a voided bon keeps its
+      // `total_amount`, and an item void already lowered its bon's total, so
+      // the drawer never books money that went back to the customer (009).
       const actualCash = data.actualCash ?? 0;
       const shiftRes = await query<{ initial_cash: number; cash_total: number }>(
         `SELECT COALESCE(s.initial_cash, 0) AS initial_cash,
                 COALESCE((SELECT SUM(t.total_amount)
                             FROM transactions t
-                           WHERE t.shift_id = s.id AND t.payment_method = 'cash'), 0) AS cash_total
+                           WHERE t.shift_id = s.id AND t.status = 'completed'
+                             AND t.payment_method = 'cash'), 0) AS cash_total
            FROM shifts s
           WHERE s.id = $1`,
         [currentShiftId]

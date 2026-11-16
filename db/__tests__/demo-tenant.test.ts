@@ -64,9 +64,10 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
   });
 
   it('provisions the v8 attendance geo/face data and reinstalls the today-only guard', async () => {
-    // schema bumped to v8
+    // schema is now at v10 (vendor catalogue indexes); the attendance geo/face
+    // columns it carries still originate from v8 and must survive the bump.
     const version = await rows<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(Number(version[0].version)).toBe(8);
+    expect(Number(version[0].version)).toBe(10);
 
     // every branch carries coordinates so the geofence screens have a target
     const noGeo = await scalar(
@@ -260,6 +261,36 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
         `SELECT p.id FROM products p
            JOIN vendor_products vp ON vp.product_id = p.id
           WHERE vp.vendor_id <> p.supplier_id`
+      )
+    ).toHaveLength(0);
+
+    // The catalogue is written through src/lib/vendor-catalog-sql.ts, the same
+    // builders the screens use, so a seeded link can never arrive without an
+    // agreed buy price on its base pack. `notes` is the provenance the helper
+    // always stamps, and the only place that value can come from is that module.
+    expect(
+      await scalar(`SELECT count(*) AS value FROM vendor_price_list WHERE notes = 'seed demo'`)
+    ).toBe(await scalar(`SELECT count(*) AS value FROM vendor_price_list`));
+    expect(
+      await rows(
+        `SELECT vp.vendor_id, vp.product_id FROM vendor_products vp
+          WHERE NOT EXISTS (
+            SELECT 1 FROM vendor_price_list vpl
+              JOIN product_variants v ON v.id = vpl.variant_id
+             WHERE vpl.vendor_id = vp.vendor_id
+               AND v.product_id = vp.product_id
+               AND vpl.conversion_factor = 1
+          )`
+      )
+    ).toHaveLength(0);
+
+    // Exactly one preferred vendor per product, or the PO auto-fill would depend
+    // on row order instead of the owner's decision.
+    expect(
+      await rows(
+        `SELECT product_id FROM vendor_products
+          GROUP BY product_id
+         HAVING SUM(is_preferred) <> 1`
       )
     ).toHaveLength(0);
   });

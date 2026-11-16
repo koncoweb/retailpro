@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   CUSTOMER_COLUMNS,
   PRODUCT_COLUMNS,
+  VENDOR_COLUMNS,
+  VENDOR_PRODUCT_COLUMNS,
+  VENDOR_PRODUCT_TEMPLATE_ROWS,
   keepValid,
   normalizeRows,
   parseIdNumber,
@@ -126,5 +129,48 @@ describe('keepValid', () => {
     );
     expect(valid).toHaveLength(1);
     expect(invalid).toHaveLength(1);
+  });
+});
+
+describe('VENDOR_PRODUCT_COLUMNS', () => {
+  it('writes a header row that reads back as the same keys', () => {
+    const csv = toCsv(VENDOR_PRODUCT_TEMPLATE_ROWS, VENDOR_PRODUCT_COLUMNS);
+    const header = csv.replace(/^\uFEFF/, '').split('\r\n')[0];
+    expect(header).toBe(VENDOR_PRODUCT_COLUMNS.map((c) => c.label).join(','));
+  });
+
+  it('round-trips a template row through its header labels', () => {
+    for (const template of VENDOR_PRODUCT_TEMPLATE_ROWS) {
+      // A sheet is header-keyed, the screen code is key-keyed: the template has
+      // to survive that translation unchanged, or an exported catalogue could
+      // never be imported back.
+      const byLabel: Record<string, string> = {};
+      for (const column of VENDOR_PRODUCT_COLUMNS) {
+        byLabel[column.label] = template[column.key] ?? '';
+      }
+      const [read] = normalizeRows([byLabel], VENDOR_PRODUCT_COLUMNS);
+      for (const column of VENDOR_PRODUCT_COLUMNS) {
+        expect(read[column.key]).toBe(byLabel[column.label]);
+      }
+    }
+  });
+
+  it('keeps vendor identity apart from product identity', () => {
+    // "Kode" alone is the vendor's, "SKU" is the product's: a sheet header must
+    // never be ambiguous between the two masters on the same line.
+    const [read] = normalizeRows(
+      [{ Kode: 'VND-1', SKU: 'P-1', 'Nama Vendor': 'PT A', 'Nama Produk': 'Kopi' }],
+      VENDOR_PRODUCT_COLUMNS
+    );
+    expect(read.vendorCode).toBe('VND-1');
+    expect(read.sku).toBe('P-1');
+    expect(read.vendorName).toBe('PT A');
+    expect(read.productName).toBe('Kopi');
+  });
+
+  it('does not shadow the vendor-only columns', () => {
+    const vendorKeys = VENDOR_COLUMNS.map((column) => column.key);
+    expect(vendorKeys).toContain('code');
+    expect(VENDOR_PRODUCT_COLUMNS.map((column) => column.key)).not.toContain('code');
   });
 });

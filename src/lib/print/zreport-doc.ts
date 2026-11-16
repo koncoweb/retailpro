@@ -36,6 +36,9 @@ export interface ZReportInput {
    *  four named buckets so the breakdown always equals TOTAL PENJUALAN. */
   byMethod: { cash: number; card: number; ewallet: number; qris: number; other?: number };
   totalSales: number;
+  /** Whole-bon voids in this shift, shown for reconciliation (009). */
+  voidCount?: number;
+  voidAmount?: number;
   initialCash: number;
   expectedCash: number;
   finalCash: number;
@@ -78,6 +81,13 @@ export function buildShiftZReport(input: ZReportInput, cfg: ReceiptConfig): Prin
       ? [{ cols: ['Lainnya', rupiah(input.byMethod.other)] } as PrintDocLine]
       : []),
     { cols: ['TOTAL PENJUALAN', rupiah(input.totalSales)], bold: true },
+    ...(input.voidCount && input.voidCount > 0
+      ? ([
+          dividerLine(columns),
+          { text: label3('void (tidak dihitung)'), bold: true },
+          { cols: [`Pembatalan (${input.voidCount} bon)`, rupiah(input.voidAmount ?? 0)] },
+        ] as PrintDocLine[])
+      : []),
     dividerLine(columns),
     { text: label3('kas akhir'), bold: true },
     { cols: ['Modal Awal', rupiah(input.initialCash)] },

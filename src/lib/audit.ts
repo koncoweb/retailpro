@@ -30,6 +30,10 @@ export type AuditAction =
   | "cancel_po"
   | "checkout"
   | "refund"
+  // A void is its own auditable event, not a generic "update": who cancelled a
+  // paid bon (or one line of it), why, and how much came back is what the owner
+  // traces in the audit log, so it gets a dedicated action.
+  | "void_transaction"
   | "create_employee"
   | "update_employee"
   // Identity changes made through `/api/admin/users/[id]` are auditable events

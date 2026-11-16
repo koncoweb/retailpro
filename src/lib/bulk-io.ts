@@ -269,6 +269,102 @@ export const VENDOR_TEMPLATE_ROWS: BulkRow[] = [
   },
 ];
 
+/**
+ * One flat sheet holding vendors AND their products: a row is
+ * (vendor, product, pack), with the vendor columns repeated on every line. It
+ * is deliberately the same shape as the vendor catalogue export, so a screen
+ * can export its catalogue, edit the prices in Excel, and import it back.
+ *
+ * Rows that carry vendor fields and no product fields are a vendor on its own.
+ */
+export const VENDOR_PRODUCT_COLUMNS: ColumnDef[] = [
+  { key: "vendorCode", label: "Kode Vendor", aliases: ["kode vendor", "kode", "vendor code"], width: 12 },
+  { key: "vendorName", label: "Nama Vendor", aliases: ["nama vendor", "vendor", "supplier"], width: 28 },
+  { key: "vendorCategory", label: "Kategori Vendor", aliases: ["kategori vendor"], width: 14 },
+  { key: "contactPerson", label: "Kontak", aliases: ["kontak", "contact person", "pic"], width: 18 },
+  { key: "phone", label: "Telepon", aliases: ["telp", "no telp", "phone"], width: 16 },
+  { key: "email", label: "Email", aliases: ["surel", "e-mail"], width: 24 },
+  { key: "terms", label: "Termin (hari)", aliases: ["termin", "payment terms", "termin hari"], width: 12 },
+  { key: "sku", label: "SKU", aliases: ["kode produk", "sku produk"], width: 16 },
+  { key: "productName", label: "Nama Produk", aliases: ["produk", "nama", "product", "name"], width: 30 },
+  { key: "productCategory", label: "Kategori Produk", aliases: ["kategori produk", "kategori"], width: 16 },
+  { key: "price", label: "Harga Jual", aliases: ["harga jual", "harga", "price"], width: 12 },
+  { key: "stock", label: "Stok Awal", aliases: ["stok", "stock", "qty"], width: 10 },
+  { key: "minStock", label: "Stok Minimum", aliases: ["minimum", "min stok", "reorder"], width: 12 },
+  { key: "unit", label: "Satuan", aliases: ["satuan", "unit", "pack", "kemasan"], width: 12 },
+  { key: "factor", label: "Faktor", aliases: ["faktor", "isi", "conversion factor"], width: 10 },
+  { key: "buyPrice", label: "Harga Beli", aliases: ["harga beli", "modal", "cost", "hpp"], width: 12 },
+  { key: "minOrder", label: "Min Order", aliases: ["min order", "minimum order", "moq"], width: 12 },
+  { key: "vendorSku", label: "Vendor SKU", aliases: ["vendor sku", "sku vendor"], width: 16 },
+];
+
+/**
+ * Two vendors, one of them with a two-pack product: the sample has to show that
+ * a product spans several rows and that a vendor may arrive without products.
+ */
+export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
+  {
+    vendorCode: "VND-9999",
+    vendorName: "PT Contoh Vendor",
+    vendorCategory: "supplier",
+    contactPerson: "Bpk. Contoh",
+    phone: "081200000000",
+    email: "contoh@vendor.id",
+    terms: "30",
+    sku: "CONTOH-001",
+    productName: "Kopi Sachet Contoh",
+    productCategory: "Minuman",
+    price: "1000",
+    stock: "200",
+    minStock: "20",
+    unit: "Pcs",
+    factor: "1",
+    buyPrice: "700",
+    minOrder: "1",
+    vendorSku: "KS-1",
+  },
+  {
+    vendorCode: "VND-9999",
+    vendorName: "PT Contoh Vendor",
+    vendorCategory: "supplier",
+    contactPerson: "Bpk. Contoh",
+    phone: "081200000000",
+    email: "contoh@vendor.id",
+    terms: "30",
+    sku: "CONTOH-001",
+    productName: "Kopi Sachet Contoh",
+    productCategory: "Minuman",
+    price: "22000",
+    stock: "0",
+    minStock: "20",
+    unit: "Karton",
+    factor: "24",
+    buyPrice: "16000",
+    minOrder: "1",
+    vendorSku: "KS-CARTON",
+  },
+  {
+    vendorCode: "VND-9998",
+    vendorName: "CV Contoh Saja",
+    vendorCategory: "distributor",
+    contactPerson: "Ibu Contoh",
+    phone: "081300000000",
+    email: "cv@vendor.id",
+    terms: "14",
+    sku: "",
+    productName: "",
+    productCategory: "",
+    price: "",
+    stock: "",
+    minStock: "",
+    unit: "",
+    factor: "",
+    buyPrice: "",
+    minOrder: "",
+    vendorSku: "",
+  },
+];
+
 export const CUSTOMER_COLUMNS: ColumnDef[] = [
   { key: "name", label: "Nama", aliases: ["nama pelanggan", "customer", "name"], width: 26 },
   { key: "phone", label: "Telepon", aliases: ["telp", "no telp", "hp", "phone"], width: 18 },

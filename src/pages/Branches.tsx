@@ -134,7 +134,7 @@ export default function Branches() {
           (SELECT count(DISTINCT pb.product_id) FROM product_batches pb
              JOIN branch_warehouses bw ON bw.warehouse_id = pb.warehouse_id
             WHERE bw.branch_id = b.id AND pb.quantity_current > 0) as products,
-          (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE branch_id = b.id AND created_at >= date('now','start of month')) as sales_this_month
+          (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE status = 'completed' AND branch_id = b.id AND created_at >= date('now','start of month')) as sales_this_month
         FROM branches b
         ORDER BY b.is_headquarters DESC, b.name
       `);

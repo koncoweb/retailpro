@@ -53,6 +53,8 @@ function encodeLine(line: PrintDocLine, columns: number, bytes: number[]): void 
   bytes.push(ESC, 0x61, alignByte(line.align));
   // ESC E <n>: bold on/off.
   bytes.push(ESC, 0x45, line.bold ? 1 : 0);
+  // ESC G <n>: strike font on/off — how a voided line prints crossed out.
+  bytes.push(ESC, 0x47, line.strikethrough ? 1 : 0);
   // GS ! <n>: character size (width nibble | height nibble). size 2 → 0x11.
   bytes.push(GS, 0x21, line.size === 2 ? 0x11 : 0x00);
 
@@ -61,6 +63,7 @@ function encodeLine(line: PrintDocLine, columns: number, bytes: number[]): void 
 
   // Reset emphasis so the next line is clean.
   bytes.push(ESC, 0x45, 0);
+  bytes.push(ESC, 0x47, 0);
   bytes.push(GS, 0x21, 0);
 }
 

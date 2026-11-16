@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/kendala-solusi.md` |
-| Terakhir diperbarui | **2026-11-06** |
+| Terakhir diperbarui | **2026-11-17** |
 | Isi | Masalah, bug, error, dan ketidaksesuaian yang benar-benar dihadapi — beserta cara mengatasi dan pelajarannya |
 
 ## Cara memakai log ini
@@ -57,6 +57,15 @@
 | KS-38 | 2026-11-05 | Simpan matriks membekukan default semua role ke dokumen (snapshot) | Selesai |
 | KS-39 | 2026-11-05 | `/api/tenant/bootstrap` 500 di produksi: modul src yang dijangkau server memakai alias `@/` | Selesai |
 | KS-40 | 2026-11-06 | E2E locator gagal: komponen responsif me-render teks yang sama dua kali di DOM (table + card) | Selesai |
+| KS-41 | 2026-11-06 | Akses printer (WebUSB/Web Bluetooth) butuh gesture + secure context; kegagalan cetak hampir memblokir penjualan yang sudah commit | Selesai |
+| KS-42 | 2026-11-06 | Renderer HTML memakai 9pt terpaku → struk 48 kolom (80mm) dan 72/76mm meluber melewati lebar roll | Selesai |
+| KS-43 | 2026-11-06 | Z-report: POS menyimpan `debit`/`credit`/`ewallet`, SQL hanya menghitung `card`/`ewallet`/`qris` → kolom "Kartu" selalu Rp 0 | Selesai |
+| KS-44 | 2026-11-16 | Setelah void per bon, sebagian laporan masih menghitung bon batal karena query tidak menyaring `status='completed'` | Selesai |
+| KS-45 | 2026-11-16 | Dialog cetak native + iframe print membekukan screenshot & `evaluate_script` di verifikasi browser | Selesai (pulih lewat navigasi) |
+| KS-46 | 2026-11-16 | Menghitung ulang total dari sisa baris saat void item diam-diam menghapus diskon bon | Selesai |
+| KS-47 | 2026-11-16 | Tabel peran×menu di dokumen ditulis tangan → kehilangan `purchasing`, dan satu kunci izin ternyata tidak ditegakkan kode | Selesai (tabel dirender dari kode) |
+| KS-48 | 2026-11-16 | Dua dokumen spec masih mengklaim "belum ada kode yang ditulis" padahal fiturnya lama terpasang — plus satu anchor internal mati | Selesai (header status + catatan titik waktu) |
+| KS-49 | 2026-11-17 | Dokumen tidak punya penjaga: tabel markdown terbelah dan angka lama selamat dari re-sync, sementara auditor SQL membaca komentar sebagai kode | Selesai (`npm run docs:check` + `commentRanges()`, keduanya dengan positive control) |
 
 ---
 
@@ -538,6 +547,114 @@
 
 ---
 
+## KS-41 · 2026-11-06 · Akses printer butuh gesture & secure context — kegagalan cetak hampir memblokir penjualan — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Pada rancangan pertama, cetak dipandang sebagai bagian dari alur checkout: bila `printDocument()` melempar (perangkat belum dipilih, izin ditolak, kabel dicabut), kasir melihat error dan transaksi yang **sudah commit** terlihat gagal. Selain itu tombol "Cetak" di sesi browser baru selalu menolak sebelum pengguna memilih perangkat |
+| **Akar masalah** | Dua sifat platform digabung jadi satu kesalahan. (1) WebUSB dan Web Bluetooth hanya tersedia di **secure context** dan wajib dipanggil dari dalam gesture pengguna (`navigator.usb.requestDevice` / `navigator.bluetooth.requestDevice`) — tidak ada pairing yang dipulihkan otomatis antar sesi, jadi mode `usb`/`bluetooth` "belum tersambung" adalah keadaan normal, bukan error. (2) Windows desktop tidak punya API serial untuk Bluetooth, jadi printer thermal Bluetooth di PC tidak bisa diakses langsung dari browser sama sekali |
+| **Solusi** | Cetak dijadikan **sisi api yang tidak pernah melempar**: `print-service.printDocument()` mengembalikan `PrintResult { ok, via, error? }` dan pemanggil hanya mengubahnya menjadi toast; urutan pemilihan transport punya fallback eksplisit (`usb`/`bluetooth` tanpa handle hidup → `driver`; `driver` gagal → unduh `.prn`). Seksi **Printer & Koneksi** di `ReceiptSettings.tsx` menyediakan tombol **Sambungkan Printer** (satu gesture per sesi) + Cetak Tes + status terhubung, dan auto-print hanya berjalan **setelah** transaksi commit |
+| **Bukti** | `src/lib/print/print-service.ts` (kontrak `PrintResult`, aturan fallback di komentar kepala modul), `src/lib/print/print-bridges.ts`. Verifikasi browser 2026-11-16: struk 80mm keluar lewat jalur driver, dan membatalkan dialog cetak tidak mengubah data bon (308 baris riwayat tetap) |
+| **Pelajaran** | Fitur yang menyentuh perangkat keras harus didesain sebagai **efek samping opsional**: kalau kegagalan perangkat bisa membatalkan operasi bisnis, itu salah batas tanggung jawab. Perlakukan API browser yang butuh izin seperti layanan eksternal — anggap "belum siap" sebagai keadaan awal, dan selalu sediakan jalur manual (cetak ulang dari riwayat) |
+
+---
+
+## KS-42 · 2026-11-06 · Renderer HTML memakai ukuran font terpaku — 48 kolom (80mm) meluber melewati lebar roll — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Struk yang sama rapi di 58mm tetapi melebar ke luar kertas pada 80mm (48 kolom), dan lebih parah di 72/76mm; bagian kanan baris `cols` (nominal) terpotong. Tidak terdeteksi oleh unit test karena test memeriksa isi teks, bukan geometri cetak |
+| **Akar masalah** | Model dokumen dihitung dalam **jumlah karakter**, sedangkan renderer HTML memaku `font-size: 9pt`. Lebar karakter Courier adalah rasio font (0.6em), jadi 48 karakter hanya muat pada satu ukuran tertentu — memilih lebar roll lain mengubah kebutuhan font, dan HTML tidak tahu itu |
+| **Solusi** | `renderReceiptHtml()` menghitung ukuran font dari `columns` × lebar cetak (`Courier 0.6em`, `1mm = 72/25.4pt`, faktor aman 0.98, dijepit 4–11pt) dan menskalakan header ukuran-2 ke `2em` ikut arus, sementara `@page size:{width}mm auto` tetap mengikuti pilihan kertas |
+| **Bukti** | `src/lib/print/__tests__/html-render.test.ts` (+7 kasus rasio kolom/lebar). Pemeriksaan browser terukur: `document.scrollWidth == innerWidth` dan **nihil overflow horizontal** pada 58, 76, dan 80mm |
+| **Pelajaran** | Dua renderer dari satu model hanya konsisten bila **unit dasarnya sama di kedua sisi**. Model berbasis karakter butuh penerjemahan eksplisit ke satuan layout (pt/mm); kalau satu renderer menebak-nebak angka tetap, inkonsistensinya baru terlihat di perangkat fisik — jadi sertakan perhitungannya di test, bukan hanya string hasilnya |
+
+---
+
+## KS-43 · 2026-11-06 · Z-report kehilangan penjualan kartu — POS menyimpan `debit`/`credit`, SQL menghitung `card` — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Di laporan Z setiap shift tertutup, kolom **Kartu** selalu `Rp 0` dan total rincian metode **kurang** dibanding TOTAL PENJUALAN, padahal pembayaran kartu benar-benar terjadi dan muncul di modal detail transaksi |
+| **Akar masalah** | Nilai `payment_method` tidak punya sumber tunggal. POS menulis `debit`/`credit` untuk kartu dan `ewallet` (termasuk QRIS lewat e-wallet), sedangkan query agregasi memfilter literal `'card'`/`'ewallet'`/`'qris'`. Tidak ada CHECK constraint dan tidak ada test yang menjahit kedua sisi, jadi perbedaan itu diam tidak terdengar sampai laporan dibaca |
+| **Solusi** | SQL `receipt-printer.ts` memetakan **kanonik** di sisi baca: bucket `card ← {card, debit, credit}`, bucket `ewallet ← {ewallet, e-wallet, ovo, gopay, dana, shopeepay}`, plus bucket **Lainnya** = `total − keempat bucket` (baris Lainnya hanya tampil bila > 0). Karena Lainnya diturunkan dari total, rincian **selalu** sama dengan TOTAL PENJUALAN — metode baru tidak bisa lagi hilang tanpa jejak |
+| **Bukti** | Unit test rekonsiliasi di `src/lib/print/__tests__/zreport-doc.test.ts`; screenshot verifikasi `void-3-list-totals.png` menunjukkan ringkasan metode cocok dengan total setelah void |
+| **Pelajaran** | Untuk kolom yang nilainya ditulis UI dan dibaca laporan, **daftar nilai harus hidup di satu modul** (atau dipetakan di sisi baca seperti ini). Bentuk rekonsiliasi yang lebih aman adalah "sisa masuk ke bucket lain-lain" daripada "daftar metode ditutup" — yang kedua bocor setiap kali ada metode baru |
+
+---
+
+## KS-44 · 2026-11-16 · Bon void masih masuk laporan — agregasi tanpa `status = 'completed'` — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Setelah satu bon di-void, modal detail dan ringkasan Riwayat Transaksi sudah turun nilainya, tetapi kartu statistik Dashboard, laporan Penjualan, Cashflow, dan **Piutang** masih menghitung bon batal itu. Kas seharusnya shift (`expected_cash`) ikut lebih besar dari uang fisik tanpa ada selisih yang bisa dijelaskan |
+| **Akar masalah** | `transactions.status` sudah lama ada di skema dan punya nilai `void`, tetapi **tidak ada satu pun query yang pernah memfilternya** — sebelumnya memang tidak ada yang menulis `void`. Begitu void menjadi nyata, seluruh agregasi warisan (distribusi di puluhan komponen dan halaman) berubah menjadi salah, dan tidak ada test yang memegang aturannya karena dulu tidak ada aturannya |
+| **Solusi** | Aturan ditetapkan sebagai invariant (lihat [backend.md](backend.md) §9 no. 1/3/15): setiap agregasi uang menyaring `status = 'completed'`, setiap agregasi per item juga `ti.voided = 0`. Diperbaiki sekaligus di Dashboard (stat card, tren, chart, BranchPerformance, modal SalesDetail/TransactionDetail/ProductSales, RecentTransactions), Reports, Branches + dashboard cabang, POS/POSShifts, SalesReport, Cashflow, `ApAr`, dan totals Riwayat Transaksi — di riwayat memakai `CASE WHEN` supaya **nominal** mengecualikan void tetapi pagination tetap menghitung barisnya. Z-report menambahkan seksi informatif "void (tidak dihitung)" alih-alih diam-diam berkurang |
+| **Bukti** | Rekonsiliasi angka pada tenant demo: `114.253.000 − 10.000 − 34.000 − 487.500 − 50.000 − 45.000 = 113.626.500` (Total Penjualan di dashboard) dan `18.951.250 − 34.000 − 487.500 = 18.429.750` (Via E-Wallet), dengan jumlah baris riwayat tetap 308. `src/lib/__tests__/void.test.ts` memutar ulang SQL pendapatan & ApAr ke database v9 sementara, termasuk kasus "bon kredit void tidak lagi jadi piutang" |
+| **Pelajaran** | Menambah nilai status baru adalah **perubahan lintas-lapisan**, bukan perubahan satu layar. Sebelum menambahkan keadaan (`void`, `refunded`, `partially_…`), telusuri dulu semua pembaca kolom itu — kalau aturannya tidak bisa ditegakkan oleh database, ia harus ditegakkan oleh test yang memutar ulang SQL-nya |
+
+---
+
+## KS-45 · 2026-11-16 · Verifikasi browser membeku saat dialog cetak terbuka — **SELESAI (pulih lewat navigasi)**
+
+| | |
+|---|---|
+| **Gejala** | Ketika fitur void diverifikasi lewat CDP, `take_screenshot` dan `evaluate_script` berkali-kali jatuh pada timeout 5 detik tepat setelah struk dicetak, padahal `take_snapshot` masih mengembalikan pohon aksesibilitas yang benar. Screenshot bukti hampir tidak bisa diambil |
+| **Akar masalah** | `window.print()` membuka **dialog native** dan iframe cetak tersembunyi menahan antrean eksekusi tab; protokol DevTools tidak bisa menyuntik skrip atau menangkap frame selama dialog modal itu hidup. Ini sifat platform, bukan aplikasi — aplikasi sendiri tetap responsif setelah dialog ditutup |
+| **Solusi** | Urutan kerja yang andal: `press_key Escape` untuk menutup dialog → `navigate_page` ke URL yang sama untuk melepas iframe print → baru `take_screenshot`. Kalau yang diuji memang dialog cetak, cukup gunakan `take_snapshot` (baca struktur DOM/teks) dan verifikasi computed style setelah halaman dimuat ulang |
+| **Bukti** | Screenshot `void-6-final-reconciled.png`, `void-7-item-struck-postfix.png`, `void-8-voided-line-and-bon-button.png` berhasil diambil setelah navigasi; `evaluate_script` pasca-navigasi membuktikan `line-through` pada baris void (1 baris, kelas `font-medium line-through text-muted-foreground`, badge VOID `rgb(207, 48, 48)`) |
+| **Pelajaran** | Otomasi browser punya kelas kegagalan "tab dibekukan modal native" yang tidak bisa diselesaikan dengan menaikkan timeout. Kenali polanya (snapshot hidup, screenshot/skrip mati) dan pulih dengan navigasi — jangan simpulkan aplikasi bermasalah dari alat tangkapnya. Untuk jalur cetak, bukti terbaik tetap computed style + printer sungguhan, bukan e2e |
+
+---
+
+## KS-46 · 2026-11-16 · Void item menghitung ulang total dari sisa baris — diskon bon hilang diam-diam — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Pada bon berisi diskon (mis. subtotal `Rp 204.500`, didiskon jadi `Rp 154.500`), mem-void satu baris `Rp 50.000` lalu "merapikan total" dengan menjumlahkan sisa baris menghasilkan `Rp 104.500` — bukan `Rp 154.500 − 50.000`. Diskon bon seolah lenyap, dan kas seharusnya ikut melompat |
+| **Akar masalah** | Diskon tingkat bon **tidak disimpan sebagai kolom**; ia hanya ada sebagai selisih `SUM(items.subtotal) − transactions.total_amount`. Menghitung ulang total dari baris yang tersisa berarti menyamakan selisih itu dengan nol, dan menguranginya dari total adalah satu-satunya operasi yang mempertahankan diskon |
+| **Solusi** | `nextTotalAfterVoid()` menurunkan `total_amount` dan `amount_paid` sebesar **subtotal baris yang dibatalkan** (dengan clamp di 0), bukan menghitung ulang dari sisa baris. Void per bon meninggalkan `total_amount` apa adanya sebagai catatan nilai yang dibatalkan, dan renderer struk menghitung subtotal/diskon dari **baris aktif saja** sehingga angka di kertas tetap konsisten setelah satu baris dicoret |
+| **Bukti** | Unit `src/lib/__tests__/void.test.ts` (kasus invarian diskon awet & clamp 0) dan verifikasi browser: bon `INV/20261105-THL-02-0238` setelah satu baris di-void menampilkan **Total Rp 154.500** dengan baris `Rp 50.000` dicoret |
+| **Pelajaran** | Nilai yang disimpan **implisit sebagai selisih** tidak boleh diperlakukan seperti nilai yang bisa dihitung ulang. Kalau turunan tidak bisa disimpan eksplisit (karena skema tidak punya kolomnya), satu-satunya operasi aman adalah **mengurangkan**, dan itu harus jadi fungsi murni yang diuji — bukan matematika yang ditulis di dalam dialog |
+
+---
+
+## KS-47 · 2026-11-16 · Tabel peran×menu ditulis tangan — kehilangan satu peran dan satu kunci hiasan — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Audit dokumentasi menemukan tiga ketidaksesuaian sekaligus. (1) Tabel "Peran dan akses menu" di `docs/fitur-tenant.md` §3 tidak punya kolom `purchasing` sama sekali, padahal peran itu ship sebagai peran nyata pada 2026-11-05 — dan baris "Stok masuk & purchase order" menandai `warehouse` dengan `–` padahal peran itu memegang `add_stock` **dan** `view_inventory`. (2) `docs/frontend.md` §13 dan `docs/backend.md` §5.11 menyebut snapshot `role_permissions` di `db/schema/seed.sql` sebagai "matriks penuh/lengkap", padahal isinya 18 (owner-tier), 10, 4, 2, dan 0 kunci dari katalog yang beranggotakan 31. (3) `requirement.md` menjanjikan `staff` "akses baca area back office", sementara kodenya `staff: {}` — nol izin bawaan, hanya `/absen` yang terbuka |
+| **Akar masalah** | Sumber kebenaran sudah pindah ke kode (`DEFAULT_ROLE_PERMISSIONS` + kunci tiap guard rute di `src/App.tsx`) sejak RBAC satu pintu, tetapi tabel matriks di dokumen masih diketik per baris dari **daftar peran** lama. Tidak ada test yang membandingkan isi tabel dengan hasil render kode, jadi menambahkan satu peran (dan memindahkan kunci rute) tidak membuat apa pun gagal. Snapshot seed terlihat "penuh" karena bentuknya satu dokumen JSON per tenant, bukan diff terhadap default — yang membuat orang mengira isinya mengikuti katalog |
+| **Solusi** | Tabel §3 **dirender dari kode**, bukan ditulis: skrip sementara mengimpor `DEFAULT_ROLE_PERMISSIONS` dan memasangkan setiap rute dengan kunci guard-nya salinan `App.tsx`, lalu mengeluarkan sel `✓/–`. Kolom baru **Kunci izin** ditambahkan supaya tiap sel bisa diverifikasi tanpa membuka kode, baris "stok masuk" dan "purchase order" dipecah (kuncinya beda: `add_stock` vs `view_inventory`), kolom `purchasing` dan `/absen` ikut, dan jumlah kunci aktif per peran ditulis di bawah tabel. `requirement.md` §2.A dan dua dokumen lain diperbaiki mengikuti angka itu. Temuan `stock_opname` tidak "diperbaiki" dengan memangkas katalog — itu perubahan perilaku — tapi didokumentasikan sebagai aturan baru di `frontend.md` §13 poin 6 ("Deklarasi ≠ penegakan") |
+| **Bukti** | Hasil render: owner-tier 31/31, `store_manager` 16, `warehouse` 8, `purchasing` 6, `cashier` 1 (`access_pos`; `apply_discount` eksplisit `false`), `staff` 0. Grep `stock_opname` di `src/` (di luar `config/roles.ts` dan test) **nol** hasil — satu-satunya kunci tanpa konsumen; 30 lainnya dibaca guard rute, `nav-items.ts`, atau `can(key)`. `db/schema/seed.sql` baris 23 memuat JSON snapshot; `db/__tests__/seed.test.ts` ("never contradicts the role matrix") membuktikan kunci yang **hilang** boleh, yang **berbeda** tidak |
+| **Pelajaran** | Kalau satu sel tabel bisa **dihitung** dari kode, menulisnya tangan berarti menjadikannya bug tertunda — ia akan tertinggal tepat satu rilis (di sini: satu peran penuh). Untuk dokumen, dua aturan turunannya: (a) cantumkan **sumber** setiap angka (kolom "Kunci izin" membuat tabel bisa diverifikasi tanpa menjalankan aplikasi), dan (b) bedakan "dideklarasikan" dari "ditegakkan" — audit periodik katalog izin terhadap pemanggil `can()`/guard adalah satu-satunya cara tahu sebuah sakelar di layar Role benar-benar menggembok sesuatu |
+
+---
+
+## KS-48 · 2026-11-16 · Dokumen spesifikasi berstatus "Proposed" selamanya — padahal kodenya sudah ship — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | `docs/spec-purchase-order.md` dan `docs/spec-varian-harga-vendor.md` sama-sama membuka dirinya dengan `Status: **Proposed** — spec only, no code written yet`, sementara yang kedua punya **§16 "Status implementasi"** yang isinya membantah header dokumen itu sendiri (§16 sudah mencatat 207 tes lulus dan alur varian jalan). Turut ditemukan: satu anchor mati di §16 ("sebagai template PO (§15.1)" — §15 adalah daftar *Di luar cakupan* dan poin 1-nya justru alternatif yang **ditolak**, yaitu basket multi-item), dan `README.md` tidak mengindeks kedua spec sama sekali sehingga pembaca tidak punya jalan masuk ke status sebenarnya |
+| **Akar masalah** | Spec ditulis dengan format header dokumen referensi (`Status`, `Terakhir diperbarui`) tetapi fungsinya berbeda: ia **rekaman keputusan pada titik waktu**. Tidak ada konvensi yang memisahkan bagian yang dibekukan (§0–§15, alasannya) dari bagian yang hidup (status implementasi), jadi yang diperbarui saat rilis hanya §16 sementara baris `Status` — baris yang paling pertama dibaca — tidak pernah disentuh lagi. Anchor `§X.Y` diketik dari ingatan struktur dokumen lain; tidak ada pemeriksa anchor di repo, jadi hanya anchor yang kebetulan dibuka orang yang pernah salah |
+| **Solusi** | Kedua header diubah ke **Shipped** + menunjuk migrationsya (`005_procurement_lifecycle`, `006_variants_pricing`) dan diikuti **catatan status bertanggal** yang menyatakan dengan tegas §0–§15 adalah rekaman titik waktu yang **tidak disunting** (termasuk angka lama seperti "tenant.sql versi 6, 33 tabel" dan sitasi baris kode), sementara kebenaran hari ini ada di catatan itu + §16. Anchor diperbaiki ke `§14 D3` untuk keputusan "pricelist = template PO" dan `§15 poin 1` untuk yang di luar cakupan. Kotak koreksi versi di §16 dinaikkan ke **v9 / 34 tabel** dengan penjelasan bahwa void hanya menambah kolom (bukan tabel), sehingga tabel G1–G5 tetap berlaku. `README.md` §Documentation menambah baris kedua spec, `ringkasan-fitur-2026-11-05-06.md`, dan `CHANGELOG.md`, plus aturan baru: *body spec tidak ditulis ulang, hanya diberi catatan status bertanggal* |
+| **Bukti** | Yang dinyatakan "belum ada kode" ternyata ada: `goods_receipts` / `goods_receipt_items` (`db/migrations/005_procurement_lifecycle.sql`), `product_variants` / `vendor_price_list` + tujuh kolom `variant_id` (`006_variants_pricing.sql`), `src/lib/procurement.ts`, `src/lib/goods-receipt.ts`, `resolveBuyPrice()` di `src/lib/pricing.ts`, tombol "Isi dari template" di `PurchaseOrderModal.tsx`, tab Harga Beli/Riwayat Harga di `VendorDetail.tsx`, dialog **Pilih Varian** di POS yang ditutup `kasir.e2e.ts` ("a variant product asks which flavour before which pack"). Gerbang pada hari audit: `tsc` app + node 0 error, `vitest run` **28 berkas / 365 tes lulus** (procurement 28, variants 18, pricing 30). Yang **tetap** ditulis sebagai terbuka karena memang belum ada: peringatan "harga penerimaan ≠ harga kesepakatan" di `GoodsReceiptModal.tsx` (modal hanya meng-*seed* baris dari pricelist) dan e2e gudang untuk kasus itu |
+| **Pelajaran** | Ada dua jenis dokumen dan aturannya berlawanan. Dokumen **status** ("kode hari ini begini") wajib disinkronkan tiap rilis; dokumen **keputusan** ("kenapa dulu pilih ini") wajib *dibekukan* supaya argumennya tidak hilang. Penanda mekanisnya: kalau isinya bisa dibantah oleh `git log`, itu dokumen keputusan — jangan diedit, tapi tempel header status + tanggal verifikasi yang menunjuk bagian status. Dan untuk anchor: kutip nomor yang benar-benar ada di daftar heading (`Select-String '^#{2,3} '`), dan kalau merujuk item daftar tulis `§15 poin 1`, bukan `§15.1` — format terakhir menyiratkan subbagian yang tidak pernah ada |
+
+---
+
+## KS-49 · 2026-11-17 · Dokumen punya penjaga angka, bukan penulisnya — dan auditor SQL membaca komentar sebagai kode — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Tiga cacat muncul bersamaan selama rilis v10 dan semuanya ketahuan **oleh tangan**, bukan oleh alat. (1) Dua tabel markdown rusak karena suntingan dokumen: satu baris disisipkan newline fisik di dalam sel (`backend.md` §10) dan satu backtick ganda (`spec-vendor-produk-terintegrasi.md`) — keduanya membuat seluruh tabel tampil salah. (2) Angka lama selamat dari re-sync: `frontend.md` §2 dan `arsitektur.md` masih menulis "28 berkas / 365 test" padahal gerbang hari itu 30/419, dan baris `audit:sql` menulis "478 diperiksa" sementara alatnya melaporkan 477. (3) `npm run audit:sql` melaporkan kelas temuan `SYNTAX \| incomplete input` untuk `UPDATE users` di tiga berkas — ketiga tempat itu ternyata **kalimat di dalam komentar** ("layar ini dulu menjalankan `UPDATE users`"), bukan panggilan kode |
+| **Akar masalah** | Untuk (1) dan (2): dokumen disunting sebagai teks sementara setiap angkanya dihitung di tempat lain; pelajaran umum no. 14 sudah melarang angka diketik tangan, tetapi tidak ada satu pun perintah yang **menolak** dokumen yang tidak konsisten, jadi kepatuhannya bergantung pada ingatan penulis. Untuk (3): pengumpul literal memindai isi berkas dengan regex dan tidak tahu bedanya kode dengan komentar — pola pengumpulnya (string yang diapit backtick atau tanda kutip) mengambil apa pun yang berbentuk statement, termasuk yang berada di dalam `//` atau blok dokumentasi `/* … */` |
+| **Solusi** | Alat pemeriksaan yang tadinya skrip sekali-pakai di `.data/` **diangkat ke repo**: `scripts/check-docs.mjs` + `npm run docs:check`, empat pemeriksaan — (a) jumlah sel setiap baris tabel harus sama dengan header-nya (blok kode di-*skip*, `\|` dihitung teks, bukan pemisah), (b) versi skema harus satu angka di tiga tempat (stamp `tenant.sql`, `CURRENT_SCHEMA_VERSION`, prefiks tertinggi `db/migrations`), (c) indeks dokumentasi README harus menutup setiap `docs/*.md` dan setiap berkas yang disebut harus ada, (d) anchor `§N` yang ditulis tepat setelah tautan `[foo.md](foo.md)` harus menunjuk heading yang benar-benar ada di berkas itu — kelas kesalahan yang di KS-48 masih ketahuan karena orang kebetulan membuka tautannya. Gerbangnya sendiri diuji dengan **positive control**: `scripts/__fixtures__/docs-check/` menanam satu cacat per pemeriksaan dan harus melaporkan 8 masalah. Enam penyimpangan lama ikut diperbaiki: empat baris `fitur-tenant.md` kehilangan sel **Status** terakhir, satu `\|\|` di dalam code span `frontend.md`, dan satu nilai absolut `\|unit_cost − pricelist.buy_price\|` di tabel validasi `spec-varian-harga-vendor.md` di-escape — **hanya format, isi tidak berubah**, dicatat di catatan status bertanggal spec itu. Untuk (3): `commentRanges()` di `audit-sql.mjs` memisahkan rentang `//` dan `/* … */` lebih dulu (string di-step-over supaya `//` di dalam URL tidak membuka komentar), jadi hanya kode yang diaudit |
+| **Bukti** | `npm run docs:check` → **OK, keluar 0** atas 14 berkas markdown; versi skema terbaca v10 dan cocok di ketiga tempat. Gerbang mencetak cakupannya sendiri — jumlah berkas markdown, baris tabel, dan anchor `§` yang benar-benar dibaca (saat ditulis: 14 berkas) — karena keluaran "OK" tanpa angka cakupan tidak bisa dibedakan dari gerbang yang tidak membaca apa pun. Angka baris tabel dan anchor **tidak** dikutip sebagai fakta di bagian lain dokumen ini: keduanya bergerak tiap kali sebuah tabel disunting, dan itulah tepat kelas angka lama yang selamat dari re-sync di atas. Positive control: `node scripts/check-docs.mjs --root scripts/__fixtures__/docs-check` → **keluar 1 dengan 8 masalah** (satu baris tabel 3 sel, stamp v7 vs target v9, migrasi tertinggi 5 vs v9, dua berkas tanpa indeks, satu entri indeks ke berkas hantu, satu `§9` mati, satu berkas target tidak ada) sementara anchor `§4` yang hidup **tidak** dilaporkan. `audit:sql` sebelum → sesudah: **538 → 530** literal dikumpulkan, **477 → 471** diperiksa, 61 → 59 dinamik, `skipped (comments)` = 8, dan **3 → 2** kelas temuan — seluruh kelas `SYNTAX \| incomplete input` hilang tanpa menyentuh satu pun komentar di aplikasi. Delapan literal yang tidak lagi dikumpulkan **bisa didaftar ulang kapan saja** lewat flag `-- --show-comments` di auditor itu sendiri (keluar `src/hooks/use-permissions.ts:39: SELECT settings FROM tenants LIMIT 1`, `src/pages/Employees.tsx:400: UPDATE users`, dst. — 8 situs, semuanya diawali `//` atau ` *`): tidak ada panggilan kode yang ikut tertutup. Awalnya bukti ini hanya ada di skrip jajak sekali-pakai di `.data/` — yaitu persis cacat yang dilarang pelajaran no. 16, jadi kemampuannya dipindah ke dalam `audit-sql.mjs`. `node --check` bersih untuk kedua skrip; `package.json` menambah `docs:check` di samping `audit:sql` |
+| **Pelajaran** | (a) Pemeriksaan yang hidup di `.data/` adalah pemeriksaan yang berjalan satu kali — begitu ia menemukan cacat nyata, angkat ke `scripts/` + npm script, kalau tidak cacat berikutnya ditemukan lagi oleh kebetulan. (b) Kalau keluaran alat berbentuk prosa (temuan yang ternyata kalimat), **perbaiki alatnya**, bukan kalimatnya: perbaikan pertama di rilis ini hanya menulis ulang satu komentar JSDoc dan hanya memindahkan salah-temuan itu. (c) Gerbang dokumen tidak perlu pintar — bentuk tabel, satu versi di tiga tempat, indeks yang menutup berkas, dan anchor yang menunjuk heading nyata adalah empat pemeriksaan ±200 baris yang menangkap seluruh kelas kesalahan yang benar-benar terjadi di repo ini. (d) Sebuah gerbang baru belum selesai sebelum ada fixture yang membuatnya gagal — lihat pelajaran umum no. 16 |
+
+---
+
 ## Pelajaran umum (ringkas)
 
 1. **Isolasi harus fisik.** Pemfilteran data di sisi klien bukan keamanan.
@@ -560,7 +677,7 @@
 11. **Nilai contoh adalah kode.** `.env.example`, contoh perintah di README, dan nama grup di
     dokumen akan dijalankan apa adanya; nilai yang tidak ada di akun nyata lebih berbahaya daripada
     nilai kosong.
-12. **Verifikasi UI bukan pekerjaan unit test.** 207 test unit tidak melihat satu pun layar; alur
+12. **Verifikasi UI bukan pekerjaan unit test.** 365 test unit tidak melihat satu pun layar; alur
     yang benar-benar dipakai kasir harus dijalankan di browser. Harness yang dinilai model menambah
     dependensi baru yang bisa gagal sendiri (kunci API, kuota, kemampuan tool call), jadi langkah
     `agent.*` diperlakukan seperti layanan eksternal: beri timeout dan sediakan jalur deterministik.
@@ -569,3 +686,21 @@
     judul "etalase toko X" semuanya jadi salah ucap. Telusuri kembali setiap tempat yang menyebut
     "toko kami" — teks CS, halaman info, ringkasan checkout, dan tautan yang sudah dibagikan —
     bukan hanya berkas tema atau navigasi.
+14. **Tabel yang meniru hasil evaluasi harus dihasilkan, bukan diketik.** Matriks peran×menu,
+    jumlah tabel skema, dan jumlah test adalah angka yang bisa dihitung dari kode/database; begitu
+    ia ditulis tangan, setiap fitur baru menjadikannya salah secara senyap. Cantumkan sumber tiap
+    angka di dokumen (kolom kunci izin, versi skema, nama berkas test) supaya pembaca bisa
+    memverifikasi tanpa mempercayai penulisnya.
+15. **Bedakan dokumen status dan dokumen keputusan.** Yang pertama ("kode hari ini begini") wajib
+    disinkronkan tiap rilis dan boleh mati kalau tidak; yang kedua ("kenapa dulu memilih ini")
+    justru harus dibekukan — angka dan sitasi baris di dalamnya sengaja dibiarkan. Cara mendamaikan
+    keduanya: header status bertanggal + satu bagian "status implementasi", dan kalimat tegas bahwa
+    body adalah rekaman titik waktu. Dokumen yang menempel kedua peran tanpa penanda seperti spec di
+    KS-48 akan selalu terbaca salah di baris pertamanya.
+16. **Gerbang wajib membuktikan dirinya bisa gagal.** Pemeriksaan yang hanya mencetak "OK" tidak
+    membedakan dunia "tidak ada cacat" dari "pemeriksaannya tidak membaca apa pun" — dan yang kedua
+    justru yang paling sering terjadi saat pola regex-nya meleset. Setiap gerbang dokumen di repo ini
+    membawa fixture berisi satu cacat per pemeriksaan (`scripts/__fixtures__/docs-check`, harus 8
+    masalah) dan mencetak jumlah baris/anchor yang benar-benar diperiksa. Konsekuensinya serupa untuk
+    skrip sekali-pakai: begitu sebuah pemeriksaan di `.data/` menemukan cacat nyata, angkat ke
+    `scripts/` + npm script — kalau tidak, cacat berikutnya ditemukan lagi oleh kebetulan.

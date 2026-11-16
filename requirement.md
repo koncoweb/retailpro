@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `requirement.md` |
-| Terakhir diperbarui | **2026-11-01** |
+| Terakhir diperbarui | **2026-11-17** |
 | Sifat dokumen | Rencana + catatan implementasi. Bila isi dokumen berbeda dengan kode, **kode yang menang** |
 | Rujukan detail | [`docs/arsitektur.md`](docs/arsitektur.md), [`docs/backend.md`](docs/backend.md), [`docs/deployment.md`](docs/deployment.md), [`docs/fitur-tenant.md`](docs/fitur-tenant.md), [`docs/fitur-platform.md`](docs/fitur-platform.md), [`docs/frontend.md`](docs/frontend.md), [`docs/kendala-solusi.md`](docs/kendala-solusi.md) |
 
@@ -23,6 +23,11 @@
 | 2026-11-01 | Aplikasi kedua naik dari etalase satu tenant menjadi **marketplace lintas tenant**: `GET /api/storefront/marketplace` menggabungkan katalog semua tenant `active`, produk membawa `tenant`/`seller`, dan `/api/storefront/catalog` turun menjadi kontrak untuk klien satu toko. Merek etalase **Toko Bahan Kue / Marketplace** dengan aksen rose |
 | 2026-11-01 | Satu pesanan boleh berisi barang beberapa penjual: satu keranjang, satu ongkir, satu pembayaran (platform sebagai merchant of record), dan ringkasan checkout/pesanan dikelompokkan per toko. Pesanan tetap tersimpan di perangkat |
 | 2026-11-05 | **Sistem role & izin**: satu katalog → satu resolver → satu identitas runtime. Owner dapat mengatur *apa* yang boleh dilakukan tiap peran dan *di mana* (scope cabang/gudang), plus membuat **role custom** — semuanya disimpan di dokumen `tenants.settings` tanpa migrasi skema. Perubahan peran/keaktifan karyawan kini ditulis lewat endpoint (`api/admin/users/[id]`) dan ditegakkan server-side di bootstrap; guard rute memakai kunci izin, bukan daftar peran. Lihat `docs/kendala-solusi.md` KS-35 s.d. KS-38 |
+| 2026-11-06 | **Sistem cetak struk & Z-report** (`src/lib/print/*`, tanpa dependency baru): satu model dokumen berbasis karakter → dua renderer (HTML lewat driver, byte ESC/POS in-house) → empat transport (`driver`, WebUSB, Web Bluetooth, unduh `.prn`). Auto-print setelah checkout, Z-report saat tutup shift, cetak ulang dari riwayat; preferensi di `tenants.settings.printer` + `.receipt`, tanpa perubahan skema. `payment_method` kartu/e-wallet yang disimpan POS (`debit`/`credit`/`ewallet`) direkonsiliasi ke bucket Z-report. Lihat `docs/kendala-solusi.md` KS-41 s.d. KS-43 |
+| 2026-11-06 | **Izin khusus per karyawan** (restrict-only, `settings.user_permissions`) + tab Role responsif; **absensi otomatis dari buka/tutup shift**; kasir dibatasi ke transaksi saja (`view_dashboard` dicabut dari default, ditegakkan di dua tempat: `roles.ts` **dan** `seed.sql`) |
+| 2026-11-16 | **Void transaksi di Riwayat Kasir — skema v9**: dua bentuk, **per item** dan **per bon**, ditegakkan lewat izin `void_transaction` yang selama ini hanya dideklarasikan. Baris tidak pernah dihapus — ditandai `voided`/`status='void'`, stok kembali ke **batch asal baris**, total diturunkan sebesar subtotal baris (diskon bon tetap), jejak di `audit_logs`, dan nota mencetak baris **dicoret** + banner `TRANSAKSI DIBATALKAN`. Seluruh agregasi uang kini memfilter `status = 'completed'` supaya akuntansi selaras. Batas: hanya shift `open`, kecuali owner-tier. Lihat `docs/fitur-tenant.md` §2.2.2 |
+| 2026-11-17 | **Vendor dan produk menjadi satu sistem — skema v10 (indeks saja, tanpa tabel/kolom baru)**: `vendor_products` dan `vendor_price_list` hanya boleh ditulis satu modul (`src/lib/vendor-catalog.ts`), sehingga form produk, impor, dialog hubungkan, penerimaan barang, dan seeder demo tidak lagi punya versinya masing-masing dan **template PO benar-benar terisi**. Impor **satu sheet** vendor+produk (18 kolom; satu baris = vendor × produk × pecahan) dengan kebijakan *master aditif, harga boleh diperbarui*; produk boleh ditambah langsung dari layar vendor (simpan vendor melempar ke detail dengan form yang sudah terisi); dan **PO memilih vendor otomatis** saat produk dipilih (vendor tercih → vendor utama → vendor tunggal aktif) dengan konfirmasi AlertDialog sebelum membuang baris vendor lain. Izin `manage_variants` + `manage_vendor_prices` ditegakkan di lib, bukan di UI saja. Lihat `docs/spec-vendor-produk-terintegrasi.md` |
+| 2026-11-17 | **Dokumen dan auditor ikut diberi penjaga** (refleksi pasca-rilis v10, tanpa perubahan kode aplikasi): `npm run docs:check` menolak tabel markdown yang terbelah, versi skema yang beda di antara tiga tempatnya, indeks dokumen yang bolong, dan anchor `§N` yang tidak menunjuk heading; `scripts/audit-sql.mjs` berhenti membaca SQL di dalam komentar (`commentRanges()`, `-- --show-comments` untuk mendaftarkan yang dibuang). Setiap gerbang membawa **positive control** — fixture yang wajib membuatnya gagal — karena pemeriksaan yang hanya mencetak "OK" tidak bisa dibedakan dari pemeriksaan yang tidak membaca apa pun. Lihat `docs/kendala-solusi.md` KS-49 |
 
 ---
 
@@ -46,7 +51,7 @@ Setiap tenant mendapat **database Turso/libSQL sendiri di cloud**.
 *   **Grup Turso**: setiap database wajib berada di grup yang sudah ada. Organisasi baru hanya punya grup lokasi otomatis, jadi `TURSO_GROUP` diisi `ap-southeast-2` (bukan `retailpro` seperti contoh lama). `listGroups()` tersedia sebagai pemeriksaan sebelum provisioning.
 *   **Akses browser**: aplikasi hanya memegang token berumur `TENANT_TOKEN_TTL` (bawaan 60 menit) yang berlaku untuk **satu** database tenant. Token organisasi Turso tidak pernah sampai ke browser.
 *   **Kuota**: `TURSO_MAX_TENANT_DATABASES` (bawaan 99, mengikuti 100 database paket gratis per organisasi) → HTTP 429 bila penuh. Slug: minimal 3 karakter, unik, daftar terlarang (`www`, `api`, `admin`, …).
-*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **8**, 34 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
+*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **10**, 34 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
 *   **Konsekuensi yang harus diingat**: tidak ada query lintas tenant; laporan lintas cabang tetap butuh filter `branch_id` eksplisit; setiap database adalah satu unit backup/restore dan satu unit biaya.
 
 **Ditolak — Shared Database, Shared Schema + RLS.** Rencana awal memakai satu database PostgreSQL (Neon) dengan kolom `tenant_id` di setiap tabel dan Row Level Security yang identitasnya diatur lewat session variable. Dibatalkan 2026-10-27 karena isolasinya bergantung pada klien yang mengaku sebagai tenant tertentu (`set_config` dijalankan aplikasi), kredensial database ikut ke bundle browser, dan setiap query harus ingat `WHERE tenant_id`. Pelajaran: isolasi yang ditentukan klien adalah janji, bukan batas. Lihat `docs/kendala-solusi.md` KS-01 dan `docs/arsitektur.md` ADR-1.
@@ -70,7 +75,7 @@ Setiap tenant mendapat **database Turso/libSQL sendiri di cloud**.
 
 Autentikasi memakai **Better Auth** (plugin `admin`) pada **control database** Turso, bukan di database tenant. Field tambahan pada session: `tenantId`, `branchId`, `status`. Peran admin platform: `ADMIN_ROLES = [platform_owner, tenant_owner, tenant_admin]`.
 
-### A. Hierarki User & Peran (7 peran)
+### A. Hierarki User & Peran (8 peran)
 
 | Peran | Cakupan | Catatan |
 |---|---|---|
@@ -80,7 +85,8 @@ Autentikasi memakai **Better Auth** (plugin `admin`) pada **control database** T
 | `store_manager` | Cabang | Back office tanpa POS sebagai kasir |
 | `cashier` | Cabang | POS, transaksi, shift |
 | `warehouse` | Gudang | Inventori & penerimaan barang |
-| `staff` | Terbatas | Akses baca area back office |
+| `purchasing` | Pembelian | Naik dari "dideklarasikan tapi tak bisa dibuat" menjadi peran nyata: 6 izin bawaan (`view_inventory`, `add_stock`, `transfer_stock`, `create_po`, `receive_po`, `cancel_po`). Tidak memegang `approve_po` **sama sekali** (pemisahan pengaju vs penyetuju, dijaga `src/lib/procurement.ts`) dan tidak memegang `access_pos`, sehingga till tidak terbuka — tetapi buku `/pos/transactions` tetap bisa dibuka karena rute itu juga menerima `view_inventory` |
+| `staff` | Terbatas | **Nol izin bawaan** (`DEFAULT_ROLE_PERMISSIONS.staff = {}`): tidak ada menu yang terbuka, hanya `/absen`. Rencananya "akses baca back office" baru berlaku setelah owner mencentang izin di matriks Role atau membuat role custom |
 
 Nama `admin` masih diterima oleh guard lama sebagai alias; jangan dipakai untuk kode baru.
 
@@ -90,7 +96,7 @@ Nama `admin` masih diterima oleh guard lama sebagai alias; jangan dipakai untuk 
 2.  **`users` di database tenant**: cermin profil untuk keperluan laporan dan relasi lokal.
     *   `id` (TEXT, PK) — **sama dengan id user Better Auth**
     *   `email`, `name`
-    *   `role` (7 peran di atas)
+    *   `role` (7 peran tenant — semua kecuali `platform_owner`; `BUILTIN_ASSIGNABLE_ROLES` hanya 6 yang bisa dipilih di layar Karyawan, sisanya `tenant_owner` dipasang provisioning)
     *   `assigned_branch_id` (FK → `branches`, nullable)
     *   `is_active` (INTEGER 0/1)
     *   `base_salary` (INTEGER, default 0)
@@ -118,13 +124,13 @@ Nama `admin` masih diterima oleh guard lama sebagai alias; jangan dipakai untuk 
 
 ## 4. Struktur Database (Schema Design)
 
-Kanónik: `db/schema/tenant.sql` (versi **8**, **34 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
+Kanónik: `db/schema/tenant.sql` (versi **10**, **34 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
 
 ### A. Core / Identity & Settings
 
 1.  **`tenants`** — satu baris per database.
     *   `id`, `name`, `slug`, `created_at`
-    *   `settings` (JSON teks): `role_permissions`, `payroll_config`, `receipt`, `tax`, `bank`, `inventory.stock_issue_method`
+    *   `settings` (JSON teks): `role_permissions`, `custom_roles`, `role_scopes`, `user_permissions`, `payroll_config`, `receipt`, `printer`, `tax`, `bank`, `inventory.stock_issue_method`
 2.  **`branches`** — lokasi penjualan.
     *   `id`, `name`, `code`, `address`, `phone`, `email`, `timezone` (bawaan `Asia/Jakarta`), `status`, `sales_target`
     *   `type` (`store`/`online`/`hybrid`), `is_headquarters` (0/1), `parent_branch_id`
@@ -139,12 +145,13 @@ Kanónik: `db/schema/tenant.sql` (versi **8**, **34 tabel**) + `db/migrations/`.
 *   **`product_batches`**: `warehouse_id`, `product_id`, `batch_number`, `expiry_date`, `quantity_initial`, `quantity_current`, `cost_price`, `received_at`, `supplier_id`. **Tidak ada `branch_id`** — stok selalu berkunci gudang.
 *   **`stock_transfers`**: `source_warehouse_id`, `destination_warehouse_id`, `status` (`pending`/`completed`), jejak pengirim/penerima.
 *   **`transfer_items`**: per leg batch (`source_batch_id`), `quantity_sent`, `quantity_received`, `cost_price` — expiry & HPP per batch ikut berpindah.
-*   **`purchase_orders`** / **`purchase_order_items`**: `warehouse_id` tujuan penerimaan; status `draft`/`ordered`/`received`.
-*   **`products`**, **`product_units`**, **`categories`**.
+*   **`purchase_orders`** / **`purchase_order_items`**: `warehouse_id` tujuan penerimaan; status `draft` → `submitted` → `approved` → `partially_received` / `received`, plus `rejected` dan `cancelled` (mesin statusnya murni di `src/lib/procurement.ts`; `ordered` sudah dipensiunkan dan dipetakan ke `approved`). Penerimaan barang adalah dokumen sendiri: **`goods_receipts`** / **`goods_receipt_items`** (GRN per pengiriman, harga/lot/expiry per penerimaan, jadi tiap pengiriman mencetak batch sendiri).
+*   **`products`**, **`product_units`** (multi-satuan + harga per satuan), **`product_variants`** (varian per produk, mis. rasa/ukuran), **`categories`**.
 *   **Vendor** memakai `suppliers` sebagai master (kode `VND-0001`, badan usaha, kategori, NPWP, alamat terurai, termin, limit kredit, rekening bank, lead time, rating, status) plus:
     *   **`vendor_products`** — katalog N:N vendor↔produk (`vendor_sku`, `last_cost`, `lead_time_days`, `min_order_qty`, `is_preferred`); `products.supplier_id` tetap menjadi vendor utama.
+    *   **`vendor_price_list`** — harga **beli** per vendor↔varian↔satuan (unik pada `vendor_id, variant_id, unit_name`); jadi acuan harga modal saat penerimaan/PO dan satu-satunya tempat harga karton dicatat seperti vendor memetiknya. Harga jual tidak pernah disimpan di sini.
     *   **`vendor_payments`** — buku pembayaran cicilan hutang (`expense_id`, `purchase_order_id`, `amount`, `payment_date`, `method`, `reference_number`). Saldo hutang tetap di `expenses.amount_paid` agar Hutang/AP tidak menghitung dua kali.
-    *   Integrasi: form produk & import menautkan `vendor_products`; PO memilih vendor (bukan nama bebas) dan memo `due_date` dari termin; pembayaran di Hutang/AP menulis `vendor_payments`; ganti nama vendor otomatis berlaku di semua layar karena relasinya id.
+    *   Integrasi: **satu penulis** untuk relasi vendor↔produk (`src/lib/vendor-catalog.ts`, dipanggil form produk, impor, layar vendor, penerimaan barang, dan seeder demo) sehingga tiap tautan katalog bisa disertai harga beli per pecahan di `vendor_price_list` dan tepat satu `is_preferred` per produk; PO **memilih vendor otomatis** dari produk (`defaultVendorFor`: tercih → utama → tunggal yang aktif) lalu memakai harga kesepakatan sebagai `unit_cost`; ganti vendor dengan baris vendor lain di keranjang meminta konfirmasi; pembayaran di Hutang/AP menulis `vendor_payments`; ganti nama vendor otomatis berlaku di semua layar karena relasinya id.
 
 ### C. HR & Employee Management
 
@@ -156,8 +163,8 @@ Kanónik: `db/schema/tenant.sql` (versi **8**, **34 tabel**) + `db/migrations/`.
 ### D. Keuangan & POS
 
 *   **`shifts`** — lihat bagian 7.C.
-*   **`transactions`**: `branch_id`, `cashier_id`, `customer_id`, `shift_id`, `invoice_number` (unik), `total_amount`, `amount_paid`, `due_date`, `payment_method` (`cash`/`card`/`ewallet`/`credit`), `status`, `created_at`.
-*   **`transaction_items`**: `quantity` dalam **satuan jual**, `unit_name`, `conversion_factor`, `unit_price`, `cost_price`, `subtotal`.
+*   **`transactions`**: `branch_id`, `cashier_id`, `customer_id`, `shift_id`, `invoice_number` (unik), `total_amount`, `amount_paid`, `due_date`, `payment_method` (`cash`/`card`/`ewallet`/`credit`), `status`, `created_at`. Void (v9) menambah `void_reason`, `voided_by`, `voided_at`; bon yang dibatalkan memakai `status='void'` — barisnya tidak pernah dihapus.
+*   **`transaction_items`**: `quantity` dalam **satuan jual**, `unit_name`, `conversion_factor`, `unit_price`, `cost_price`, `subtotal`, `batch_id` (batch yang dipakai). Void (v9) menambah `voided` (0/1), `void_reason`, `voided_by`, `voided_at`.
 *   **`expenses`**: sumber tunggal Hutang/AP, Cashflow, dan Jurnal (termasuk penerimaan PO yang belum lunas). Tabel `payables` masih ada tetapi belum dibaca UI mana pun (KS-19).
 *   **Piutang/AR** = `transactions` dengan `total_amount > amount_paid`.
 
@@ -237,7 +244,7 @@ Hanya `VITE_*` yang publik; `src/` tidak boleh mengimpor `server/`, dan rahasia 
 
 1.  **Buka shift**: input modal awal (`initial_cash`), catat `start_time`.
 2.  **Operasional**: semua transaksi menyimpan `shift_id`.
-3.  **Tutup shift**: sistem menghitung `expected_cash = initial_cash + SUM(total_amount WHERE payment_method='cash')`; kasir memasukkan uang fisik (`final_cash`); selisih (`difference`) dihitung dan disimpan. Ringkasan per metode pembayaran ditampilkan.
+3.  **Tutup shift**: sistem menghitung `expected_cash = initial_cash + SUM(total_amount WHERE payment_method='cash' AND status='completed')` — bon yang di-void tidak ikut dihitung; kasir memasukkan uang fisik (`final_cash`); selisih (`difference`) dihitung dan disimpan. Ringkasan per metode pembayaran ditampilkan, dan Z-report dapat dicetak langsung (ESC/POS atau driver).
 
 ### C. Schema `shifts`
 
@@ -247,8 +254,8 @@ Tidak ada `tenant_id`.
 ## 8. Checklist Implementasi (MVP Phase 1)
 
 - [x] Setup project (Vite + React + TS + Tailwind + shadcn/ui)
-- [x] Database Turso: satu database per tenant, skema v8 (34 tabel), provisioning otomatis
-- [x] Autentikasi Better Auth + 7 peran, guard route gagal-tertutup
+- [x] Database Turso: satu database per tenant, skema v10 (34 tabel), provisioning otomatis
+- [x] Autentikasi Better Auth + 8 peran, guard route gagal-tertutup
 - [x] CRUD master data (karyawan, cabang, gudang, produk, vendor, pelanggan)
 - [x] Modul vendor: master vendor, katalog vendor↔produk, PO per vendor, hutang & buku pembayaran
 - [x] Absensi & cuti (input manual, approval) + absen mandiri karyawan dengan geolokasi (geofence radius toko/gudang) dan pengenal wajah (descriptor 128-float, pendaftaran oleh owner) — lihat skema v8
@@ -266,6 +273,9 @@ Tidak ada `tenant_id`.
 - [x] Deploy produksi: dua proyek Vercel + control DB & DB tenant di Turso cloud, `GET /api/health` hijau
 - [ ] Keranjang toko online yang benar-benar memesan (saat ini pesanan tersimpan di perangkat)
 - [ ] Konsol platform (daftar tenant, suspend, tier) — lihat `docs/fitur-platform.md`
-- [ ] Cetak struk & pemilihan pelanggan di POS
+- [x] Cetak struk: model dokumen → renderer HTML/ESC-POS → 4 transport, auto-print setelah checkout, cetak ulang dari riwayat, Z-report saat tutup shift (baris void tercetak **dicoret**)
+- [x] Void transaksi di riwayat kasir — per item dan per bon, izin `void_transaction`, stok balik ke batch asal, agregasi uang `status='completed'`
+- [x] Vendor–produk terintegrasi (skema v10): satu penulis katalog, input produk dari layar vendor, impor vendor+produk satu sheet, harga beli per pecahan ikut terisi, vendor PO ter-pilih otomatis dari produk
+- [ ] Pemilihan pelanggan di POS (master `customers` sudah ada, integrasi ke keranjang belum)
 - [ ] CI (typecheck + test + audit:sql + build) — KS-21
 - [ ] Lingkungan staging & alerting produksi — `docs/deployment.md` §11

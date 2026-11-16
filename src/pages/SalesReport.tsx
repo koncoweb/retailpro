@@ -126,7 +126,12 @@ export default function SalesReport() {
     toast.success("Berhasil export laporan penjualan");
   };
 
-  const totalSales = salesData.reduce((acc: number, curr: any) => acc + curr.total_amount, 0);
+  // The table lists every bon including voids, but revenue only adds up the
+  // completed ones: a voided bon keeps its `total_amount` as the record of the
+  // cancelled sale, so summing it here would double-count money already back.
+  const totalSales = salesData
+    .filter((item) => item.status === 'completed')
+    .reduce((acc, curr) => acc + curr.total_amount, 0);
 
   return (
     <BackOfficeLayout>

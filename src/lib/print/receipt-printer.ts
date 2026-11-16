@@ -27,7 +27,7 @@ export async function buildSaleReceiptDoc(
       sql: `
         SELECT
           t.id, t.invoice_number, t.total_amount, t.amount_paid,
-          t.payment_method, t.created_at,
+          t.payment_method, t.status, t.void_reason, t.created_at,
           u.name  AS cashier_name,
           b.name  AS branch_name,
           c.name  AS customer_name
@@ -45,7 +45,7 @@ export async function buildSaleReceiptDoc(
         SELECT
           COALESCE(p.name, 'Item') AS name,
           v.name AS variant_name,
-          ti.quantity, ti.unit_name, ti.unit_price, ti.subtotal
+          ti.quantity, ti.unit_name, ti.unit_price, ti.subtotal, ti.voided, ti.void_reason
         FROM transaction_items ti
         LEFT JOIN products         p ON ti.product_id = p.id
         LEFT JOIN product_variants v ON ti.variant_id = v.id
@@ -62,6 +62,8 @@ export async function buildSaleReceiptDoc(
         total_amount: number;
         amount_paid: number;
         payment_method: string;
+        status: string;
+        void_reason: string | null;
         created_at: string;
         cashier_name: string | null;
         branch_name: string | null;
@@ -77,6 +79,8 @@ export async function buildSaleReceiptDoc(
     unitName: (row.unit_name as string | null) ?? null,
     unitPrice: Number(row.unit_price ?? 0),
     subtotal: Number(row.subtotal ?? 0),
+    voided: Number(row.voided ?? 0) === 1,
+    voidReason: (row.void_reason as string | null) ?? null,
   }));
 
   const input: SaleReceiptInput = {
@@ -89,6 +93,8 @@ export async function buildSaleReceiptDoc(
     branchName: head.branch_name,
     customerName: head.customer_name,
     items,
+    status: head.status === 'void' ? 'void' : 'completed',
+    voidReason: head.void_reason,
   };
 
   return buildSaleReceipt(input, {
@@ -107,13 +113,19 @@ export async function printSaleReceipt(
   const doc = await buildSaleReceiptDoc(transactionId, ctx);
   if (!doc) return { ok: false, via: 'driver', error: 'Transaksi tidak ditemukan' };
   return printDocument(doc, ctx, {
-    isCashSale: docColumnsIsCash(doc),
+    // A voided bon is money going *back*; never auto-kick the drawer for it.
+    isCashSale: docColumnsIsCash(doc) && !docIsVoided(doc),
   });
 }
 
 /** Cheap read of the built doc's payment line to decide the drawer kick. */
 function docColumnsIsCash(doc: PrintDoc): boolean {
   return doc.body.some((line) => line.cols?.[0]?.startsWith('Bayar Tunai'));
+}
+
+/** True for a whole-bon void (the banner is its first line). */
+function docIsVoided(doc: PrintDoc): boolean {
+  return doc.body.some((line) => line.text === 'TRANSAKSI DIBATALKAN');
 }
 
 /** Build + print the Z-report for a closed shift. */
@@ -127,7 +139,7 @@ export async function buildZReportDoc(
   shiftId: string,
   ctx: PrintContext
 ): Promise<PrintDoc | null> {
-  const [shiftRes, methodRes] = await batchQuery([
+  const [shiftRes, methodRes, voidRes] = await batchQuery([
     {
       sql: `
         SELECT
@@ -155,7 +167,18 @@ export async function buildZReportDoc(
           COALESCE(SUM(total_amount), 0) AS total,
           COUNT(*) AS txn_count
         FROM transactions
-        WHERE shift_id = $1
+        WHERE shift_id = $1 AND status = 'completed'
+      `,
+      params: [shiftId],
+    },
+    {
+      // Voids stay out of the sales figures above but belong on the report so
+      // the drawer reconciles: how many bons were cancelled, and for how much.
+      sql: `
+        SELECT COUNT(*) AS void_count,
+               COALESCE(SUM(total_amount), 0) AS void_amount
+          FROM transactions
+         WHERE shift_id = $1 AND status = 'void'
       `,
       params: [shiftId],
     },
@@ -178,6 +201,9 @@ export async function buildZReportDoc(
   if (!shift) return null;
 
   const methods = (methodRes.rows[0] ?? {}) as Record<string, number | string>;
+  const voidRow = (voidRes.rows[0] ?? {}) as Record<string, number | string>;
+  const voidCount = Number(voidRow.void_count ?? 0);
+  const voidAmount = Number(voidRow.void_amount ?? 0);
   const byMethod = {
     cash: Number(methods.cash ?? 0),
     card: Number(methods.card ?? 0),
@@ -209,6 +235,8 @@ export async function buildZReportDoc(
     transactionCount: Number(methods.txn_count ?? 0),
     byMethod,
     totalSales,
+    voidCount,
+    voidAmount,
     initialCash,
     expectedCash,
     finalCash,

@@ -119,3 +119,89 @@ describe('buildSaleReceipt', () => {
     }
   });
 });
+
+describe('buildSaleReceipt with voids', () => {
+  // One live line (20.000) and one voided line (3.000) on a bon charged 18.000,
+  // i.e. the bon-level discount is 2.000 both before and after the void.
+  const partialVoid: SaleReceiptInput = {
+    ...baseTrx,
+    total: 18000,
+    amountPaid: 18000,
+    items: [
+      { name: 'Tepung Terigu', quantity: 2, unitName: 'Pcs', unitPrice: 10000, subtotal: 20000 },
+      {
+        name: 'Gula Pasir',
+        quantity: 1,
+        unitName: 'Kg',
+        unitPrice: 3000,
+        subtotal: 3000,
+        voided: true,
+        voidReason: 'customer tidak jadi',
+      },
+    ],
+  };
+
+  it('strikes the voided line and keeps the discount math on the live lines', () => {
+    const doc = buildSaleReceipt(partialVoid, CFG_80);
+    const itemLines = doc.body.filter((l) => l.cols?.[0] === 'Gula Pasir');
+    expect(itemLines).toHaveLength(1);
+    expect(itemLines[0].strikethrough).toBe(true);
+    // A printer that ignores ESC G still has to show it: a text marker follows.
+    expect(doc.body.some((l) => l.text?.includes('[VOID]'))).toBe(true);
+    // ... and the reason the cashier gave travels on the paper too.
+    expect(doc.body.some((l) => l.text?.includes('customer tidak jadi'))).toBe(true);
+    expect(doc.body.find((l) => l.cols?.[0] === 'Tepung Terigu')?.strikethrough).toBe(false);
+    expect(doc.body.some((l) => l.text === 'TRANSAKSI DIBATALKAN')).toBe(false);
+
+    // Subtotal counts live lines only, so the implied 2.000 discount survives.
+    expect(doc.body.find((l) => l.cols?.[0] === 'Subtotal')?.cols?.[1]).toBe('Rp 20.000');
+    expect(doc.body.find((l) => l.cols?.[0] === 'Diskon')?.cols?.[1]).toBe('-Rp 2.000');
+    expect(doc.body.find((l) => l.cols?.[0] === 'TOTAL')?.cols?.[1]).toBe('Rp 18.000');
+    // Nothing is struck on a bon that is still a sale.
+    expect(doc.body.find((l) => l.cols?.[0] === 'TOTAL')?.strikethrough).toBeFalsy();
+  });
+
+  it('banners a whole-bon void and strikes the money it cancelled', () => {
+    // `voidTransactionBon` also flags every line, so the reprint carries the
+    // struck items — not only the banner.
+    const bonVoid: SaleReceiptInput = {
+      ...baseTrx,
+      status: 'void',
+      voidReason: 'salah input',
+      items: baseTrx.items.map((item) => ({ ...item, voided: true })),
+    };
+    const doc = buildSaleReceipt(bonVoid, CFG_80);
+
+    const banner = doc.body.find((l) => l.text === 'TRANSAKSI DIBATALKAN');
+    expect(banner).toMatchObject({ size: 2, align: 'center', bold: true });
+    expect(doc.body.find((l) => l.text?.startsWith('Alasan'))?.text).toContain('salah input');
+
+    // Every line is struck, and the item sum shows what was cancelled rather
+    // than a bare zero — the customer must be able to read the reversal. This
+    // bon carries no discount line, so the exact struck rows are assertable.
+    const struck = doc.body.filter((l) => l.cols && l.strikethrough).map((l) => l.cols![0]);
+    expect(struck).toEqual([
+      'Tepung Terigu',
+      'Gula Pasir',
+      'Subtotal',
+      'TOTAL',
+      'Bayar Tunai',
+      'Kembali',
+    ]);
+    expect(doc.body.find((l) => l.cols?.[0] === 'Subtotal')?.cols?.[1]).toBe('Rp 23.000');
+    expect(doc.footer.some((l) => l.text?.includes('DIBATALKAN'))).toBe(true);
+    // The friendly footer is replaced by the void stamp, not appended to it.
+    expect(doc.footer.some((l) => l.text?.startsWith('Terima kasih'))).toBe(false);
+  });
+
+  it('keeps voided receipts inside 58mm', () => {
+    const doc = buildSaleReceipt(
+      { ...partialVoid, status: 'void', voidReason: 'salah input' },
+      { ...CFG_80, paperWidthMm: 58 }
+    );
+    for (const line of [...doc.header, ...doc.body, ...doc.footer]) {
+      if (!line.cols) continue;
+      expect(resolveLineText(line, doc.columns).length).toBeLessThanOrEqual(32);
+    }
+  });
+});

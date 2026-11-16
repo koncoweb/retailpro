@@ -1,0 +1,5 @@
+Kode Vendor,Nama Vendor,Kategori Vendor,Kontak,Telepon,Email,Termin (hari),SKU,Nama Produk,Kategori Produk,Harga Jual,Stok Awal,Stok Minimum,Satuan,Faktor,Harga Beli,Min Order,Vendor SKU
+,PT E2E Katalog Sumber,Bahan Kue,Sales E2E,0812000001000,katalog.e2e@tokobahankue.com,14,,Tepung Terigu E2E,Bahan Kue,12000,10,2,Pcs,1,9000,5,E2E-TPG-PCS
+,PT E2E Katalog Sumber,Bahan Kue,Sales E2E,0812000001000,katalog.e2e@tokobahankue.com,14,,Tepung Terigu E2E,Bahan Kue,228000,,,Karton,24,205000,1,E2E-TPG-KRT
+,PT E2E Katalog Sumber,Bahan Kue,Sales E2E,0812000001000,katalog.e2e@tokobahankue.com,14,GUL-E2E01,Gula Pasir E2E,Bahan Kue,14500,20,5,Pcs,1,11000,10,E2E-GUL-PCS
+,CV E2E Distribusi,Bumbu,Sales E2E Dua,0812000002000,distribusi.e2e@tokobahankue.com,7,,Minyak Goreng E2E,Bumbu,18000,8,2,Pcs,1,15000,6,E2E-MG-PCS

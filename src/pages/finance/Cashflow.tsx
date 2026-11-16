@@ -43,7 +43,7 @@ export default function Cashflow() {
               strftime('%Y-%m', created_at, $1) as sort_key,
               SUM(total_amount) as total
             FROM transactions
-            WHERE created_at >= $2 AND created_at < $3
+            WHERE status = 'completed' AND created_at >= $2 AND created_at < $3
             GROUP BY 1
             ORDER BY 1
           `,

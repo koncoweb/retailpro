@@ -90,14 +90,15 @@ export function TransactionDetailModal({
         amount_paid: parseFloat(row.amount_paid)
       })));
 
-      // Fetch branch stats
+      // Fetch branch stats — completed bons only; the recent list above still
+      // shows voids with their status badge.
       const statsRes = await query(`
         SELECT 
           b.name, 
           COUNT(t.id) as tx_count, 
           COALESCE(SUM(t.total_amount), 0) as total_amount
         FROM branches b
-        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= date('now')
+        LEFT JOIN transactions t ON b.id = t.branch_id AND t.status = 'completed' AND t.created_at >= date('now')
         GROUP BY b.id, b.name
         ORDER BY total_amount DESC
       `);

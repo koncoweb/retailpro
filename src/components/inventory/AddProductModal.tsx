@@ -20,6 +20,12 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { query } from "@/lib/db";
+import { outsideTransaction, resolveOrCreateVendor } from "@/lib/vendor-catalog";
+import type {
+  ProductFormPayload,
+  ProductUnit,
+  ProductVariantDraft,
+} from "@/lib/product-write";
 import { Badge } from "@/components/ui/badge";
 import { BarcodeGenerator } from "@/components/ui/BarcodeGenerator";
 import {
@@ -62,57 +68,11 @@ import { readTenantSetting } from "@/lib/tenant-settings";
 import { unitLabel, unitNameOptions } from "@/lib/units";
 
 /**
- * One sellable pack of one variant (a "pecahan"): "Karton" holds 24 base units
- * and carries its OWN buy and sell price. Nothing here is derived from another
- * pack — a carton is not automatically 24 x the pcs price, which is exactly the
- * mistake this screen used to make.
+ * The form's data contracts live with the writer (`@/lib/product-write`) so a
+ * product can only ever be shaped one way. They are re-exported here to keep the
+ * screens that already import them from this module working.
  */
-export interface ProductUnit {
-  id?: string;
-  /** Owning `product_variants.id`, filled in when rows are read back. */
-  variant_id?: string | null;
-  name: string;
-  conversion_factor: number;
-  /** Sell price for THIS pack, in rupiah. */
-  price: number;
-  /** Buy price for THIS pack, in rupiah; `cost / conversion_factor` is per base. */
-  cost: number;
-  barcode: string;
-}
-
-/** One row of the variant matrix: attributes, its packs, its opening stock. */
-export interface ProductVariantDraft {
-  /** `variantKey(attributes)`; empty string for a product without variants. */
-  key: string;
-  /** `product_variants.id` when the row already exists. */
-  id?: string;
-  attributes: VariantAttributes;
-  sku: string;
-  barcode: string;
-  units: ProductUnit[];
-  /** Opening/on-hand target per warehouse id, in base units. */
-  stock: Record<string, number>;
-}
-
-/** Exactly what the form hands the page, so the SQL never has to re-derive it. */
-export interface ProductFormPayload {
-  sku: string;
-  name: string;
-  category: string;
-  /** Model summary: factor-1 sell price of the first variant. */
-  price: number;
-  /** Model summary: factor-1 buy price of the first variant. */
-  cost: number;
-  /** Sum of every variant's opening stock. */
-  stock: number;
-  minStock: number;
-  supplier: string;
-  /** Per-warehouse total, for the table's stock column. */
-  warehouses: Record<string, number>;
-  /** `products.variant_attributes`; empty means a single default variant. */
-  variantGroups: VariantAttributeGroup[];
-  variants: ProductVariantDraft[];
-}
+export type { ProductUnit, ProductVariantDraft, ProductFormPayload } from "@/lib/product-write";
 
 interface AddProductModalProps {
   open: boolean;
@@ -135,6 +95,13 @@ interface AddProductModalProps {
    * `can("manage_sell_prices")`; owners hold it, cashiers/warehouse do not.
    */
   canManageSellPrices?: boolean;
+  /**
+   * Vendor to prefill and file the new product under, used when the modal is
+   * opened FROM the vendor screen. The writer receives it as an id, so the
+   * product lands in that vendor's catalogue instead of hoping the typed name
+   * matches a master row.
+   */
+  defaultSupplier?: { id: string; name: string } | null;
 }
 
 /** The one pack every product starts with: the base unit itself. */
@@ -197,6 +164,7 @@ export function AddProductModal({
   initialData,
   canManageVariants = true,
   canManageSellPrices = true,
+  defaultSupplier = null,
 }: AddProductModalProps) {
   const [formData, setFormData] = useState({
     sku: "",
@@ -306,12 +274,20 @@ export function AddProductModal({
       }
       setStockInputs(stocks);
     } else if (mode === "add" && open) {
-      setFormData({ sku: "", name: "", category: "", minStock: "", supplier: "" });
+      // A vendor passed in by the vendor screen is the answer already; the
+      // operator only has to describe the product.
+      setFormData({
+        sku: "",
+        name: "",
+        category: "",
+        minStock: "",
+        supplier: defaultSupplier?.name ?? "",
+      });
       setStockInputs({});
       setVariantGroups([]);
       setVariants([makeVariant({}, "")]);
     }
-  }, [initialData, mode, open]);
+  }, [initialData, mode, open, defaultSupplier?.id, defaultSupplier?.name]);
 
   // Margin floor is a tenant setting; failing to read it must not block the form.
   useEffect(() => {
@@ -529,6 +505,13 @@ export function AddProductModal({
       }
     }
 
+    // A vendor picked from the master list (or prefilled by the vendor screen)
+    // travels as an id. A name that is not in the list is left for the writer to
+    // resolve, so a brand-new vendor still ends up as a proper master row.
+    const pickedSupplier = dbSuppliers.find(
+      (row) => row.name.trim().toLowerCase() === formData.supplier.trim().toLowerCase()
+    );
+
     onAdd({
       sku: formData.sku,
       name: formData.name,
@@ -538,6 +521,7 @@ export function AddProductModal({
       stock: totalStock,
       minStock: parseInt(formData.minStock) || 0,
       supplier: formData.supplier,
+      supplierId: pickedSupplier?.id ?? null,
       warehouses: warehouseStockNumbers,
       variantGroups: sanitizeGroups(variantGroups),
       variants: variantsToSave,
@@ -589,7 +573,9 @@ export function AddProductModal({
     }
 
     try {
-        await query("INSERT INTO suppliers (name) VALUES ($1)", [name]);
+        // One author for vendor creation: a code, a category and a status, so
+        // the new row reads correctly on the vendor list straight away.
+        await resolveOrCreateVendor(outsideTransaction, name);
         toast.success("Supplier berhasil ditambahkan");
         
         // Refresh list and select it
@@ -667,10 +653,11 @@ export function AddProductModal({
         <div className="grid gap-4 py-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
-              <Label>Kategori *</Label>
+              <Label htmlFor="product-category">Kategori *</Label>
               <Popover open={openCategory} onOpenChange={setOpenCategory}>
                 <PopoverTrigger asChild>
                   <Button
+                    id="product-category"
                     variant="outline"
                     role="combobox"
                     aria-expanded={openCategory}
@@ -734,10 +721,11 @@ export function AddProductModal({
             </div>
 
             <div className="grid gap-2">
-              <Label>Supplier</Label>
+              <Label htmlFor="product-supplier">Supplier</Label>
                <Popover open={openSupplier} onOpenChange={setOpenSupplier}>
                 <PopoverTrigger asChild>
                   <Button
+                    id="product-supplier"
                     variant="outline"
                     role="combobox"
                     aria-expanded={openSupplier}
@@ -929,7 +917,7 @@ export function AddProductModal({
               ))}
             </datalist>
             <div className="space-y-4">
-              {variants.map((row) => {
+              {variants.map((row, variantIndex) => {
                 const baseName =
                   row.units.find((unit) => Number(unit.conversion_factor) === 1)?.name || "Pcs";
                 const warnings = priceIssues(row.units.map(toPackInput), priceSettings).filter(
@@ -980,8 +968,9 @@ export function AddProductModal({
                           <div key={index} className="space-y-2 border-b pb-3 last:border-0 last:pb-0">
                             <div className="grid grid-cols-12 gap-2 items-end">
                               <div className="col-span-3">
-                                <Label className="text-xs">Satuan</Label>
+                                <Label htmlFor={`pack-unit-${variantIndex}-${index}`} className="text-xs">Satuan</Label>
                                 <Input
+                                  id={`pack-unit-${variantIndex}-${index}`}
                                   value={unit.name}
                                   onChange={(e) =>
                                     handlePackChange(row.key, index, "name", e.target.value)
@@ -992,8 +981,9 @@ export function AddProductModal({
                                 />
                               </div>
                               <div className="col-span-2">
-                                <Label className="text-xs">Isi</Label>
+                                <Label htmlFor={`pack-factor-${variantIndex}-${index}`} className="text-xs">Isi</Label>
                                 <Input
+                                  id={`pack-factor-${variantIndex}-${index}`}
                                   type="number"
                                   value={unit.conversion_factor}
                                   onChange={(e) =>
@@ -1008,8 +998,9 @@ export function AddProductModal({
                                 />
                               </div>
                               <div className="col-span-2">
-                                <Label className="text-xs">Harga Beli</Label>
+                                <Label htmlFor={`pack-cost-${variantIndex}-${index}`} className="text-xs">Harga Beli</Label>
                                 <Input
+                                  id={`pack-cost-${variantIndex}-${index}`}
                                   type="number"
                                   value={unit.cost || ""}
                                   onChange={(e) =>
@@ -1024,8 +1015,9 @@ export function AddProductModal({
                                 />
                               </div>
                               <div className="col-span-2">
-                                <Label className="text-xs">Harga Jual</Label>
+                                <Label htmlFor={`pack-price-${variantIndex}-${index}`} className="text-xs">Harga Jual</Label>
                                 <Input
+                                  id={`pack-price-${variantIndex}-${index}`}
                                   type="number"
                                   value={unit.price || ""}
                                   onChange={(e) =>

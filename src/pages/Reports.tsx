@@ -152,6 +152,15 @@ export default function Reports() {
       ? `${alias}.created_at >= $1 AND ${alias}.created_at < $2`
       : `${alias}.created_at >= $1 AND ${alias}.created_at < $2 AND ${alias}.branch_id = $3`;
 
+  /**
+   * Money predicate for every revenue aggregation. A whole-bon void keeps its
+   * `total_amount` as the record of the cancelled sale, so revenue only counts
+   * `completed` bons; listings (e.g. the CSV detail sheet, which prints the
+   * status column) keep using the plain `scopeWhere` so voids stay visible.
+   */
+  const revenueWhere = (alias: string) =>
+    `${scopeWhere(alias)} AND ${alias}.status = 'completed'`;
+
   const { data: salesByBranch = [], isLoading: loadingBranch } = useQuery({
     queryKey: ['salesByBranch', period, branchFilter],
     queryFn: async () => {
@@ -162,7 +171,7 @@ export default function Reports() {
           COALESCE(SUM(t.total_amount), 0) as value
         FROM transactions t
         JOIN branches b ON t.branch_id = b.id
-        WHERE ${scopeWhere("t")}
+        WHERE ${revenueWhere("t")}
         GROUP BY b.name
         ORDER BY value DESC
       `, scopeArgs(start, end));
@@ -181,7 +190,7 @@ export default function Reports() {
         FROM transaction_items ti
         JOIN products p ON ti.product_id = p.id
         JOIN transactions t ON ti.transaction_id = t.id
-        WHERE ${scopeWhere("t")}
+        WHERE ${revenueWhere("t")} AND ti.voided = 0
         GROUP BY p.category
         ORDER BY value DESC
       `, scopeArgs(start, end));
@@ -210,7 +219,7 @@ export default function Reports() {
           strftime('%Y-%m', created_at, $1) as month_key,
           COALESCE(SUM(total_amount), 0) as sales
         FROM transactions
-        WHERE created_at >= $2 AND created_at < $3${branchClause}
+        WHERE status = 'completed' AND created_at >= $2 AND created_at < $3${branchClause}
         GROUP BY 1
         ORDER BY 1
       `, [sqliteTzModifier(), start, end.toISOString(), ...(branchFilter === "all" ? [] : [branchFilter])]);
@@ -345,7 +354,7 @@ export default function Reports() {
                  const incomeRes = await query(`
                     SELECT SUM(total_amount) as total
                     FROM transactions t
-                    WHERE ${scopeWhere("t")}
+                    WHERE ${revenueWhere("t")}
                  `, scopeArgs(finStart, finEnd));
 
                  const totalIncome = Number(incomeRes.rows[0].total || 0);

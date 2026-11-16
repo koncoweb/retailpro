@@ -18,6 +18,7 @@
 import type { Transaction } from "@/lib/db";
 import { logAuditTx } from "@/lib/audit";
 import { dueDateFromTerms } from "@/lib/vendor";
+import { recordVendorLastCost, upsertVendorPrice } from "@/lib/vendor-catalog";
 import {
   derivePurchaseOrderStatus,
   isoToday,
@@ -301,34 +302,30 @@ export async function receivePurchaseOrder(
 
     // Only the cost is a receipt's business. `lead_time_days` belongs to the
     // vendor master: overwriting it here silently reset every product's lead
-    // time on every delivery.
+    // time on every delivery. Both statements are the shared catalogue writers,
+    // so a delivery cannot invent a fourth version of either policy.
     if (header.supplier_id) {
-      await tx.query(
-        `INSERT INTO vendor_products (vendor_id, product_id, last_cost, min_order_qty)
-         VALUES ($1, $2, $3, 1)
-         ON CONFLICT (vendor_id, product_id) DO UPDATE SET last_cost = excluded.last_cost`,
-        [header.supplier_id, line.row.product_id, baseCost]
-      );
+      await recordVendorLastCost(tx, {
+        vendorId: header.supplier_id,
+        productId: line.row.product_id,
+        lastCost: baseCost,
+      });
 
       // Fill a price-list gap with what was actually invoiced. Deliberately
-      // DO NOTHING when a row exists: an overwrite here would replace the
-      // agreed template with one delivery, and the next order would silently
-      // default to the wrong price. Drift is surfaced as a variance instead.
+      // gap-only: an overwrite here would replace the agreed template with one
+      // delivery, and the next order would silently default to the wrong price.
+      // Drift is surfaced as a variance instead.
       if (line.row.variant_id && line.row.unit_name) {
-        await tx.query(
-          `INSERT INTO vendor_price_list
-             (vendor_id, variant_id, unit_name, conversion_factor, buy_price, min_qty, updated_by)
-           VALUES ($1, $2, $3, $4, $5, 1, $6)
-           ON CONFLICT (vendor_id, variant_id, unit_name) DO NOTHING`,
-          [
-            header.supplier_id,
-            line.row.variant_id,
-            line.row.unit_name,
-            factor,
-            money(line.unitCost),
-            params.userId ?? null,
-          ]
-        );
+        await upsertVendorPrice(tx, {
+          vendorId: header.supplier_id,
+          variantId: line.row.variant_id,
+          unitName: line.row.unit_name,
+          conversionFactor: factor,
+          buyPrice: money(line.unitCost),
+          userId: params.userId ?? null,
+          mode: "gap-only",
+          source: "penerimaan barang",
+        });
       }
     }
   }

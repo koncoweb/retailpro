@@ -59,7 +59,9 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Get today's sales
+      // Get today's sales. The status filter sits in the join condition so a
+      // voided bon drops out of both the sum and the count, while branches with
+      // only voids still show up with zeros.
       const todayRes = await query(`
         SELECT 
           b.name as branch_name, 
@@ -67,6 +69,7 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
           COUNT(t.id) as tx_count
         FROM branches b
         LEFT JOIN transactions t ON b.id = t.branch_id 
+          AND t.status = 'completed'
           AND date(t.created_at) = date('now')
         GROUP BY b.id, b.name
         ORDER BY total_sales DESC
@@ -79,6 +82,7 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
           COALESCE(SUM(t.amount_paid), 0) as total_sales
         FROM branches b
         LEFT JOIN transactions t ON b.id = t.branch_id 
+          AND t.status = 'completed'
           AND date(t.created_at) = date('now', '-1 day')
         GROUP BY b.id, b.name
       `);

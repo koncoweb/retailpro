@@ -148,18 +148,23 @@ export default function Dashboard() {
       * `>= start AND < end` range (so the query stays index-servable and does
       * not silently widen when the clock crosses midnight) and the branch adds
       * `branch_id = ?` instead of relying on the removed RLS policy.
+      *
+      * Revenue only counts completed bons: a whole-bon void keeps its
+      * `total_amount` as the record of the cancelled sale, so the status filter
+      * is what keeps the headline numbers aligned with accounting (009).
       */
      const fetchData = async () => {
         const [start, end] = getPeriodRange(period);
         const scoped = branchFilter !== ALL_BRANCHES;
         const txArgs = scoped ? [start, end, branchFilter] : [start, end];
         const txWhere = scoped
-          ? "WHERE created_at >= $1 AND created_at < $2 AND branch_id = $3"
-          : "WHERE created_at >= $1 AND created_at < $2";
-        // Same predicate, aliased for the join below.
+          ? "WHERE status = 'completed' AND created_at >= $1 AND created_at < $2 AND branch_id = $3"
+          : "WHERE status = 'completed' AND created_at >= $1 AND created_at < $2";
+        // Same predicate, aliased for the join below, plus voided lines (whose
+        // stock went back to the shelf) stay out of units sold.
         const itemWhere = scoped
-          ? "WHERE t.created_at >= $1 AND t.created_at < $2 AND t.branch_id = $3"
-          : "WHERE t.created_at >= $1 AND t.created_at < $2";
+          ? "WHERE t.status = 'completed' AND ti.voided = 0 AND t.created_at >= $1 AND t.created_at < $2 AND t.branch_id = $3"
+          : "WHERE t.status = 'completed' AND ti.voided = 0 AND t.created_at >= $1 AND t.created_at < $2";
 
         try {
           const [salesRes, txRes, prodRes, empRes] = await batchQuery([

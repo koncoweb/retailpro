@@ -3,11 +3,38 @@
 | | |
 |---|---|
 | Document | `docs/spec-varian-harga-vendor.md` |
-| Status | **Proposed** — spec only, belum ada kode yang ditulis |
+| Status | **Shipped** — dibangun penuh lewat migrasi `006_variants_pricing`; rinciannya di §16 (diverifikasi 2026-11-16) |
 | Tanggal | 2026-10-31 |
-| Schema impact | migrasi `006`, schema version 5 → **6**, 31 → **33** tabel |
+| Schema impact | migrasi `006`, schema version 5 → **6**, 31 → **33** tabel *(hari ini v10 / 34 tabel setelah `010`)* |
 | Spec terkait | `docs/spec-purchase-order.md` (siklus PO & penerimaan barang) |
 | Keputusan pemilik | varian = tabel terpisah dengan stok sendiri; harga beli per pecahan independen; template PO = pricelist per vendor |
+
+> **Catatan status (2026-11-16).** §0–§15 di bawah adalah **rekaman desain pada titik waktunya** —
+> tidak disunting supaya tetap bisa dibaca sebagai alasan keputusan. Apa yang benar-benar terpasang
+> ada di **§16 Status implementasi** (tabel + kolom migrasi `006`, `src/lib/variants.ts`,
+> `resolveBuyPrice()` di `src/lib/pricing.ts`, template PO di `PurchaseOrderModal.tsx`, tulis-balik
+> `vendor_price_list` di `src/lib/goods-receipt.ts`, tab Harga Beli/Riwayat Harga di
+> `VendorDetail.tsx`, dialog **Pilih Varian** di POS yang ditutup `kasir.e2e.ts`). Angka skema di
+> §16 juga ikut tertinggal — baca kotak koreksi di awal subbagian "G1–G5" untuk versi terkini.
+
+> **Catatan status (2026-11-17).** Isi §0–§16 di atas tetap beku. Yang bergerak adalah **penulisnya**,
+> bukan tabelnya: `vendor_products` dan `vendor_price_list` kini hanya boleh ditulis lewat satu modul
+> (`src/lib/vendor-catalog.ts`, statement-nya di `src/lib/vendor-catalog-sql.ts`); `goods-receipt.ts`
+> memanggil ulang `upsertVendorPrice({ mode: 'gap-only' })` supaya kebijakan `ON CONFLICT DO NOTHING`
+> punya satu definisi; form produk akhirnya mengisi template PO (§14 D3) untuk tiap (varian, pecahan)
+> ber-harga lewat `src/lib/product-write.ts`; `is_preferred` benar-benar disetel dari UI (tepat satu per
+> produk); `notes` dipakai sebagai provenance (`import` / `form produk` / `katalog vendor`) karena tidak
+> ada kolom asalusul; dan layar PO memilih vendor otomatis (`defaultVendorFor`). Skema tenant berdiri di
+> **versi 10 / 34 tabel** — migrasi `010` hanya menambah dua indeks. Semua itu didokumentasikan di
+> [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md).
+>
+> Satu **koreksi format** dibuat di §0–§16 pada tanggal yang sama dan dicatat di sini supaya
+> pembekuannya tetap bisa diaudit: sel terakhir tabel §4.2 "Perilaku aturan" menulis nilai absolut
+> sebagai `\|unit_cost − pricelist.buy_price\|` — garis vertikalnya di-escape karena markdown
+> membacanya sebagai pemisah kolom, bukan sebagai notasi matematis. **Isi, angka, dan keputusan tidak
+> berubah**; hanya render-nya. Yang memeriksa hal ini adalah `npm run docs:check` (lihat
+> [kendala-solusi.md](kendala-solusi.md) KS-49), jadi kesalahan bentuk yang sama tidak bisa masuk lagi
+> tanpa membuat gerbang gagal.
 
 ---
 
@@ -384,7 +411,7 @@ disepakati"* (§6.3).
 | `sell_ladder_inverted` | `basePrice` pecahan besar > `basePrice` pecahan kecil | Peringatan |
 | `margin_below_floor` | `marginPercent < pricing.min_margin_pct` | Peringatan, kecuali owner menandai promo (kolom `notes`) |
 | `duplicate_factor` | dua pecahan dengan `conversion_factor` sama | **Blokir** — index unik juga menolak |
-| selisih tagihan | `|unit_cost − pricelist.buy_price| / buy_price > pricing.variance_tolerance_pct` | Peringatan di penerimaan + audit |
+| selisih tagihan | `\|unit_cost − pricelist.buy_price\| / buy_price > pricing.variance_tolerance_pct` | Peringatan di penerimaan + audit |
 
 Pengaturan per tenant (di `tenants.settings`, dibaca lewat `src/lib/tenant-settings.ts`,
 pola yang sama dengan `stock_issue_method`):
@@ -900,7 +927,26 @@ tetap berfungsi dengan angka stok tingkat produk.
 > `schema_version (1, 8)`), bukan 6 seperti tertulis di §16 atas. Tidak ada
 > migrasi baru untuk G1–G5 — fondasi `product_variants` / `product_units` /
 > `vendor_price_list` sudah cukup, dan `vendor_price_list` memang ditunjuk
-> sebagai template PO (§15.1).
+> sebagai template PO (§14 D3; yang di luar cakupan hanyalah basket multi-item —
+> §15 poin 1).
+>
+> Diperbarui 2026-11-16: setelah migrasi `009_transaction_voids` skema tenant
+> berdiri di **versi 9 / 34 tabel** — `db/schema/tenant.sql` sekarang men-stamp
+> `schema_version (1, 9)`. Rilis void tidak menyentuh varian maupun harga: ia
+> hanya menambah kolom trio `void_reason` / `voided_by` / `voided_at` di
+> `transactions`, dan yang sama ditambah `voided` di `transaction_items`. Tidak
+> ada tabel baru sejak versi 8 (`face_enrollments` yang menambah 33 → 34),
+> sehingga seluruh tabel G1–G5 di atas tetap berlaku apa adanya — termasuk
+> peringatan selisih harga yang masih tercatat sebagai pekerjaan terbuka di
+> bagian "Menyusul".
+>
+> Diperbarui 2026-11-17: skema tenant kini **versi 10 / tetap 34 tabel** — migrasi
+> `010_vendor_catalog_indexes.sql` hanya menambah dua indeks
+> (`idx_vendor_products_pref`, `idx_suppliers_name_nc`). Yang berubah bukan struktur
+> template ini, melainkan siapa yang menulisnya: seluruh jalur tulis dikumpulkan di
+> `src/lib/vendor-catalog.ts`, dan form produk akhirnya mengisi `vendor_price_list`
+> (§14 D3) lewat `src/lib/product-write.ts`. Lihat
+> [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md).
 
 Permintaan pemilik: hanya owner (atau user yang diberi wewenang owner) yang
 mengelola template vendor & produk; sistem satuan ritel Indonesia dengan label

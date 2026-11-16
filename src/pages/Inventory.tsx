@@ -64,6 +64,8 @@ import {
 } from "@/lib/warehouse";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
 import { sortBatchesForIssue } from "@/lib/stock-issue";
+import { insertImportedProduct, saveProductDraft } from "@/lib/product-write";
+import { resolveOrCreateVendor } from "@/lib/vendor-catalog";
 import {
   createTransfer,
   dispatchTransfer,
@@ -78,7 +80,6 @@ import {
   parseVariantAttributes,
   parseVariantGroups,
   variantLabel,
-  variantSku,
   type VariantAttributeGroup,
   type VariantAttributes,
 } from "@/lib/variants";
@@ -118,6 +119,8 @@ interface Product {
   supplier: string;
   /** Vendor master id behind `supplier`, used by the PO screen. */
   supplierId: string | null;
+  /** Vendor the PO should default to: `vendor_products.is_preferred`. */
+  preferredVendorId: string | null;
   /** Vendors that also supply this product through vendor_products. */
   vendorIds: string[];
   /** `vendor_products.last_cost` per vendor, so a PO starts from the right price. */
@@ -171,6 +174,12 @@ const PRODUCTS_SQL = `
       WHERE s.id = p.supplier_id
     ) as supplier,
     p.supplier_id,
+    (
+      SELECT vendor_id
+      FROM vendor_products
+      WHERE product_id = p.id AND is_preferred = 1
+      LIMIT 1
+    ) as preferred_vendor_id,
     COALESCE((
       SELECT json_group_array(vendor_id)
       FROM vendor_products
@@ -359,6 +368,7 @@ function mapProductRows(
       lastRestock: row.created_at,
       supplier: row.supplier || "-",
       supplierId: row.supplier_id ?? null,
+      preferredVendorId: row.preferred_vendor_id ?? null,
       vendorIds: parseJson<string[]>(row.vendor_ids, []),
       vendorCosts: parseJson<Record<string, number>>(row.vendor_costs, {}),
       // Falls back to the product's own packs so a row written before
@@ -597,70 +607,30 @@ export default function Inventory() {
       }
 
       for (const { p, sku } of toInsert) {
-        // Find or Create Supplier
-        let supplierId: string | null = null;
-        if (p.supplier) {
-          const supplierRes = await query("SELECT id FROM suppliers WHERE name = $1", [p.supplier]);
-          if (supplierRes.rows.length > 0) {
-            supplierId = supplierRes.rows[0].id;
-          } else {
-            const newSupRes = await query("INSERT INTO suppliers (name) VALUES ($1) RETURNING id", [p.supplier]);
-            supplierId = newSupRes.rows[0].id;
-          }
-        }
-
-        // Additive: this SKU is guaranteed new (conflicts were skipped above),
-        // so always insert rather than update. Product row and its opening
-        // batch commit together, so an import can never leave a product behind
-        // with no stock record.
+        // A vendor named in the sheet becomes a real master row — code,
+        // category, status — rather than the name-only stub this import used to
+        // leave behind. Additive: this SKU is guaranteed new (conflicts were
+        // skipped above), so the writer always inserts. Product, variant, pack,
+        // vendor catalogue and opening batch commit together.
         await runTransaction(async (tx) => {
-          const res = await tx.query<{ id: string }>(
-            `INSERT INTO products (sku, name, category, cost_price, min_stock_level, supplier_id) 
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-            [sku, p.name, p.category, p.cost, p.minStock, supplierId]
+          const vendorId = await resolveOrCreateVendor(tx, p.supplier);
+          await insertImportedProduct(
+            tx,
+            {
+              sku,
+              name: p.name,
+              category: p.category,
+              price: p.price,
+              cost: p.cost,
+              stock: p.stock,
+              minStock: p.minStock,
+            },
+            {
+              warehouseId: receivingWarehouseId,
+              vendorId,
+              userId: user?.id ?? null,
+            }
           );
-          const productId = res.rows[0].id;
-
-          // Every product owns at least one variant. An imported row has no
-          // attribute axes, so it becomes the single `Default` variant — the
-          // same shape migration 006 backfills.
-          const variantRes = await tx.query<{ id: string }>(
-            `INSERT INTO product_variants (product_id, sku, name, attributes, cost_price, price)
-             VALUES ($1, $2, 'Default', '{}', $3, $4)
-             RETURNING id`,
-            [productId, sku, p.cost, p.price]
-          );
-          const variantId = variantRes.rows[0].id;
-
-          // The factor-1 pack is where a product's buy and sell price live; a
-          // product without one has no price the POS could charge.
-          await tx.query(
-            `INSERT INTO product_units (product_id, variant_id, name, conversion_factor, cost, price)
-             VALUES ($1, $2, 'Pcs', 1, $3, $4)
-             ON CONFLICT (variant_id, conversion_factor) DO UPDATE SET
-               cost = excluded.cost,
-               price = excluded.price`,
-            [productId, variantId, p.cost, p.price]
-          );
-
-          // Imported rows name their vendor, so register the catalogue link too.
-          if (supplierId) {
-            await tx.query(
-              `INSERT INTO vendor_products (vendor_id, product_id, last_cost, min_order_qty)
-               VALUES ($1, $2, $3, 1)
-               ON CONFLICT (vendor_id, product_id) DO UPDATE SET last_cost = excluded.last_cost`,
-              [supplierId, productId, p.cost]
-            );
-          }
-
-          if (receivingWarehouseId && p.stock > 0) {
-            await tx.query(
-              `INSERT INTO product_batches
-                 (warehouse_id, product_id, variant_id, batch_number, quantity_initial, quantity_current, cost_price)
-               VALUES ($1, $2, $3, $4, $5, $5, $6)`,
-              [receivingWarehouseId, productId, variantId, 'INITIAL-IMPORT', p.stock, p.cost]
-            );
-          }
         });
       }
       const skipped = importedProducts.length - toInsert.length;
@@ -677,345 +647,31 @@ export default function Inventory() {
   };
 
   /**
-   * Saves one product together with its variants, their packs and their stock.
+   * Saves one product through `@/lib/product-write`.
    *
-   * Order matters: a pack points at its variant and a batch points at both, so
-   * variants are written first, then packs, then the stock movements. The whole
-   * thing is one transaction, so a failure halfway can no longer leave a variant
-   * without packs, or stock that finance never recorded.
+   * The SQL moved out of this screen so the vendor detail screen can save the
+   * same product without a second copy of the inserts. What stays here is the
+   * permission check, the toast, and the reload.
    */
   const handleSaveProduct = async (productData: ProductFormPayload) => {
     // The product template (variants, packs, prices) is owner-managed. Hide the
     // controls above, and refuse the write here so a stale tab cannot post.
-    if (!can("manage_variants")) {
+    const mayEditVariant = can("manage_variants");
+    if (!mayEditVariant) {
       toast.error("Tidak berwenang mengelola template produk.");
       return;
     }
     try {
-      // The product row, its units, every stock movement and the expense booked
-      // for new stock are one unit of work. This used to be a series of
-      // independent round-trips, so a failure halfway could leave a product with
-      // no units, or stock on the shelf that finance never recorded.
-      let savedProductId = editingProduct?.id ?? "";
-      let createdProduct = false;
-
-      // The axis list lives on the product, not on every variant row: the
-      // variants carry the values only, and the render order comes from here.
-      const variantGroups = productData.variantGroups ?? [];
-
-      // Stock reductions below drain batches through the tenant's issue policy
-      // (FIFO / LIFO / FEFO), read before the transaction opens.
-      const issueMethod = await getStockIssueMethod();
-
-      await runTransaction(async (tx) => {
-        // Handle Supplier (Find or Create) - Common for both Add and Edit
-        let supplierId: string | null = null;
-        if (productData.supplier) {
-          const supplierRes = await tx.query<{ id: string }>(
-            `SELECT id FROM suppliers WHERE name = $1`,
-            [productData.supplier]
-          );
-          if (supplierRes.rows.length > 0) {
-            supplierId = supplierRes.rows[0].id;
-          } else {
-            const newSupplierRes = await tx.query<{ id: string }>(
-              `INSERT INTO suppliers (name) VALUES ($1) RETURNING id`,
-              [productData.supplier]
-            );
-            supplierId = newSupplierRes.rows[0].id;
-          }
-        }
-
-        /**
-         * A warehouse may be shared between branches, so an expense is booked
-         * against the branch that owns it — and against the operator's own
-         * branch only when nobody owns the stock.
-         */
-        const branchForWarehouse = (warehouseId: string) =>
-          warehouses.find((warehouse) => warehouse.id === warehouseId)?.branch_id ??
-          user?.assigned_branch_id ??
-          null;
-
-        /** Books the purchase of newly added stock as an expense. */
-        const bookStockPurchase = async (
-          warehouseId: string,
-          qty: number,
-          unitCost: number,
-          label: string
-        ) => {
-          // `unitCost` is per base unit, because that is what `qty` counts.
-          const totalCost = Math.round(qty * unitCost);
-          const isUnpaid = Boolean(supplierId);
-          await tx.query(
-            `INSERT INTO expenses (category, amount, date, description, status, amount_paid, supplier_id, branch_id)
-             VALUES ('Pembelian Stok', $1, date('now'), $2, $3, $4, $5, $6)`,
-            [
-              totalCost,
-              `${label}: ${productData.name}`,
-              isUnpaid ? "unpaid" : "paid",
-              isUnpaid ? 0 : totalCost,
-              supplierId,
-              branchForWarehouse(warehouseId),
-            ]
-          );
-        };
-
-        /**
-         * Removes stock of ONE variant through the tenant's issue policy. A
-         * negative adjustment used to be written as a batch with a negative
-         * quantity, which corrupted every later stock sum and every later batch
-         * deduction.
-         *
-         * The variant filter is not optional: without it a reduction on a carton
-         * of coffee could drain the tea sitting in the same warehouse.
-         */
-        const reduceStock = async (warehouseId: string, variantId: string, qty: number) => {
-          let remaining = qty;
-          const batches = await tx.query<{
-            id: string;
-            quantity_current: number;
-            received_at: string | null;
-            expiry_date: string | null;
-          }>(
-            `SELECT id, quantity_current, received_at, expiry_date
-               FROM product_batches
-              WHERE product_id = $1 AND variant_id = $2 AND warehouse_id = $3 AND quantity_current > 0`,
-            [savedProductId, variantId, warehouseId]
-          );
-
-          for (const batch of sortBatchesForIssue(batches.rows, issueMethod)) {
-            if (remaining <= 1e-9) break;
-            const take = Math.min(Number(batch.quantity_current), remaining);
-            const updated = await tx.query(
-              `UPDATE product_batches SET quantity_current = quantity_current - $1
-                WHERE id = $2 AND quantity_current >= $1`,
-              [take, batch.id]
-            );
-            if (updated.rowCount !== 1) {
-              throw new Error("Stok berubah selama penyimpanan, silakan ulangi");
-            }
-            remaining -= take;
-          }
-
-          if (remaining > 1e-9) {
-            throw new Error(`Stok gudang tidak mencukupi untuk dikurangi ${remaining} unit`);
-          }
-        };
-
-        // 1. The product row. `cost_price` stays a summary — the factor-1 buy
-        // price of the first variant — because the table and the PO screen read
-        // a single cost per product.
-        if (editingProduct) {
-          await tx.query(
-            `UPDATE products
-                SET sku=$1, name=$2, category=$3, min_stock_level=$4, supplier_id=$5,
-                    cost_price=$6, variant_attributes=$7
-              WHERE id=$8`,
-            [
-              productData.sku,
-              productData.name,
-              productData.category,
-              productData.minStock,
-              supplierId,
-              productData.cost,
-              JSON.stringify(variantGroups),
-              editingProduct.id,
-            ]
-          );
-        } else {
-          const productRes = await tx.query<{ id: string }>(
-            `INSERT INTO products
-               (sku, name, category, min_stock_level, is_tracked, supplier_id, cost_price, variant_attributes)
-             VALUES ($1, $2, $3, $4, 1, $5, $6, $7)
-             RETURNING id`,
-            [
-              productData.sku,
-              productData.name,
-              productData.category,
-              productData.minStock,
-              supplierId,
-              productData.cost,
-              JSON.stringify(variantGroups),
-            ]
-          );
-          savedProductId = productRes.rows[0].id;
-          createdProduct = true;
-        }
-
-        // 2. Variants the form dropped. A variant that still holds stock is NOT
-        // deleted: its batches would be orphaned and the quantity would vanish
-        // from every stock sum. The owner is asked to empty it first.
-        const storedVariants = editingProduct?.variants ?? [];
-        const incomingVariantIds = new Set(
-          productData.variants
-            .map((variant) => variant.id)
-            .filter((id): id is string => Boolean(id))
-        );
-
-        for (const stored of storedVariants) {
-          if (incomingVariantIds.has(stored.id)) continue;
-          const qtyRes = await tx.query<{ qty: number }>(
-            `SELECT COALESCE(SUM(quantity_current), 0) AS qty
-               FROM product_batches
-              WHERE variant_id = $1`,
-            [stored.id]
-          );
-          if (Number(qtyRes.rows[0]?.qty ?? 0) > 1e-9) {
-            throw new Error(
-              `Varian "${variantLabel(stored.attributes, variantGroups)}" masih punya stok; ` +
-                "kosongkan dulu sebelum dihapus"
-            );
-          }
-          await tx.query(`DELETE FROM product_units WHERE variant_id = $1`, [stored.id]);
-          await tx.query(`DELETE FROM product_variants WHERE id = $1`, [stored.id]);
-        }
-
-        // 3. Each variant with its own packs and its own stock. A carton of one
-        // flavour is priced and counted on its own row, never through another.
-        for (const draft of productData.variants) {
-          const attributes = draft.attributes ?? {};
-          const label = variantLabel(attributes, variantGroups);
-          const sku =
-            (draft.sku || variantSku(productData.sku, attributes)).trim() || productData.sku;
-          const basePack =
-            draft.units.find((unit) => Number(unit.conversion_factor) === 1) ?? draft.units[0];
-          const variantCost = Math.round(Number(basePack?.cost ?? productData.cost) || 0);
-          const variantPrice = Math.round(Number(basePack?.price ?? productData.price) || 0);
-
-          let variantId = draft.id ?? "";
-          if (variantId) {
-            await tx.query(
-              `UPDATE product_variants
-                  SET sku=$1, name=$2, attributes=$3, barcode=$4,
-                      cost_price=$5, price=$6, status='active'
-                WHERE id=$7`,
-              [
-                sku,
-                label,
-                JSON.stringify(attributes),
-                draft.barcode || "",
-                variantCost,
-                variantPrice,
-                variantId,
-              ]
-            );
-          } else {
-            const variantRes = await tx.query<{ id: string }>(
-              `INSERT INTO product_variants
-                 (product_id, sku, name, attributes, barcode, cost_price, price)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)
-               RETURNING id`,
-              [
-                savedProductId,
-                sku,
-                label,
-                JSON.stringify(attributes),
-                draft.barcode || "",
-                variantCost,
-                variantPrice,
-              ]
-            );
-            variantId = variantRes.rows[0].id;
-          }
-
-          // Packs of THIS variant: drop the ones the form removed, update the
-          // rest, add the new ones. `variant_id` is what keeps two variants from
-          // colliding on "Pcs".
-          const existingUnitsRes = await tx.query<{ id: string }>(
-            `SELECT id FROM product_units WHERE variant_id = $1`,
-            [variantId]
-          );
-          const incomingUnitIds = draft.units
-            .map((unit) => unit.id)
-            .filter((id): id is string => Boolean(id));
-
-          for (const existing of existingUnitsRes.rows) {
-            if (!incomingUnitIds.includes(existing.id)) {
-              await tx.query(`DELETE FROM product_units WHERE id = $1`, [existing.id]);
-            }
-          }
-
-          for (const unit of draft.units) {
-            const values = [
-              unit.name,
-              Number(unit.conversion_factor) || 1,
-              Number(unit.cost) || 0,
-              Number(unit.price) || 0,
-              unit.barcode || "",
-            ];
-            if (unit.id) {
-              await tx.query(
-                `UPDATE product_units
-                    SET name=$1, conversion_factor=$2, cost=$3, price=$4, barcode=$5
-                  WHERE id=$6`,
-                [...values, unit.id]
-              );
-            } else {
-              await tx.query(
-                `INSERT INTO product_units
-                   (product_id, variant_id, name, conversion_factor, cost, price, barcode)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                [savedProductId, variantId, ...values]
-              );
-            }
-          }
-
-          // Stock of THIS variant, per warehouse. The form sends the target, so
-          // the difference against what the row already holds is the movement.
-          for (const [warehouseId, target] of Object.entries(draft.stock ?? {})) {
-            const previous = editingProduct
-              ? editingProduct.variants.find((row) => row.id === variantId)?.warehouses[
-                  warehouseId
-                ] ?? 0
-              : 0;
-            const diff = Number(target) - previous;
-            if (Math.abs(diff) < 1e-9) continue;
-
-            if (diff > 0) {
-              await tx.query(
-                `INSERT INTO product_batches
-                 (warehouse_id, product_id, variant_id, batch_number, quantity_initial, quantity_current, cost_price, received_at, supplier_id)
-                 VALUES ($1, $2, $3, $4, $5, $5, $6, strftime('%Y-%m-%dT%H:%M:%fZ','now'), $7)`,
-                [
-                  warehouseId,
-                  savedProductId,
-                  variantId,
-                  `${createdProduct ? "BATCH" : "ADJ"}-${Date.now()}`,
-                  diff,
-                  variantCost,
-                  supplierId,
-                ]
-              );
-              await bookStockPurchase(
-                warehouseId,
-                diff,
-                variantCost,
-                createdProduct ? "Pembelian Stok Awal" : "Pembelian Stok Tambahan"
-              );
-            } else {
-              await reduceStock(warehouseId, variantId, Math.abs(diff));
-            }
-          }
-        }
-
-        // The product's vendor is also its catalogue entry, so last cost and
-        // lead time can be read back on the vendor detail screen.
-        if (supplierId) {
-          await tx.query(
-            `INSERT INTO vendor_products (vendor_id, product_id, last_cost, min_order_qty)
-             VALUES ($1, $2, $3, 1)
-             ON CONFLICT (vendor_id, product_id) DO UPDATE SET last_cost = excluded.last_cost`,
-            [supplierId, savedProductId, productData.cost]
-          );
-        }
-
-        await logAuditTx(tx, {
-          action: createdProduct ? "create_product" : "update_product",
-          entity: "products",
-          entityId: savedProductId,
-          details: { sku: productData.sku, name: productData.name },
-          userId: user?.id,
-        });
+      await saveProductDraft({
+        product: productData,
+        editing: editingProduct,
+        warehouses,
+        userId: user?.id ?? null,
+        branchId: user?.assigned_branch_id ?? null,
+        mayEditVariant,
+        // A buyer may quote a price the owner has not agreed to yet, but never
+        // replace one that was negotiated. The writer enforces the difference.
+        mayEditVendorPrice: can("manage_vendor_prices"),
       });
 
       setIsAddProductOpen(false);
@@ -1031,6 +687,7 @@ export default function Inventory() {
       );
     }
   };
+
 
   /**
    * Queuing and shipping a transfer are delegated to `@/lib/stock-movement`.

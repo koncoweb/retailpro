@@ -66,7 +66,9 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
   const fetchData = async () => {
     setLoading(true);
     try {
-      // Fetch top selling products (grouped by product and branch)
+      // Fetch top selling products (grouped by product and branch). Voided
+      // lines are not sold units and voided bons are not sales, so both filters
+      // belong here (009).
       const prodRes = await query(`
         SELECT 
           p.name, 
@@ -78,7 +80,7 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
         JOIN transactions t ON ti.transaction_id = t.id
         JOIN products p ON ti.product_id = p.id
         JOIN branches b ON t.branch_id = b.id
-        WHERE t.created_at >= date('now')
+        WHERE t.status = 'completed' AND ti.voided = 0 AND t.created_at >= date('now')
         GROUP BY p.id, p.name, p.sku, b.id, b.name
         ORDER BY total_sold DESC
         LIMIT 5
@@ -98,8 +100,8 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
           b.name as branch_name, 
           COALESCE(SUM(ti.quantity), 0) as total_products
         FROM branches b
-        LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= date('now')
-        LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
+        LEFT JOIN transactions t ON b.id = t.branch_id AND t.status = 'completed' AND t.created_at >= date('now')
+        LEFT JOIN transaction_items ti ON t.id = ti.transaction_id AND ti.voided = 0
         GROUP BY b.id, b.name
         ORDER BY total_products DESC
       `);

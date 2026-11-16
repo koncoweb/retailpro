@@ -52,7 +52,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(8);
+    expect(rows[0].version).toBe(10);
   });
 
   it('exposes every table the application queries', async () => {
@@ -259,7 +259,9 @@ describe('seed state', () => {
                'id', ti.id,
                'product_id', ti.product_id,
                'product_name', p.name,
-               'quantity', ti.quantity
+               'quantity', ti.quantity,
+               'voided', ti.voided,
+               'void_reason', ti.void_reason
              )
            ) FILTER (WHERE ti.id IS NOT NULL),
            '[]'
@@ -271,10 +273,16 @@ describe('seed state', () => {
        GROUP BY t.id, u.name`
     );
 
-    const items = parseJson<Array<{ product_name: string; quantity: number }>>(rows[0].items, []);
+    const items = parseJson<Array<{ product_name: string; quantity: number; voided: number }>>(
+      rows[0].items,
+      []
+    );
     expect(items).toHaveLength(1);
     expect(items[0].product_name).toBe('Kopi Susu');
     expect(Number(items[0].quantity)).toBe(2);
+    // The modal decides whether to strike a line from this flag alone, so it
+    // must arrive as a number the JSON round-trip kept (009).
+    expect(Number(items[0].voided)).toBe(0);
     expect(rows[0].cashier_name).toBe('Owner');
   });
 
@@ -292,7 +300,7 @@ describe('seed state', () => {
          (SELECT count(DISTINCT pb.product_id) FROM product_batches pb
             JOIN branch_warehouses bw ON bw.warehouse_id = pb.warehouse_id
            WHERE bw.branch_id = b.id AND pb.quantity_current > 0) as products,
-         (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE branch_id = b.id AND created_at >= date('now','start of month')) as sales_this_month
+         (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE status = 'completed' AND branch_id = b.id AND created_at >= date('now','start of month')) as sales_this_month
        FROM branches b
        ORDER BY b.name`
     );
@@ -316,13 +324,13 @@ describe('seed state', () => {
        LEFT JOIN (
          SELECT branch_id, SUM(total_amount) as total 
          FROM transactions 
-         WHERE created_at >= date('now','start of month') 
+         WHERE status = 'completed' AND created_at >= date('now','start of month') 
          GROUP BY branch_id
        ) curr_sales ON b.id = curr_sales.branch_id
        LEFT JOIN (
          SELECT branch_id, SUM(total_amount) as total 
          FROM transactions 
-         WHERE created_at >= date('now','start of month','-1 month') 
+         WHERE status = 'completed' AND created_at >= date('now','start of month','-1 month') 
          AND created_at < date('now','start of month') 
          GROUP BY branch_id
        ) prev_sales ON b.id = prev_sales.branch_id
@@ -341,10 +349,14 @@ describe('seed state', () => {
 
   it('Dashboard.tsx stat cards honour the period range and branch scope', async () => {
     // Verbatim shape of the batch in Dashboard.tsx: a closed range plus an
-    // optional branch predicate, and the join variant used for units sold.
+    // optional branch predicate, and the join variant used for units sold. Both
+    // carry the void accounting filters (009): revenue is `completed` only, and
+    // a struck line is not a unit sold.
     const [start, end] = getPeriodRange('today');
-    const txWhere = 'WHERE created_at >= $1 AND created_at < $2 AND branch_id = $3';
-    const itemWhere = 'WHERE t.created_at >= $1 AND t.created_at < $2 AND t.branch_id = $3';
+    const txWhere =
+      "WHERE status = 'completed' AND created_at >= $1 AND created_at < $2 AND branch_id = $3";
+    const itemWhere =
+      "WHERE t.status = 'completed' AND ti.voided = 0 AND t.created_at >= $1 AND t.created_at < $2 AND t.branch_id = $3";
     const args = [start, end, 'branch-1'];
 
     const [sales, txCount, productsSold, employees] = await Promise.all([
@@ -387,7 +399,7 @@ describe('seed state', () => {
          strftime('%Y-%m', created_at, $1) as month_key,
          COALESCE(SUM(total_amount), 0) as sales
        FROM transactions
-       WHERE created_at >= $2 AND created_at < $3
+       WHERE status = 'completed' AND created_at >= $2 AND created_at < $3
        GROUP BY 1
        ORDER BY 1`,
       [tz, start, end]
@@ -567,7 +579,7 @@ describe('seed state', () => {
     // what upgrades an existing (v7) tenant. The fleet runner discovers
     // migrations by numeric prefix and its target version must match.
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*8/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*10/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '008_attendance_geo_face.sql'),
       'utf8'
@@ -576,6 +588,80 @@ describe('seed state', () => {
     expect(migration).toMatch(/ALTER TABLE attendance ADD COLUMN source/i);
     expect(migration).toMatch(/CREATE TABLE IF NOT EXISTS face_enrollments/i);
     expect(migration).toMatch(/SET version = 8 WHERE id = 1/i);
+  });
+
+  it('carries the v9 void columns and migration 009', async () => {
+    // Schema v9 lets a line or a whole bon be voided without deleting it: the
+    // void flag + audit columns live inside the CREATE TABLE blocks, and
+    // migration 009 upgrades a v8 tenant.
+    const found = await run<{ table_name: string; name: string }>(
+      `SELECT m.name AS table_name, p.name AS name
+         FROM sqlite_master m
+         JOIN pragma_table_info(m.name) p
+        WHERE m.type = 'table'
+          AND m.name IN ('transactions', 'transaction_items')`
+    );
+    const columns = found.map((row) => `${row.table_name}.${row.name}`);
+    for (const column of [
+      'transactions.void_reason',
+      'transactions.voided_by',
+      'transactions.voided_at',
+      'transaction_items.voided',
+      'transaction_items.void_reason',
+      'transaction_items.voided_by',
+      'transaction_items.voided_at',
+    ]) {
+      expect(columns).toContain(column);
+    }
+
+    // An un-voided line reads as 0 without the writer saying so — history rows
+    // (and rows a concurrent sale commits) are never accidentally struck.
+    await run(
+      `INSERT INTO transaction_items (transaction_id, product_id, quantity)
+       VALUES ('tx-void-default', 'p-void-default', 1)`
+    );
+    const item = await run<{ voided: number }>(
+      `SELECT voided FROM transaction_items WHERE transaction_id = 'tx-void-default'`
+    );
+    expect(Number(item[0].voided)).toBe(0);
+
+    const migration = readFileSync(
+      path.join(root, 'db', 'migrations', '009_transaction_voids.sql'),
+      'utf8'
+    );
+    expect(migration).toMatch(/ALTER TABLE transactions ADD COLUMN void_reason/i);
+    expect(migration).toMatch(/ALTER TABLE transaction_items ADD COLUMN voided/i);
+    expect(migration).toMatch(/SET version = 9 WHERE id = 1/i);
+  });
+
+  it('carries the v10 vendor catalogue read indexes', async () => {
+    // Schema v10 adds no column: it indexes the two reads the integrated
+    // vendor/product path introduced — "this product's preferred vendor" for
+    // every inventory row, and a NOCASE vendor-name lookup.
+    const rows = await run<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name IN
+         ('idx_vendor_products_pref', 'idx_suppliers_name_nc')`
+    );
+    const names = rows.map((row) => row.name);
+    expect(names).toContain('idx_vendor_products_pref');
+    expect(names).toContain('idx_suppliers_name_nc');
+
+    // The NOCASE lookup really is case-insensitive, which is what lets a bulk
+    // sheet re-use the vendor a product form created under another spelling.
+    await run(`INSERT INTO suppliers (name) VALUES ('PT Case Cek')`);
+    const found = await run<{ id: string }>(
+      `SELECT id FROM suppliers WHERE name = $1 COLLATE NOCASE`,
+      ['pt case cek']
+    );
+    expect(found).toHaveLength(1);
+
+    const migration = readFileSync(
+      path.join(root, 'db', 'migrations', '010_vendor_catalog_indexes.sql'),
+      'utf8'
+    );
+    expect(migration).toMatch(/CREATE INDEX IF NOT EXISTS idx_vendor_products_pref/i);
+    expect(migration).toMatch(/CREATE INDEX IF NOT EXISTS idx_suppliers_name_nc/i);
+    expect(migration).toMatch(/SET version = 10 WHERE id = 1/i);
   });
 
   it('stores a face_enrollments row and reads the descriptor JSON back', async () => {

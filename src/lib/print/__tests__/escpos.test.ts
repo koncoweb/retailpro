@@ -71,4 +71,20 @@ describe('encodeEscpos', () => {
     }
     expect(new TextDecoder().decode(bytes)).toContain('Harga ? OK');
   });
+
+  it('turns strike font on for a voided line and off again for the next', () => {
+    // ESC G <n> is what crosses a voided line out on paper; a printer that
+    // ignores it still gets the [VOID] text marker from the doc itself.
+    const strikeDoc: PrintDoc = {
+      ...doc,
+      body: [{ text: 'Gula Pasir', strikethrough: true }, { text: 'Tepung Terigu' }],
+    };
+    const bytes = encodeEscpos(strikeDoc);
+    expect(indexOfSeq(bytes, [0x1b, 0x47, 0x01])).toBeGreaterThanOrEqual(0);
+    expect(indexOfSeq(bytes, [0x1b, 0x47, 0x00])).toBeGreaterThanOrEqual(0);
+    const on = indexOfSeq(bytes, [0x1b, 0x47, 0x01]);
+    // Strike is switched back off after the voided line, so it cannot leak
+    // into the lines that follow it.
+    expect(indexOfSeq(bytes.subarray(on + 3), [0x1b, 0x47, 0x00])).toBeGreaterThanOrEqual(0);
+  });
 });

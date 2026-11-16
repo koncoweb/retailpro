@@ -52,4 +52,32 @@ describe('renderReceiptHtml paper fitting', () => {
     const html = renderReceiptHtml(doc, 76);
     expect(html).toContain('@page { size: 76mm auto;');
   });
+
+  it('crosses out a voided line, the HTML twin of the ESC/POS strike', () => {
+    const doc = buildSaleReceipt(
+      {
+        ...trx,
+        total: 27000,
+        amountPaid: 27000,
+        items: [
+          { name: 'Tepung Terigu', quantity: 2, unitName: 'Pcs', unitPrice: 13500, subtotal: 27000 },
+          { name: 'Gula Pasir', quantity: 1, unitName: 'Kg', unitPrice: 3000, subtotal: 3000, voided: true },
+        ],
+      },
+      { storeName: 'T', paperWidthMm: 80, showLogo: true }
+    );
+    const html = renderReceiptHtml(doc, 80);
+    expect(html).toContain('text-decoration:line-through');
+    // A whole-bon void stamps the banner twice as large, like the ESC/POS size 2.
+    const voidHtml = renderReceiptHtml(
+      buildSaleReceipt({ ...trx, status: 'void', voidReason: 'salah input' }, {
+        storeName: 'T',
+        paperWidthMm: 80,
+        showLogo: true,
+      }),
+      80
+    );
+    expect(voidHtml).toContain('TRANSAKSI DIBATALKAN');
+    expect(voidHtml).toContain('salah input');
+  });
 });

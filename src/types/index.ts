@@ -157,6 +157,14 @@ export interface Transaction {
   cashier_name?: string | null;
   /** Joined from `customers` by the transaction reports query; display only. */
   customer_name?: string | null;
+  /** Bon-level void audit (009). Set only when `status === 'void'`. */
+  void_reason?: string | null;
+  voided_by?: string | null;
+  voided_at?: string | null;
+  /** Joined from `users` for the void trail; display only. */
+  voided_by_name?: string | null;
+  /** Joined from `shifts` so the till can gate voiding to the open shift. */
+  shift_status?: string | null;
 }
 
 export interface TransactionItem {
@@ -169,6 +177,9 @@ export interface TransactionItem {
   subtotal: number;
   unit_name?: string;
   conversion_factor?: number;
+  /** Voided per line (009): stays, restocks, prints struck-through. */
+  voided?: number;
+  void_reason?: string | null;
 }
 
 export interface Shift {

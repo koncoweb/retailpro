@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -37,6 +37,16 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Package,
   Plus,
   Trash2,
@@ -52,6 +62,7 @@ import { query } from "@/lib/db";
 import { formatCurrency } from "@/lib/formatters";
 import { isRackWarehouse, warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
 import { isoToday, validatePurchaseOrder } from "@/lib/procurement";
+import { defaultVendorFor } from "@/lib/vendor-catalog";
 
 import { ProductUnit } from "@/components/inventory/AddProductModal";
 import { variantLabel, type VariantAttributes } from "@/lib/variants";
@@ -81,6 +92,8 @@ interface Product {
   /** Main vendor of the product, plus every vendor linked through vendor_products. */
   supplierId?: string | null;
   vendorIds?: string[];
+  /** `vendor_products.is_preferred`: the vendor a PO for this product starts from. */
+  preferredVendorId?: string | null;
   /**
    * `vendor_products.last_cost` keyed by vendor, so the order starts from the
    * price this vendor last charged instead of the product's average cost.
@@ -102,6 +115,8 @@ export interface VendorOption {
   code?: string | null;
   payment_terms_days?: number;
   lead_time_days?: number;
+  /** Auto-fill skips a vendor the vendor screen says not to order from. */
+  status?: string | null;
 }
 
 export interface PurchaseOrderDraftLine {
@@ -210,10 +225,19 @@ export function PurchaseOrderModal({
   const [openCombobox, setOpenCombobox] = useState(false);
   const [saving, setSaving] = useState<"draft" | "submit" | null>(null);
   const [agreedPrices, setAgreedPrices] = useState<Record<string, AgreedPrice>>({});
+  /** The vendor came from the picked product, not from the buyer's choice. */
+  const [autoVendor, setAutoVendor] = useState(false);
+  /** A vendor change held back until the buyer confirms the lines it drops. */
+  const [pendingVendor, setPendingVendor] = useState<string | null>(null);
+  /** An auto-fill that refused, with the reason the buyer has to act on. */
+  const [splitNotice, setSplitNotice] = useState<string | null>(null);
+  const vendorTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const lowStockProducts = products.filter((product) => product.stock <= product.minStock);
 
   const vendorOf = (id: string) => vendors.find((vendor) => vendor.id === id) ?? null;
+
+  const activeVendor = vendorOf(selectedVendor);
 
   /** Does this product come from the selected vendor (main vendor or linked)? */
   const belongsToVendor = (product: Product, vendorId: string) =>
@@ -223,12 +247,93 @@ export function PurchaseOrderModal({
     ? products.filter((product) => belongsToVendor(product, selectedVendor))
     : products;
 
+  const productOf = (productId: string) =>
+    products.find((product) => product.id === productId) ?? null;
+
+  const vendorNameOf = (vendorId: string | null | undefined): string =>
+    (vendorId ? vendorOf(vendorId)?.name ?? vendorId : "") || "-";
+
+  /**
+   * Which vendor the buyer would end up ordering a product from. Auto-filling
+   * needs the same answer twice — the behaviour of the picker and the caption
+   * under it — so both call `defaultVendorFor` rather than re-deriving it.
+   */
+  const vendorHintOf = (product: Product): string => {
+    const vendorId = defaultVendorFor(product, vendors);
+    if (vendorId) return vendorNameOf(vendorId);
+    const linked = new Set([
+      ...(product.vendorIds ?? []),
+      ...(product.supplierId ? [product.supplierId] : []),
+    ]);
+    const names = Array.from(linked)
+      .map((id) => vendorOf(id)?.name)
+      .filter((name): name is string => Boolean(name));
+    if (names.length > 1) return `${names.length} vendor`;
+    return names[0] ?? "belum ada vendor";
+  };
+
+  /** Cart lines the given vendor cannot be ordered from. */
+  const foreignLines = (vendorId: string) =>
+    items.filter((item) => {
+      const product = productOf(item.productId);
+      return !product || !belongsToVendor(product, vendorId);
+    });
+
+  /**
+   * Choosing a vendor is one operation because three things follow from it: the
+   * product filter, the agreed price list (the `selectedVendor` effect reloads
+   * `agreedPrices`) and the expected date derived from the vendor's lead time.
+   * `auto` only labels the result, so the buyer can tell a guess from a choice.
+   */
+  const applyVendor = (vendorId: string, options: { auto?: boolean } = {}) => {
+    setSelectedVendor(vendorId);
+    setAutoVendor(Boolean(options.auto));
+    setSplitNotice(null);
+    const leadTime = Number(vendorOf(vendorId)?.lead_time_days ?? 0);
+    if (leadTime > 0 && !expectedDate) {
+      const date = new Date();
+      date.setDate(date.getDate() + leadTime);
+      setExpectedDate(date.toISOString().slice(0, 10));
+    }
+  };
+
+  /**
+   * Swapping vendors used to drop the foreign cart lines silently, which reads as
+   * lost work. The lines still go — they cannot belong to two vendors — but only
+   * after the buyer confirms it.
+   */
+  const requestVendor = (vendorId: string) => {
+    if (!vendorId || vendorId === selectedVendor) return;
+    if (foreignLines(vendorId).length > 0) {
+      setPendingVendor(vendorId);
+      return;
+    }
+    applyVendor(vendorId);
+  };
+
+  const confirmVendorSwitch = () => {
+    if (!pendingVendor) return;
+    const dropped = foreignLines(pendingVendor).length;
+    const vendorId = pendingVendor;
+    applyVendor(vendorId);
+    setItems((current) =>
+      current.filter((item) => {
+        const product = productOf(item.productId);
+        return product ? belongsToVendor(product, vendorId) : false;
+      })
+    );
+    setPendingVendor(null);
+    if (dropped > 0) {
+      toast.info(`${dropped} baris vendor sebelumnya dihapus dari order ini.`);
+    }
+  };
+
   const selectedProductObj = products.find((product) => product.id === selectedProduct);
   const selectedWarehouse = warehouses.find((warehouse) => warehouse.id === destinationWarehouse) ?? null;
 
   /** What this vendor charges for the product's base unit. */
-  const baseCostOf = (product: Product): number => {
-    const lastCost = selectedVendor ? product.vendorCosts?.[selectedVendor] : undefined;
+  const baseCostOf = (product: Product, vendorId: string = selectedVendor): number => {
+    const lastCost = vendorId ? product.vendorCosts?.[vendorId] : undefined;
     return Number(lastCost ?? product.cost ?? 0);
   };
 
@@ -250,15 +355,21 @@ export function PurchaseOrderModal({
   const unitCostOf = (
     product: Product,
     variant: ProductVariantOption | null,
-    unitName: string
+    unitName: string,
+    /** The vendor picked from the product itself is not in state yet. */
+    vendorId: string = selectedVendor
   ): number => {
-    const agreed = agreedPrices[priceKey(variant?.id, unitName)];
+    // Another vendor's agreement is not this vendor's price: while a newly
+    // resolved vendor is still loading its list, fall back to the costs instead
+    // of quoting the previous vendor out of a stale map.
+    const agreed =
+      vendorId === selectedVendor ? agreedPrices[priceKey(variant?.id, unitName)] : undefined;
     if (agreed && agreed.buyPrice > 0) return Math.round(agreed.buyPrice);
     const unit = packsOf(product, variant).find((candidate) => candidate.name === unitName);
     const factor = Number(unit?.conversion_factor ?? 1) || 1;
     const packCost = Number(unit?.cost ?? 0);
     if (packCost > 0) return Math.round(packCost);
-    return Math.round(baseCostOf(product) * factor);
+    return Math.round(baseCostOf(product, vendorId) * factor);
   };
 
   /**
@@ -337,6 +448,9 @@ export function PurchaseOrderModal({
     setQuantity("");
     setCostPrice("");
     setSaving(null);
+    setAutoVendor(false);
+    setPendingVendor(null);
+    setSplitNotice(null);
   }, [open, initialDraft, defaultWarehouseId]);
 
   const totalAmount = useMemo(
@@ -352,6 +466,19 @@ export function PurchaseOrderModal({
   }, [selectedProductObj, selectedVariantObj]);
 
   const handleSelectProduct = (product: Product) => {
+    /*
+     * Picking a product picks its vendor. The header still needs one supplier and
+     * `vendor_products.is_preferred` is the owner's answer to that, so the buyer
+     * is not asked to remember which supplier a SKU came from; the caption under
+     * the field says the value was filled in, and "Ubah" hands it back.
+     */
+    let vendorId = selectedVendor;
+    if (!vendorId) {
+      vendorId = defaultVendorFor(product, vendors) ?? "";
+      if (vendorId) applyVendor(vendorId, { auto: true });
+      else toast.info("Produk ini belum punya vendor tetap — pilih vendor terlebih dahulu.");
+    }
+
     setSelectedProduct(product.id);
     // A product with variants cannot be ordered without saying which one.
     const variants = product.variants ?? [];
@@ -359,7 +486,9 @@ export function PurchaseOrderModal({
     setSelectedVariant(firstVariant?.id ?? "");
     const base = baseUnitOf(packsOf(product, firstVariant));
     setSelectedUnit(base.name);
-    setCostPrice(String(unitCostOf(product, firstVariant, base.name)));
+    // Costed against the vendor resolved a moment ago: that vendor's price list
+    // has not loaded yet, so `selectedVendor` alone would quote the wrong one.
+    setCostPrice(String(unitCostOf(product, firstVariant, base.name, vendorId)));
     setOpenCombobox(false);
   };
 
@@ -464,6 +593,62 @@ export function PurchaseOrderModal({
   };
 
   /**
+   * Groups candidate lines by the vendor each product resolves to and writes them
+   * only when they can share this PO. One `supplier_id` per order is a hard rule
+   * (`validatePurchaseOrder` enforces it on save), so a spread of vendors is a
+   * refusal rather than a partial write: guessing which half to order, or
+   * silently dropping the rest, both cost the buyer real money.
+   *
+   * Returns how many lines were written. A chosen vendor always wins — every
+   * candidate came from that vendor's own filter — so only the un-chosen case
+   * can branch.
+   */
+  const commitGroupedLines = (
+    candidates: Array<{ product: Product; line: PurchaseOrderDraftLine }>,
+    subject: string
+  ): number => {
+    const byVendor = new Map<string, PurchaseOrderDraftLine[]>();
+    let unassigned = 0;
+    for (const { product, line } of candidates) {
+      const vendorId = selectedVendor || defaultVendorFor(product, vendors);
+      if (!vendorId) {
+        unassigned += 1;
+        continue;
+      }
+      const bucket = byVendor.get(vendorId);
+      if (bucket) bucket.push(line);
+      else byVendor.set(vendorId, [line]);
+    }
+
+    if (byVendor.size > 1) {
+      const names = Array.from(byVendor.keys(), vendorNameOf).join(", ");
+      setSplitNotice(
+        `${subject} datang dari ${byVendor.size} vendor (${names}). Satu purchase order hanya punya `
+          + "satu vendor, jadi tidak ada baris yang ditambahkan — buat PO terpisah per vendor."
+      );
+      toast.error(`${subject} melibatkan beberapa vendor — baris tidak ditambahkan.`);
+      return 0;
+    }
+
+    if (byVendor.size === 0) {
+      setSplitNotice(
+        `${subject} belum terhubung ke vendor mana pun, jadi tidak ada yang bisa ditambahkan.`
+      );
+      return 0;
+    }
+
+    const lines = Array.from(byVendor.values()).flat();
+    if (!selectedVendor) applyVendor(Array.from(byVendor.keys())[0], { auto: true });
+    setItems((current) => [...current, ...lines]);
+    if (unassigned > 0) {
+      setSplitNotice(
+        `${unassigned} ${subject.toLowerCase()} belum punya vendor, jadi tidak ikut ditambahkan.`
+      );
+    }
+    return lines.length;
+  };
+
+  /**
    * "Isi dari template" seeds one line per (variant, pack) this vendor agreed
    * in `vendor_price_list` — the price list IS the PO template, so this reuses
    * the `agreedPrices` map already loaded for the picker instead of a new query
@@ -482,34 +667,34 @@ export function PurchaseOrderModal({
       return;
     }
 
-    const byVariant = new Map<string, { product: Product; variant: ProductVariantOption }>();
+    const variantsById = new Map<string, { product: Product; variant: ProductVariantOption }>();
     for (const product of filteredProducts) {
       for (const variant of product.variants ?? []) {
-        byVariant.set(variant.id, { product, variant });
+        variantsById.set(variant.id, { product, variant });
       }
     }
 
-    const next = [...items];
-    let added = 0;
+    // Lines already on the draft stay untouched, and one run must not write the
+    // same (variant, pack) twice.
+    const pending: Array<{ product: Product; line: PurchaseOrderDraftLine }> = [];
+    const alreadyOrdered = (productId: string, variantId: string, unitName: string) =>
+      [...items, ...pending.map((row) => row.line)].some(
+        (item) =>
+          item.productId === productId &&
+          (item.variantId ?? null) === variantId &&
+          item.unitName === unitName
+      );
+
     for (const [key, agreed] of entries) {
       const sep = key.indexOf("|");
       if (sep < 0) continue;
       const variantId = key.slice(0, sep);
       const unitName = key.slice(sep + 1);
-      const match = byVariant.get(variantId);
+      const match = variantsById.get(variantId);
       if (!match || !unitName) continue;
       const { product, variant } = match;
 
-      if (
-        next.some(
-          (item) =>
-            item.productId === product.id &&
-            (item.variantId ?? null) === variant.id &&
-            item.unitName === unitName
-        )
-      ) {
-        continue;
-      }
+      if (alreadyOrdered(product.id, variant.id, unitName)) continue;
 
       const pack = (variant.units ?? []).find((unit) => unit.name === unitName);
       const conversionFactor = Number(pack?.conversion_factor ?? 1) || 1;
@@ -517,26 +702,36 @@ export function PurchaseOrderModal({
         agreed.buyPrice > 0 ? Math.round(agreed.buyPrice) : Math.round(baseCostOf(product) * conversionFactor);
       const qty = agreed.minQty > 0 ? agreed.minQty : 1;
 
-      next.push({
-        productId: product.id,
-        productName: product.name,
-        sku: variant.sku ?? product.sku,
-        variantId: variant.id,
-        variantName: variantLabel(variant.attributes),
-        quantity: qty,
-        unitName,
-        conversionFactor,
-        unitCost: cost,
-        subtotal: Math.round(qty * cost),
+      pending.push({
+        product,
+        line: {
+          productId: product.id,
+          productName: product.name,
+          sku: variant.sku ?? product.sku,
+          variantId: variant.id,
+          variantName: variantLabel(variant.attributes),
+          quantity: qty,
+          unitName,
+          conversionFactor,
+          unitCost: cost,
+          subtotal: Math.round(qty * cost),
+        },
       });
-      added += 1;
     }
 
-    if (added === 0) {
+    if (pending.length === 0) {
       toast.info("Semua baris template sudah ada di order ini.");
       return;
     }
-    setItems(next);
+
+    /*
+     * A price list belongs to exactly one vendor, so this grouping cannot refuse a
+     * template the way it refuses a mixed low-stock list. It is still routed
+     * through the same guard: "one PO, one vendor" stays true however the lines
+     * were collected, including the day the template stops being vendor-scoped.
+     */
+    const added = commitGroupedLines(pending, "Baris template harga");
+    if (added === 0) return;
     toast.success(`${added} baris diisi dari template harga vendor.`);
   };
 
@@ -551,7 +746,7 @@ export function PurchaseOrderModal({
       return;
     }
 
-    const additions: PurchaseOrderDraftLine[] = [];
+    const candidates: Array<{ product: Product; line: PurchaseOrderDraftLine }> = [];
     for (const product of lowStockProducts) {
       if (selectedVendor && !belongsToVendor(product, selectedVendor)) continue;
       const locationStock = product.warehouses[destinationWarehouse] || 0;
@@ -559,30 +754,45 @@ export function PurchaseOrderModal({
       if (needed <= 0) continue;
       if (items.some((item) => item.productId === product.id)) continue;
 
+      // Each product is priced against the vendor it would be ordered from, which
+      // is the chosen one or, before that, the one the catalogue prefers.
+      const vendorId = selectedVendor || defaultVendorFor(product, vendors) || "";
       const base = baseUnitOf(packsOf(product, null));
-      const unitCost = unitCostOf(product, null, base.name);
+      const unitCost = unitCostOf(product, null, base.name, vendorId);
       const ordered = Math.max(needed, product.minStock);
-      additions.push({
-        productId: product.id,
-        productName: product.name,
-        sku: product.sku,
-        // Prefill always orders the default variant; a flavoured product needs
-        // its variant chosen by hand, so skip every other combination.
-        variantId: product.variants?.[0]?.id ?? null,
-        quantity: ordered,
-        unitName: base.name,
-        conversionFactor: base.conversionFactor,
-        unitCost,
-        subtotal: Math.round(ordered * unitCost),
+      candidates.push({
+        product,
+        line: {
+          productId: product.id,
+          productName: product.name,
+          sku: product.sku,
+          // Prefill always orders the default variant; a flavoured product needs
+          // its variant chosen by hand, so skip every other combination.
+          variantId: product.variants?.[0]?.id ?? null,
+          quantity: ordered,
+          unitName: base.name,
+          conversionFactor: base.conversionFactor,
+          unitCost,
+          subtotal: Math.round(ordered * unitCost),
+        },
       });
     }
 
-    if (additions.length > 0) {
-      setItems((current) => [...current, ...additions]);
-      toast.success(`${additions.length} produk stok rendah ditambahkan`);
-    } else {
+    if (candidates.length === 0) {
+      setSplitNotice(null);
       toast.info("Tidak ada produk stok rendah yang perlu ditambahkan");
+      return;
     }
+
+    /*
+     * A shortfall rarely belongs to one supplier, and this button used to write it
+     * all into one header anyway. The lines are grouped first: one vendor fills
+     * this PO (and becomes the header), several means the buyer has to make one PO
+     * per vendor, so nothing is written and the notice names those vendors.
+     */
+    const added = commitGroupedLines(candidates, "Produk stok rendah");
+    if (added === 0) return;
+    toast.success(`${added} produk stok rendah ditambahkan`);
   };
 
   const handleSave = async (submit: boolean) => {
@@ -640,7 +850,8 @@ export function PurchaseOrderModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[900px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -668,6 +879,18 @@ export function PurchaseOrderModal({
             </div>
           )}
 
+          {splitNotice && (
+            <div className="bg-destructive/5 border border-destructive/30 rounded-lg p-3 flex items-start justify-between gap-3">
+              <p className="flex items-start gap-2 text-sm">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-destructive" />
+                <span>{splitNotice}</span>
+              </p>
+              <Button variant="ghost" size="sm" onClick={() => setSplitNotice(null)}>
+                Tutup
+              </Button>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <Label>Gudang Tujuan *</Label>
@@ -691,29 +914,9 @@ export function PurchaseOrderModal({
               )}
             </div>
             <div>
-              <Label>Vendor *</Label>
-              <Select
-                value={selectedVendor}
-                onValueChange={(value) => {
-                  setSelectedVendor(value);
-                  const vendor = vendorOf(value);
-                  const leadTime = Number(vendor?.lead_time_days ?? 0);
-                  if (leadTime > 0 && !expectedDate) {
-                    const date = new Date();
-                    date.setDate(date.getDate() + leadTime);
-                    setExpectedDate(date.toISOString().slice(0, 10));
-                  }
-                  // Lines belonging to another vendor can no longer be ordered
-                  // from this one.
-                  setItems((current) =>
-                    current.filter((item) => {
-                      const product = products.find((candidate) => candidate.id === item.productId);
-                      return product ? belongsToVendor(product, value) : false;
-                    })
-                  );
-                }}
-              >
-                <SelectTrigger className="mt-1">
+              <Label htmlFor="po-vendor">Vendor *</Label>
+              <Select value={selectedVendor} onValueChange={requestVendor}>
+                <SelectTrigger id="po-vendor" ref={vendorTriggerRef} className="mt-1">
                   <SelectValue placeholder="Pilih vendor" />
                 </SelectTrigger>
                 <SelectContent>
@@ -724,10 +927,30 @@ export function PurchaseOrderModal({
                   ))}
                 </SelectContent>
               </Select>
-              {vendorOf(selectedVendor) && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  Termin {Number(vendorOf(selectedVendor)?.payment_terms_days ?? 0)} hari · Lead
-                  time {Number(vendorOf(selectedVendor)?.lead_time_days ?? 0)} hari
+              {activeVendor && (
+                <p className="text-xs text-muted-foreground mt-1 flex flex-wrap items-center gap-1">
+                  <span>
+                    {autoVendor
+                      ? "Vendor (otomatis dari produk)"
+                      : `Termin ${Number(activeVendor.payment_terms_days ?? 0)} hari · Lead time ${
+                          Number(activeVendor.lead_time_days ?? 0)
+                        } hari`}
+                  </span>
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="h-auto p-0 text-xs"
+                    onClick={() => {
+                      // The auto-fill is a starting point, not a lock: the field
+                      // above is always editable, this only hands the caption back
+                      // and puts the keyboard on the picker.
+                      setAutoVendor(false);
+                      vendorTriggerRef.current?.focus();
+                    }}
+                  >
+                    Ubah
+                  </Button>
                 </p>
               )}
             </div>
@@ -748,6 +971,7 @@ export function PurchaseOrderModal({
               <Popover open={openCombobox} onOpenChange={setOpenCombobox}>
                 <PopoverTrigger asChild>
                   <Button
+                    id="po-product-picker"
                     variant="outline"
                     role="combobox"
                     aria-expanded={openCombobox}
@@ -784,7 +1008,13 @@ export function PurchaseOrderModal({
                                   <AlertTriangle className="w-3 h-3 text-warning" />
                                 )}
                               </span>
-                              <span className="text-xs text-muted-foreground">{product.sku}</span>
+                              {/* With no vendor chosen yet the row says who picking
+                                  it would order from, so the auto-fill is not a
+                                  surprise after the click. */}
+                              <span className="text-xs text-muted-foreground">
+                                {product.sku}
+                                {selectedVendor ? "" : ` · ${vendorHintOf(product)}`}
+                              </span>
                             </div>
                           </CommandItem>
                         ))}
@@ -844,7 +1074,7 @@ export function PurchaseOrderModal({
                 value={quantity}
                 onChange={(event) => setQuantity(event.target.value)}
               />
-              <Button onClick={handleAddItem}>
+              <Button onClick={handleAddItem} title="Tambahkan baris ke order" aria-label="Tambahkan baris ke order">
                 <Plus className="w-4 h-4" />
               </Button>
             </div>
@@ -975,6 +1205,31 @@ export function PurchaseOrderModal({
           </Button>
         </div>
       </DialogContent>
-    </Dialog>
+      </Dialog>
+
+      {/*
+        * One PO carries one vendor, so switching vendors really does drop the lines
+        * the previous vendor supplied. That used to happen on the same click, with
+        * no warning; the number of lines at stake is now said out loud first.
+        */}
+      <AlertDialog open={pendingVendor !== null} onOpenChange={(next) => {
+        if (!next) setPendingVendor(null);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Ganti vendor ke {vendorNameOf(pendingVendor)}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingVendor
+                ? `${foreignLines(pendingVendor).length} baris dari vendor lain tidak bisa dipesan dari vendor ini dan akan dihapus dari draf.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Batal</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmVendorSwitch}>Ganti vendor</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

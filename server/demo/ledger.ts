@@ -18,6 +18,14 @@ import {
   type DemoUnit,
   type DemoVariant,
 } from './catalog.js';
+// The vendor ⇄ product rows come from the same statement builders the screens
+// write through (src/lib/vendor-catalog.ts), so a demo catalogue can never be
+// seeded with a link that has no agreed buy price behind it.
+import {
+  preferredVendorStatement,
+  vendorCatalogLinkStatement,
+  vendorPriceStatement,
+} from '../../src/lib/vendor-catalog-sql.js';
 
 export interface DemoStatement {
   sql: string;
@@ -547,31 +555,40 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       // The vendor quotes the base pack by default; a carton price can be added
       // from the vendor screen, which is what the pricelist tab is for.
       if (supplier) {
-        add(
-          `INSERT INTO vendor_price_list
-             (vendor_id, variant_id, unit_name, conversion_factor, buy_price, min_qty)
-           VALUES (?, ?, ?, 1, ?, 1)`,
-          [supplier.id, variant.id, variant.units[0].name, variant.cost]
-        );
+        const price = vendorPriceStatement({
+          vendorId: supplier.id,
+          variantId: variant.id,
+          unitName: variant.units[0].name,
+          conversionFactor: variant.units[0].factor,
+          buyPrice: variant.cost,
+          minQty: 1,
+          mode: 'overwrite',
+          source: 'seed demo',
+        });
+        if (price) add(price.sql, price.args as DemoStatement['args']);
       }
     });
 
     // Each product's main vendor also owns a catalogue entry, so the vendor
-    // detail screen has SKU, last cost and minimum order filled in.
+    // detail screen has SKU, last cost and minimum order filled in. The link is
+    // preferred because it is the vendor stored on the product itself.
     if (supplier) {
-      add(
-        `INSERT INTO vendor_products
-           (id, vendor_id, product_id, vendor_sku, last_cost, lead_time_days, min_order_qty, is_preferred)
-         VALUES (?, ?, ?, ?, ?, ?, 1, 1)`,
-        [
-          randomUUID(),
-          supplier.id,
-          product.id,
-          product.def.sku,
-          product.def.cost,
-          supplier.leadTimeDays,
-        ]
-      );
+      const link = vendorCatalogLinkStatement({
+        id: randomUUID(),
+        vendorId: supplier.id,
+        productId: product.id,
+        vendorSku: product.def.sku,
+        lastCost: product.def.cost,
+        leadTimeDays: supplier.leadTimeDays,
+        minOrderQty: 1,
+        isPreferred: true,
+      });
+      add(link.sql, link.args as DemoStatement['args']);
+      const preferred = preferredVendorStatement({
+        vendorId: supplier.id,
+        productId: product.id,
+      });
+      add(preferred.sql, preferred.args as DemoStatement['args']);
     }
   });
 

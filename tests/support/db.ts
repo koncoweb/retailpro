@@ -50,9 +50,32 @@ export function controlClient(): Client {
   });
 }
 
+/**
+ * Is this a database on this machine rather than a Turso instance?
+ *
+ * `npm run demo:local` registers its tenant behind the loopback hrana shim
+ * (`http://127.0.0.1:8090`) or a plain `file:` path. Neither has a Turso
+ * database record, so asking the platform API for a token fails with
+ * `record not found` — the process that owns the file is the whole
+ * authentication. Point `CONTROL_DB_URL` at `.data/control.db` to run the suite
+ * against that plane.
+ */
+function isLocalDatabase(url: string): boolean {
+  return (
+    url.startsWith('file:') ||
+    /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|$)/.test(url)
+  );
+}
+
 export async function tenantClient(): Promise<Client> {
-  const org = requireEnv('TURSO_ORG_SLUG');
   const { dbName, dbHostname } = await tenantRegistry();
+  const url =
+    dbHostname.startsWith('http') || dbHostname.startsWith('file:')
+      ? dbHostname
+      : `https://${dbHostname}`;
+  if (isLocalDatabase(url)) return createClient({ url });
+
+  const org = requireEnv('TURSO_ORG_SLUG');
   const response = await fetch(
     `${API_BASE}/organizations/${org}/databases/${encodeURIComponent(dbName)}/auth/tokens?expiration=10m&authorization=full-access`,
     { method: 'POST', headers: { Authorization: `Bearer ${requireEnv('TURSO_API_TOKEN')}` } },
@@ -60,10 +83,7 @@ export async function tenantClient(): Promise<Client> {
   if (!response.ok) throw new Error(`Turso token request failed: ${response.status}`);
   const { jwt } = (await response.json()) as { jwt?: string };
   if (!jwt) throw new Error('Turso returned no token.');
-  return createClient({
-    url: dbHostname.startsWith('http') ? dbHostname : `https://${dbHostname}`,
-    authToken: jwt,
-  });
+  return createClient({ url, authToken: jwt });
 }
 
 /**

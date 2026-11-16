@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/deployment.md` |
-| Terakhir diperbarui | **2026-11-05** |
+| Terakhir diperbarui | **2026-11-17** |
 | Cakupan | Cara aplikasi berjalan di produksi: dua proyek Vercel, dua database Turso cloud, variabel lingkungan, langkah deploy & verifikasi, serta aturan platform yang tidak boleh dilanggar |
-| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-39 |
+| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-49 |
 
 > Dokumen ini adalah **runbook**, bukan rencana. Setiap nilai di bawah diambil dari proyek yang
 > benar-benar sudah ter-deploy dan sudah diverifikasi lewat HTTP serta browser pada 2026-10-28.
@@ -86,7 +86,8 @@ npm run demo:cloud -- --write-env  # tulis CONTROL_DB_URL/TOKEN dkk. ke .env tan
    (`listGroups()`) karena organisasi baru tidak punya grup `default`.
 3. Menerbitkan token long-lived (mencoba `never`, lalu `30d`) untuk kedua database.
 4. Menerapkan `db/schema/control.sql`, mendaftarkan pemilik Thalia lewat `auth.api.signUpEmail`,
-   lalu `seedDemoTenant({ reset: true })` (28 produk, 5 vendor, 328 transaksi).
+   lalu `seedDemoTenant({ reset: true })` (28 produk / 55 satuan jual, 5 vendor, ±300 transaksi —
+   304 pada run 2026-11-16; angkanya bergeser karena histori dibuat relatif terhadap tanggal hari ini).
 5. Menulis baris `tenant_databases` dengan `db_name`, `db_hostname`, dan `group_name` cloud.
 
 Kredensial owner demo diambil dari `DEMO_OWNER_EMAIL` / `DEMO_PASSWORD` bila diisi; nilai
@@ -135,7 +136,7 @@ Tidak ada variabel lain: toko tidak memegang kredensial database mana pun.
 produksi, karena cookie `secure` dan trusted origin mengikuti nilai itu.
 
 **Tidak** termasuk di sini: `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL` dan `APP_URL`. Variabel
-itu hanya dibaca `e2e.config.ts` di mesin operator (lihat [backend.md](backend.md) §2 dan §7.1 di bawah), jadi
+itu hanya dibaca `e2e.config.ts` di mesin operator (lihat [backend.md](backend.md) §2, serta §7.1 di bawah), jadi
 jangan ditambahkan ke dashboard Vercel — kunci model bukan milik runtime aplikasi.
 
 ---
@@ -288,6 +289,7 @@ penerimaan barang, pengeluaran) jangan diarahkan ke tenant produksi — jalankan
 | Mengisi ulang data demo | `npm run demo:cloud -- --write-env` lalu deploy ulang bila control DB berganti |
 | Memeriksa kuota | `GET /v1/organizations/{org}/usage`; batas tenant dijaga `TURSO_MAX_TENANT_DATABASES` |
 | Rotasi token yang bocor | Turso → Settings → Tokens → revoke, buat token baru, perbarui env Vercel + `.env`, deploy ulang (KS-17) |
+| Menerapkan perubahan skema ke seluruh tenant | `npm run schema:apply-all` (dry-run, membandingkan `schema_version` tiap tenant dengan `CURRENT_SCHEMA_VERSION` di kode) → `npm run schema:apply-all -- --apply`, atau `--only <slug\|db_name>` untuk satu tenant. Runner menjalankan migrasi `NNN_*.sql` yang nomornya **>** versi tercatat di dalam `BEGIN`/`COMMIT`, lalu menerapkan `tenant.sql` dan meng-upsert `schema_version`. **Wajib dijalankan setelah deploy yang menaikkan versi skema** (mis. v9 → v10 untuk indeks katalog vendor) — tanpa itu database tenant lama tidak punya kolom baru dan halaman gagal saat membaca/menulisnya. Naik versi yang hanya menambah indeks (v10 bentuknya begitu) tidak menggagalkan apa pun: datanya benar, query-nya saja yang berjalan tanpa indeks itu |
 
 Deployment tidak menjalankan `npm run typecheck`, `npm test`, `npm run test:e2e`, atau `npm run audit:sql` — belum ada
 CI (KS-21), jadi keempatnya dijalankan manual sebelum `vercel --prod`.
@@ -300,13 +302,17 @@ CI (KS-21), jadi keempatnya dijalankan manual sebelum `vercel --prod`.
    jalankan juga `npm run test:e2e` dengan `npm run dev` (`:8080`) dan `npm run dev:api` (`:3000`) hidup.
 2. `cd tokoonline && npm run typecheck` lulus (dan `npm test` untuk helper katalog).
 3. Variabel produksi lengkap (§4) dan `BETTER_AUTH_URL` menunjuk domain final.
-4. `npm run demo:cloud` hanya dijalankan bila memang ingin me-reset data demo.
-5. `vercel --prod` dari root **lebih dulu** (fungsi `/api/storefront/marketplace` harus hidup),
+4. Bila `CURRENT_SCHEMA_VERSION` naik: deploy fungsi **dahulu** (kode runner ikut ter-deploy),
+   lalu `npm run schema:apply-all` → `-- --apply` untuk seluruh tenant, dan verifikasi dengan
+   membuka layar yang memakai kolom baru. Langkah ini terlewat = tenant lama kehilangan fitur,
+   bukan hanya versi tampilan.
+5. `npm run demo:cloud` hanya dijalankan bila memang ingin me-reset data demo.
+6. `vercel --prod` dari root **lebih dulu** (fungsi `/api/storefront/marketplace` harus hidup),
    baru `cd tokoonline && vercel --prod` — lihat §6. Toko wajib di-deploy ulang bila
    `VITE_CATALOG_API_URL` berubah atau katalog/tema berubah.
-6. Kelima pemeriksaan §7 lulus, plus dashboard & toko dibuka di browser (beranda marketplace,
+7. Kelima pemeriksaan §7 lulus, plus dashboard & toko dibuka di browser (beranda marketplace,
    `/product/<tenant>/<slug>`, keranjang lintas penjual).
-7. Catat perubahan di [fitur-tenant.md](fitur-tenant.md) / [fitur-platform.md](fitur-platform.md),
+8. Catat perubahan di [fitur-tenant.md](fitur-tenant.md) / [fitur-platform.md](fitur-platform.md),
    dan tambahkan entri bila ada masalah baru di [kendala-solusi.md](kendala-solusi.md).
 
 ---
@@ -322,3 +328,8 @@ CI (KS-21), jadi keempatnya dijalankan manual sebelum `vercel --prod`.
    Turso atau `deleteDatabase()`.
 5. **Kanal online tidak punya rak**, jadi stok web diambil dari gudang pusat; pengiriman pesanan
    web tidak membuat dokumen transfer.
+6. **Cetak USB/Bluetooth hanya jalan di secure context dan butuh gesture pengguna.** WebUSB dan Web
+   Bluetooth menuntut HTTPS (produksi sudah memenuhinya) dan satu klik **Sambungkan Printer** per sesi
+   browser untuk memilih perangkat; tidak ada pairing yang tersimpan otomatis antar sesi. Bila perangkat
+   tidak terjangkau API browser, aplikasi jatuh ke jalur driver (`window.print()`) atau unduh `.prn`.
+   Karena itu verifikasi cetak tidak bisa dilakukan lewat e2e murni — perlu printer sungguhan.

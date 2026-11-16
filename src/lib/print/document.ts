@@ -22,6 +22,8 @@ export interface PrintDocLine {
   align?: 'left' | 'center' | 'right';
   /** Bold (`ESC E` in ESC/POS, `font-weight: 700` in HTML). */
   bold?: boolean;
+  /** Struck through (`ESC G` in ESC/POS, `line-through` in HTML). Voided lines. */
+  strikethrough?: boolean;
   /** Rendered as `left` padded right + `right` padded left inside `columns`. */
   cols?: [string, string];
 }

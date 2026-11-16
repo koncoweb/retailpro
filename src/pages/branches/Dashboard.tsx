@@ -58,6 +58,9 @@ export default function BranchDashboard() {
   // overlapping ones competing for the same connection.
   const { data, isLoading } = useQuery({
     queryKey: ["branch-dashboard"],
+    // `status = 'completed'` belongs in the join condition, not a WHERE: a
+    // voided bon must drop out of both the sales sum and the per-transaction
+    // count while branches with no sales still appear.
     queryFn: async () => {
       const [statsRes, perfRes] = await batchQuery([
         {
@@ -66,7 +69,7 @@ export default function BranchDashboard() {
               COUNT(*) as total_branches,
               COUNT(CASE WHEN status = 'active' THEN 1 END) as active_branches,
               (SELECT COUNT(*) FROM users WHERE assigned_branch_id IS NOT NULL) as total_employees,
-              (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE created_at >= date('now','start of month')) as total_sales
+              (SELECT COALESCE(SUM(total_amount), 0) FROM transactions WHERE status = 'completed' AND created_at >= date('now','start of month')) as total_sales
             FROM branches
           `,
         },
@@ -79,7 +82,7 @@ export default function BranchDashboard() {
               COUNT(t.id) as transaction_count,
               COALESCE(SUM(t.total_amount), 0) as total_sales
             FROM branches b
-            LEFT JOIN transactions t ON b.id = t.branch_id AND t.created_at >= date('now','start of month')
+            LEFT JOIN transactions t ON b.id = t.branch_id AND t.status = 'completed' AND t.created_at >= date('now','start of month')
             GROUP BY b.id, b.name, b.status
             ORDER BY total_sales DESC
           `,

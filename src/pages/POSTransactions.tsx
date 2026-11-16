@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 import { PermissionGate } from "@/components/auth/PermissionGate";
+import { useAuth } from "@/hooks/use-auth";
+import { usePermissions } from "@/hooks/use-permissions";
 import { POSLayout } from "@/components/layout/POSLayout";
+import { VoidDialog, type VoidMode } from "@/components/pos/VoidDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -36,10 +39,12 @@ import {
   Wallet,
   Printer,
   Loader2,
+  Ban,
 } from "lucide-react";
-import { Transaction, Branch } from "@/types";
+import { Transaction, TransactionItem, Branch } from "@/types";
 import { PaginationBar } from "@/components/ui/pagination-bar";
 import { batchQuery, parseJson } from "@/lib/db";
+import { cn } from "@/lib/utils";
 import * as XLSX from 'xlsx';
 import { toast } from "sonner";
 import {
@@ -48,6 +53,7 @@ import {
   type PrintContext,
 } from "@/lib/print/print-service";
 import { printSaleReceipt } from "@/lib/print/receipt-printer";
+import { OWNER_TIER_ROLES, type VoidActor } from "@/lib/void";
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", {
@@ -67,15 +73,20 @@ const paymentIcons: Record<string, React.ElementType> = {
 const PAGE_SIZE = 50;
 
 export default function POSTransactions() {
+  const { user } = useAuth();
+  const { can } = usePermissions();
   const [searchQuery, setSearchQuery] = useState("");
   // Debounced copy of the search box: one query per pause, not per keystroke.
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedPayment, setSelectedPayment] = useState("all");
   const [selectedBranch, setSelectedBranch] = useState("all");
+  // Voids stay in the list — a cancelled bon is still a transaction — so the
+  // status filter is a view choice, not a way to hide the trail.
+  const [selectedStatus, setSelectedStatus] = useState("all");
   const [page, setPage] = useState(0);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [totals, setTotals] = useState({ count: 0, sales: 0, card: 0, wallet: 0 });
+  const [totals, setTotals] = useState({ count: 0, sales: 0, card: 0, wallet: 0, voids: 0 });
   const [isLoading, setIsLoading] = useState(true);
   // The receipt view the Eye button never opened. One dialog serves both
   // desktop (button) and mobile (tapping the whole card), sized to the
@@ -85,6 +96,33 @@ export default function POSTransactions() {
   // a double-tap cannot queue two struks for one invoice.
   const [printCtx, setPrintCtx] = useState<PrintContext | null>(null);
   const [printingId, setPrintingId] = useState<string | null>(null);
+  // Bumped after a void so the list re-reads the new totals/void marks.
+  const [reloadKey, setReloadKey] = useState(0);
+  // The void being confirmed: which bon, which shape, and which lines.
+  const [voidRequest, setVoidRequest] = useState<{
+    tx: Transaction;
+    mode: VoidMode;
+    items: TransactionItem[];
+  } | null>(null);
+
+  /**
+   * Who is voiding. `voidGuard()` in `src/lib/void.ts` re-checks everything
+   * here — this mirror only decides what the buttons look like, so a cashier
+   * without the permission never sees a control that would fail on click.
+   */
+  const canVoid = can("void_transaction");
+  const isOwnerTier = !!user && OWNER_TIER_ROLES.includes(user.role);
+  const voidActor: VoidActor | null = user
+    ? { id: user.id, role: user.role, canVoid }
+    : null;
+  const canVoidTx = (trx: Transaction) =>
+    canVoid &&
+    trx.status === "completed" &&
+    // Open-shift rule: a closed shift's Z-report is owner/admin territory.
+    (trx.shift_status === "open" || isOwnerTier);
+  /** True when the bon is voidable except for the shift being closed. */
+  const blockedByClosedShift = (trx: Transaction) =>
+    canVoid && trx.status === "completed" && trx.shift_status !== "open" && !isOwnerTier;
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +164,15 @@ export default function POSTransactions() {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  /** Asks for the reason before anything is written — see `VoidDialog`. */
+  const openVoid = (trx: Transaction, mode: VoidMode, items: TransactionItem[]) => {
+    if (!voidActor) {
+      toast.error("Sesi Anda belum termuat. Muat ulang halaman lalu coba lagi.");
+      return;
+    }
+    setVoidRequest({ tx: trx, mode, items });
+  };
+
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
@@ -143,6 +190,10 @@ export default function POSTransactions() {
         if (selectedPayment !== "all") {
           args.push(selectedPayment);
           where.push(`t.payment_method = $${args.length}`);
+        }
+        if (selectedStatus !== "all") {
+          args.push(selectedStatus);
+          where.push(`t.status = $${args.length}`);
         }
         const term = searchTerm.trim();
         if (term) {
@@ -163,8 +214,11 @@ export default function POSTransactions() {
               SELECT 
                 t.id, t.branch_id, t.cashier_id, t.customer_id, 
                 t.invoice_number, t.total_amount, t.amount_paid, t.payment_method, t.status, t.created_at,
+                t.void_reason, t.voided_by, t.voided_at,
                 u.name as cashier_name,
                 c.name as customer_name,
+                u2.name as voided_by_name,
+                sh.status as shift_status,
                 COALESCE(
                   json_group_array(
                     json_object(
@@ -174,7 +228,9 @@ export default function POSTransactions() {
                       'quantity', ti.quantity,
                       'unit_price', ti.unit_price,
                       'subtotal', ti.subtotal,
-                      'unit_name', ti.unit_name
+                      'unit_name', ti.unit_name,
+                      'voided', ti.voided,
+                      'void_reason', ti.void_reason
                     )
                   ) FILTER (WHERE ti.id IS NOT NULL),
                   '[]'
@@ -183,9 +239,11 @@ export default function POSTransactions() {
               LEFT JOIN transaction_items ti ON t.id = ti.transaction_id
               LEFT JOIN products p ON ti.product_id = p.id
               LEFT JOIN users u ON t.cashier_id = u.id
+              LEFT JOIN users u2 ON t.voided_by = u2.id
               LEFT JOIN customers c ON t.customer_id = c.id
+              LEFT JOIN shifts sh ON t.shift_id = sh.id
               ${whereSql}
-              GROUP BY t.id, u.name, c.name
+              GROUP BY t.id, u.name, c.name, u2.name, sh.status
               ORDER BY t.created_at DESC
               LIMIT $${limitIdx} OFFSET $${offsetIdx}
             `,
@@ -195,9 +253,10 @@ export default function POSTransactions() {
             sql: `
               SELECT 
                 COUNT(*) as total,
-                COALESCE(SUM(t.total_amount), 0) as sales,
-                COALESCE(SUM(CASE WHEN t.payment_method = 'card' THEN t.total_amount ELSE 0 END), 0) as card_sales,
-                COALESCE(SUM(CASE WHEN t.payment_method IN ('ewallet','e-wallet','qris') THEN t.total_amount ELSE 0 END), 0) as wallet_sales
+                COALESCE(SUM(CASE WHEN t.status = 'completed' THEN t.total_amount ELSE 0 END), 0) as sales,
+                COALESCE(SUM(CASE WHEN t.status = 'completed' AND t.payment_method = 'card' THEN t.total_amount ELSE 0 END), 0) as card_sales,
+                COALESCE(SUM(CASE WHEN t.status = 'completed' AND t.payment_method IN ('ewallet','e-wallet','qris') THEN t.total_amount ELSE 0 END), 0) as wallet_sales,
+                COALESCE(SUM(CASE WHEN t.status = 'void' THEN 1 ELSE 0 END), 0) as void_count
               FROM transactions t
               ${whereSql}
             `,
@@ -217,7 +276,7 @@ export default function POSTransactions() {
         }));
 
         const aggregate = totalsRes.rows[0] as {
-          total: number; sales: number; card_sales: number; wallet_sales: number;
+          total: number; sales: number; card_sales: number; wallet_sales: number; void_count: number;
         };
 
         setTransactions(mappedTrx);
@@ -227,6 +286,7 @@ export default function POSTransactions() {
           sales: Number(aggregate?.sales ?? 0),
           card: Number(aggregate?.card_sales ?? 0),
           wallet: Number(aggregate?.wallet_sales ?? 0),
+          voids: Number(aggregate?.void_count ?? 0),
         });
       } catch (error) {
         console.error("Failed to fetch data:", error);
@@ -236,7 +296,7 @@ export default function POSTransactions() {
     };
 
     fetchData();
-  }, [page, searchTerm, selectedPayment, selectedBranch]);
+  }, [page, searchTerm, selectedPayment, selectedBranch, selectedStatus, reloadKey]);
 
   const getBranchName = (branchId: string) => {
     const branch = branches.find((b) => b.id === branchId);
@@ -345,6 +405,11 @@ export default function POSTransactions() {
               <div>
                 <p className="text-sm text-muted-foreground">Total Penjualan</p>
                 <p className="text-xl font-bold text-success">{formatCurrency(totalSales)}</p>
+                {/* The money cards only add up completed bons, so say what was
+                    taken out rather than letting a void silently shrink a day. */}
+                {totals.voids > 0 && (
+                  <p className="text-xs text-muted-foreground">{totals.voids} bon di-void (tidak dihitung)</p>
+                )}
               </div>
             </div>
           </div>
@@ -399,6 +464,16 @@ export default function POSTransactions() {
               <SelectItem value="qris">QRIS</SelectItem>
             </SelectContent>
           </Select>
+          <Select value={selectedStatus} onValueChange={(v) => { setSelectedStatus(v); setPage(0); }}>
+            <SelectTrigger className="w-full sm:w-40">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Semua Status</SelectItem>
+              <SelectItem value="completed">Selesai</SelectItem>
+              <SelectItem value="void">Void</SelectItem>
+            </SelectContent>
+          </Select>
           <Select value={selectedBranch} onValueChange={(v) => { setSelectedBranch(v); setPage(0); }}>
             <SelectTrigger className="w-full sm:w-40">
               <SelectValue placeholder="Cabang" />
@@ -444,7 +519,12 @@ export default function POSTransactions() {
               ) : (
                 transactions.map((trx) => {
                     const PaymentIcon = paymentIcons[trx.payment_method] || Receipt;
-                    const totalItems = trx.items.reduce((sum, item) => sum + item.quantity, 0);
+                    // Voids never delete a line, so "items" counts what was sold;
+                    // the struck count is shown next to it, not hidden inside it.
+                    const voidedItems = trx.items.filter((item) => Number(item.voided ?? 0) === 1).length;
+                    const totalItems = trx.items
+                      .filter((item) => Number(item.voided ?? 0) !== 1)
+                      .reduce((sum, item) => sum + item.quantity, 0);
                     const branchName = getBranchName(trx.branch_id);
                     const date = new Date(trx.created_at);
                     
@@ -470,6 +550,9 @@ export default function POSTransactions() {
                         </TableCell>
                         <TableCell className="text-center">
                         <Badge variant="secondary">{totalItems}</Badge>
+                        {voidedItems > 0 && (
+                          <p className="text-[10px] text-muted-foreground">{voidedItems} dicoret</p>
+                        )}
                         </TableCell>
                         <TableCell>
                         <div className="flex items-center gap-2">
@@ -479,7 +562,7 @@ export default function POSTransactions() {
                         </TableCell>
                         <TableCell className="text-right">
                         <div>
-                            <p className="font-bold">{formatCurrency(trx.total_amount)}</p>
+                            <p className={cn("font-bold", trx.status === "void" && "line-through text-muted-foreground")}>{formatCurrency(trx.total_amount)}</p>
                         </div>
                         </TableCell>
                         <TableCell className="text-center">
@@ -532,7 +615,10 @@ export default function POSTransactions() {
           ) : (
             transactions.map((trx) => {
               const PaymentIcon = paymentIcons[trx.payment_method] || Receipt;
-              const totalItems = trx.items.reduce((sum, item) => sum + item.quantity, 0);
+              const voidedItems = trx.items.filter((item) => Number(item.voided ?? 0) === 1).length;
+              const totalItems = trx.items
+                .filter((item) => Number(item.voided ?? 0) !== 1)
+                .reduce((sum, item) => sum + item.quantity, 0);
               const date = new Date(trx.created_at);
               return (
                 <button
@@ -560,7 +646,7 @@ export default function POSTransactions() {
                       <span className="inline-flex items-center gap-1 capitalize">
                         <PaymentIcon className="w-3.5 h-3.5" />{trx.payment_method}
                       </span>
-                      {' · '}{totalItems} item
+                      {' · '}{totalItems} item{voidedItems > 0 ? ` (${voidedItems} void)` : ""}
                     </div>
                     <p className="font-bold text-sm ml-2">{formatCurrency(trx.total_amount)}</p>
                   </div>
@@ -618,22 +704,69 @@ export default function POSTransactions() {
                   <p>{detailTx.status === "completed" ? "Selesai" : "Void"}</p>
                 </div>
               </div>
+              {/* Bon-level void trail: the cancelled amount stays on the record,
+                  so the note says who cancelled it and why. */}
+              {detailTx.status === "void" && (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm space-y-1">
+                  <p className="font-medium text-destructive">Transaksi dibatalkan</p>
+                  <p className="text-xs text-muted-foreground">Alasan: {detailTx.void_reason || "-"}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Oleh {detailTx.voided_by_name || detailTx.voided_by || "-"}
+                    {detailTx.voided_at ? ` • ${new Date(detailTx.voided_at).toLocaleString("id-ID")}` : ""}
+                  </p>
+                </div>
+              )}
               <div className="border rounded-lg divide-y">
-                {detailTx.items.map((item) => (
-                  <div key={item.id} className="flex items-center justify-between gap-2 p-2 text-sm">
-                    <div className="min-w-0">
-                      <p className="truncate">{item.product_name}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {item.quantity}{item.unit_name ? ` ${item.unit_name}` : ""} × {formatCurrency(item.unit_price)}
-                      </p>
+                {detailTx.items.map((item) => {
+                  const isVoided = Number(item.voided ?? 0) === 1;
+                  return (
+                    <div key={item.id} className="flex items-center justify-between gap-2 p-2 text-sm">
+                      <div className="min-w-0">
+                        <p className={cn("truncate", isVoided && "line-through text-muted-foreground")}>
+                          {item.product_name}
+                          {isVoided && (
+                            <Badge variant="destructive" className="ml-2 text-[10px]">VOID</Badge>
+                          )}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {item.quantity}{item.unit_name ? ` ${item.unit_name}` : ""} × {formatCurrency(item.unit_price)}
+                        </p>
+                        {isVoided && item.void_reason && (
+                          <p className="text-xs text-muted-foreground">Alasan: {item.void_reason}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <p className={cn("font-medium", isVoided && "line-through text-muted-foreground")}>
+                          {formatCurrency(item.subtotal)}
+                        </p>
+                        {/* One click per line, but nothing is written until the
+                            reason is confirmed in the dialog. */}
+                        {!isVoided && canVoidTx(detailTx) && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1 text-destructive hover:text-destructive"
+                            onClick={() => openVoid(detailTx, "items", [item])}
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            Void
+                          </Button>
+                        )}
+                      </div>
                     </div>
-                    <p className="font-medium shrink-0">{formatCurrency(item.subtotal)}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               <div className="flex justify-between text-lg font-bold border-t pt-3">
                 <span>Total</span>
-                <span className="text-primary">{formatCurrency(detailTx.total_amount)}</span>
+                <span
+                  className={cn(
+                    "text-primary",
+                    detailTx.status === "void" && "line-through text-muted-foreground"
+                  )}
+                >
+                  {formatCurrency(detailTx.total_amount)}
+                </span>
               </div>
               <Button className="w-full gap-2" disabled={printingId === detailTx.id} onClick={() => handleReprint(detailTx)}>
                 {printingId === detailTx.id ? (
@@ -643,10 +776,41 @@ export default function POSTransactions() {
                 )}
                 Cetak Struk
               </Button>
+              {canVoidTx(detailTx) && (
+                <Button
+                  variant="destructive"
+                  className="w-full gap-2"
+                  onClick={() => openVoid(detailTx, "bon", [])}
+                >
+                  <Ban className="w-4 h-4" />
+                  Void Bon
+                </Button>
+              )}
+              {blockedByClosedShift(detailTx) && (
+                <p className="text-xs text-muted-foreground text-center">
+                  Shift transaksi ini sudah ditutup; hanya owner/admin yang dapat mem-void.
+                </p>
+              )}
             </div>
           )}
         </DialogContent>
       </Dialog>
+
+      <VoidDialog
+        open={!!voidRequest}
+        onOpenChange={(next) => { if (!next) setVoidRequest(null); }}
+        transaction={voidRequest?.tx ?? null}
+        mode={voidRequest?.mode ?? "bon"}
+        items={voidRequest?.items ?? []}
+        actor={voidActor}
+        printCtx={printCtx}
+        onVoided={() => {
+          // The totals, the struck lines and the void badge all come from the
+          // same re-read, so nothing here is patched client-side.
+          setDetailTx(null);
+          setReloadKey((key) => key + 1);
+        }}
+      />
     </POSLayout>
   );
 }

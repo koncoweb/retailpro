@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/backend.md` |
-| Terakhir diperbarui | **2026-11-06** |
+| Terakhir diperbarui | **2026-11-17** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
-| Versi skema tenant | **8** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
+| Versi skema tenant | **10** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
 
 > Dokumen ini menggantikan `Backend.md` lama (arsitektur Neon/Postgres dengan RLS) yang sudah
@@ -16,8 +16,8 @@
 ## 1. Peta kode
 
 ```
-db/schema/tenant.sql      Skema DB tenant (34 tabel + indeks + trigger), idempoten, schema_version = 8
-db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 008)
+db/schema/tenant.sql      Skema DB tenant (34 tabel + indeks + trigger), idempoten, schema_version = 10
+db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 010)
 db/schema/control.sql     Skema control DB (Better Auth 4 tabel + registry)
 db/schema/seed.sql        Seed provisioning dengan placeholder {{TOKEN}}
 db/__tests__/             Test skema, seed, dan tenant demo (DB sementara per run)
@@ -208,8 +208,8 @@ dengan yang bisa dibaca pengunjung mana pun.
 
 | Tabel | Kolom |
 |---|---|
-| `schema_version` | `id` (selalu 1), `version` (**8**), `applied_at` |
-| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `user_permissions` (pengecualian izin per karyawan, `userId → {permKey: false}`, restrict-only), `payroll_config`, `receipt`, `tax`, `bank`, `inventory` → `{stock_issue_method}`), `created_at` |
+| `schema_version` | `id` (selalu 1), `version` (**10**), `applied_at` |
+| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `user_permissions` (pengecualian izin per karyawan, `userId → {permKey: false}`, restrict-only), `payroll_config`, `receipt`, `printer` (`mode` driver/usb/bluetooth + `paperWidthMm`), `tax`, `bank`, `pricing` (`auto_pack_price`, `min_margin_pct`, `rounding`), `inventory` → `{stock_issue_method}`), `created_at` |
 | `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `latitude`, `longitude`, `geo_radius_m` (default 150), `require_geo`, `require_face` (v8 — titik & radius geofence tempat karyawan absen), `created_at` |
 | `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `latitude`, `longitude`, `geo_radius_m`, `require_geo`, `require_face` (v8), `created_at` |
 | `branch_warehouses` | `branch_id`, `warehouse_id`, `is_default`, `priority` — PK `(branch_id, warehouse_id)`; peta "gudang mana melayani cabang mana" |
@@ -240,8 +240,22 @@ Harga jual ada di `product_units.price` / `product_variants.price`, **tidak** di
 | Tabel | Kolom |
 |---|---|
 | `shifts` | `id`, `branch_id`, `user_id`, `start_time`, `end_time`, `initial_cash`, `final_cash`, `expected_cash`, `difference`, `notes`, `status` (`open`/`closed`), `created_at` |
-| `transactions` | `id`, `branch_id`, `cashier_id`, `customer_id`, `shift_id`, `invoice_number`, `total_amount`, `amount_paid`, `due_date`, `payment_method` (`cash`/`card`/`ewallet`/`credit`), `notes`, `status`, `created_at` |
-| `transaction_items` | `id`, `transaction_id`, `product_id`, `variant_id`, `batch_id`, `quantity` (**satuan jual**), `unit_name`, `conversion_factor`, `unit_price`, `cost_price` (per satuan jual), `subtotal` |
+| `transactions` | `id`, `branch_id`, `cashier_id`, `customer_id`, `shift_id`, `invoice_number`, `total_amount`, `amount_paid`, `due_date`, `payment_method` (`cash`/`card`/`ewallet`/`credit`), `notes`, `status` (`completed`/`void`), `void_reason`, `voided_by`, `voided_at` (v9), `created_at` |
+| `transaction_items` | `id`, `transaction_id`, `product_id`, `variant_id`, `batch_id`, `quantity` (**satuan jual**), `unit_name`, `conversion_factor`, `unit_price`, `cost_price` (per satuan jual), `subtotal`, `voided` (0/1, default 0), `void_reason`, `voided_by`, `voided_at` (v9) |
+
+> **Void ≠ hapus (v9).** Pembatalan penjualan tidak pernah menghapus baris: `src/lib/void.ts`
+> menandai `transaction_items.voided = 1` (per item) atau `transactions.status = 'void'` (per bon),
+> mengembalikan stok ke **`batch_id` baris itu** sebesar `quantity × conversion_factor`, dan menulis
+> `audit_logs` `action='void_transaction'`. Aturannya uang:
+> *void item* mengurangkan `total_amount`/`amount_paid` dengan subtotal baris yang dibatalkan
+> (bukan menghitung ulang dari sisa baris) sehingga **diskon bon** — yang disimpan implisit sebagai
+> `SUM(items.subtotal) − total_amount` — tetap utuh; *void bon* membiarkan `total_amount` apa adanya
+> sebagai catatan nilai yang dibatalkan. Karena itu **setiap agregasi pendapatan/penjualan wajib
+> memfilter `status = 'completed'`** (dan `ti.voided = 0` untuk agregasi per item) — aturan ini
+> berlaku di Dashboard, Reports, Branches, POS/shift, SalesReport, Cashflow, Piutang (`ApAr`), dan Z-report.
+> Batas waktu ditegakkan di `voidGuard()`: hanya shift `open` yang boleh di-void oleh pemegang izin
+> `void_transaction`; shift tertutup hanya bisa di-void role owner-tier
+> (`platform_owner`/`tenant_owner`/`tenant_admin`). Laci kas tidak dibuka saat void.
 
 ### 5.5 Persediaan bergerak & pengadaan
 
@@ -251,7 +265,7 @@ Harga jual ada di `product_units.price` / `product_variants.price`, **tidak** di
 | `stock_request_items` | `id`, `request_id`, `product_id`, `variant_id`, `unit_name`, `conversion_factor`, `quantity_requested`, `quantity_approved`, `quantity_dispatched`, `quantity_received`, `notes` — semua kuantitas dalam **satuan dasar** |
 | `stock_transfers` | Dokumen **eksekusi**: `id`, `reference_number`, `source_warehouse_id`, `destination_warehouse_id`, `status` (`pending`/`in_transit`/`completed`/`cancelled`), `notes`, `requested_by`, `approved_by`, `received_by`, `sent_at`, `received_at`, `request_id` (tautan ke permintaan), `created_at` |
 | `transfer_items` | `id`, `transfer_id`, `product_id`, `variant_id`, `source_batch_id`, `quantity_sent`, `quantity_received`, `unit_name`, `conversion_factor`, `cost_price`, `notes` |
-| `purchase_orders` | `id`, `po_number`, `supplier_id`, `supplier_name`, `branch_id`, `warehouse_id`, `status` (`draft`/`ordered`/`received`), `total_amount`, `notes`, `expected_date`, `received_at`, `created_by`, `created_at` |
+| `purchase_orders` | `id`, `po_number`, `supplier_id`, `supplier_name`, `branch_id`, `warehouse_id`, `status` (`draft`/`submitted`/`approved`/`partially_received`/`received`/`rejected`/`cancelled`; `ordered` dipensiunkan di v5 dan dinormalkan ke `approved`), `total_amount`, `notes`, `expected_date`, `payment_terms_days` (snapshot termin vendor saat pesanan dibuat), jejak setiap langkah (`submitted_by/at`, `approved_by/at`, `rejected_by/at` + `rejection_reason`, `cancelled_by/at` + `cancel_reason`), `received_at`, `created_by`, `created_at`, `updated_at`. `received_amount` **bukan** kolom — dihitung dari `goods_receipts` lewat `effectiveReceivedAmount()` |
 | `purchase_order_items` | `id`, `purchase_order_id`, `product_id`, `variant_id`, `quantity`, `quantity_received`, `unit_name`, `conversion_factor`, `unit_cost`, `subtotal`, `notes` |
 | `goods_receipts` | Dokumen **penerimaan** (satu PO boleh beberapa kali datang): `id`, `grn_number`, `purchase_order_id`, `warehouse_id`, `branch_id`, `supplier_id`, `supplier_name`, `supplier_document`, `total_amount`, `notes`, `received_by`, `received_at`, `created_at` |
 | `goods_receipt_items` | `id`, `goods_receipt_id`, `purchase_order_item_id`, `product_id`, `variant_id`, `quantity` (dalam `unit_name` PO), `unit_name`, `conversion_factor`, `unit_cost` (harga yang benar-benar dibayar), `subtotal`, `batch_id`, `batch_number`, `expiry_date` |
@@ -273,6 +287,9 @@ sudah menunjuk ke sana, jadi modul vendor memperluas tabel yang sama (skema v3).
 utama tetap di `products.supplier_id`). `vendor_payments` adalah buku pembayaran cicilan —
 saldo hutang tetap di `expenses.amount_paid`, jadi Hutang/AP dan halaman vendor tidak
 pernah menghitung kewajiban dua kali.
+
+**Katalog vendor punya satu penulis** (v10): `vendor_products`, `vendor_price_list`, dan
+`is_preferred` hanya boleh ditulis lewat `src/lib/vendor-catalog.ts`; lihat §5.12.
 
 ### 5.6 Keuangan
 
@@ -322,12 +339,12 @@ tetapi belum dipakai UI mana pun.
 | `branches` | `UNIQUE(name)`, partial `UNIQUE(is_headquarters) WHERE is_headquarters = 1` |
 | `warehouses` | `UNIQUE(name)`, `(branch_id)` |
 | `branch_warehouses` | PK `(branch_id, warehouse_id)`, `(warehouse_id)` |
-| `categories`, `suppliers` | `UNIQUE(name)`; `suppliers`: partial `UNIQUE(code) WHERE code IS NOT NULL`, `(status)`, `(category)` |
+| `categories`, `suppliers` | `UNIQUE(name)`; `suppliers`: partial `UNIQUE(code) WHERE code IS NOT NULL`, `(status)`, `(category)`, `(name COLLATE NOCASE)` (v10) |
 | `customers` | `(phone)` |
 | `products` | `UNIQUE(sku)`, `(category)`, `(supplier_id)` |
 | `product_units` | `UNIQUE(product_id, conversion_factor)`, `(product_id)`, `(barcode)` |
 | `product_batches` | `(product_id, warehouse_id, received_at)`, `(warehouse_id)` |
-| `vendor_products` | `UNIQUE(vendor_id, product_id)`, `(product_id)` |
+| `vendor_products` | `UNIQUE(vendor_id, product_id)`, `(product_id)`, `(product_id, is_preferred)` (v10) |
 | `vendor_payments` | `(vendor_id, payment_date)`, `(expense_id)` |
 | `transactions` | `UNIQUE(invoice_number)`, `(branch_id, created_at)`, `(created_at)`, `(cashier_id)`, `(shift_id)` |
 | `transaction_items` | `(transaction_id)`, `(product_id)` |
@@ -394,7 +411,7 @@ jam sebelum fisiknya sampai di rak.
 
 Role kustom dan scope lokasi sengaja **tidak** diberi tabel sendiri. `users.role` (tenant) dan
 `user.role` (control) keduanya `TEXT NOT NULL` tanpa CHECK, jadi key `cust_*` tidak butuh DDL;
-menambah tabel berarti `schema_version` naik (mis. 8 → 9) + migrasi + reseed tenant demo + `npm run e2e:users`,
+menambah tabel berarti `schema_version` naik (mis. 9 → 10) + migrasi + reseed tenant demo + `npm run e2e:users`,
 blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen JSON.
 
 ```jsonc
@@ -432,11 +449,42 @@ blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen
 | `user_permissions` hanya **mengurangi**, tidak pernah menambah di luar role | `effectiveUserPermissions(grant, restrictions)` di `src/lib/permission-matrix.ts` mengabaikan nilai `true` dan hanya memakai `false`; ditulis `setUserPermissionOverrides()` (screen Employees), dan entri user dibersihkan saat karyawan dihapus |
 | Scope default `"all"` di kedua sisi | `normalizeScope()` di `src/lib/permission-matrix.ts`; nilai yang sama dengan default dihapus dari dokumen, tidak disimpan sebagai "semua" eksplisit |
 | Peran tidak dikenal ⇒ tanpa izin | `grantForRole()` mengembalikan `undefined`, `makeChecker()` menolak semua key (gagal-tertutup) |
-| **Kecuali:** tenant baru mendapat snapshot matriks penuh | `db/schema/seed.sql` menulis `role_permissions` lengkap (bukan selisih) supaya database baru langsung punya angka yang sama dengan UI. Konsekuensinya: mengubah default di `src/config/roles.ts` tidak menjangkau tenant yang sudah ada — contoh nyatanya `cashier.view_dashboard` yang harus dihapus dari seed juga, bukan hanya dari kode. Penjaga: `db/__tests__/seed.test.ts` menolak seed yang **membantah** default kode (key yang hilang boleh, karena resolver menggabung per kunci) |
+| **Kecuali:** tenant baru membawa snapshot `role_permissions` dari seed | `db/schema/seed.sql` menulis dokumen `role_permissions` (bukan selisih terhadap default), tetapi isinya **parsial secara historis**: hanya kunci yang ada saat seed disusun — owner-tier 18, `store_manager` 10, `warehouse` 4, `cashier` 2, `staff` 0, dari 31 kunci katalog. Karena resolver menggabung per kunci, kunci yang tidak ditulis tetap memakai default kode, jadi 13 kunci yang belum masuk snapshot tidak menghilangkan apa pun. Konsekuensi yang benar-benar berbahaya adalah kunci yang **ditulis**: mengubah default di `src/config/roles.ts` tidak menjangkau tenant yang dibuat dari seed kalau seed masih menulis nilai lama — contoh nyatanya `cashier.view_dashboard` yang harus dihapus dari seed juga, bukan hanya dari kode. Penjaga: `db/__tests__/seed.test.ts` menolak seed yang **membantah** default kode (key yang hilang boleh) |
 
 Perubahan matriks di simulator lokal: `npm run dev:api` adalah `tsx` **tanpa watcher** — port 3000
 harus di-restart sebelum menguji endpoint baru, jika tidak proses lama yang menjawab (mis. 201 di
 saat guard baru seharusnya 400).
+
+### 5.12 Katalog vendor terintegrasi (satu penulis, v10)
+
+Model data vendor sudah lengkap sejak v3 (`vendor_products`) dan v6 (`vendor_price_list`); yang
+bocor adalah jalur penulisnya — tiga salinan "find-or-create supplier" dan empat salinan tautan
+katalog yang sudah saling berbeda, dan tidak satu pun layar pernah menyetel `is_preferred`. Sejak
+v10 semuanya lewat satu modul, dan **tidak ada tabel atau kolom baru** — migrasi `010` hanya
+menambah dua indeks untuk bentuk kueri yang baru menjadi panas.
+
+```
+input vendor (form / sheet)  ──► resolveOrCreateVendor()  ──► suppliers (kode VND-#### di-mint di dalam tx)
+produk (form / sheet / tab Produk vendor)
+        ──► saveProductDraft() / insertImportedProduct()          [src/lib/product-write.ts]
+                ├─ vendor_products    : upsertVendorCatalogLink() + markPreferredVendor()
+                └─ vendor_price_list  : upsertVendorPrice(mode: 'overwrite' | 'gap-only')
+PO (Buat PO)               ──► defaultVendorFor(preferred → products.supplier_id → vendor tunggal aktif)
+```
+
+| Aturan | Dijaga oleh |
+|---|---|
+| Relasi vendor⇄produk hanya ditulis satu modul | `src/lib/vendor-catalog.ts` — `resolveOrCreateVendor()`, `findVendorByName/ByCode()`, `upsertVendorCatalogLink()`, `markPreferredVendor()`, `recordVendorLastCost()`, `upsertVendorPrice()`, `defaultVendorFor()`; yang memanggil hanya `product-write.ts`, `VendorDetail.tsx` (dialog hubungkan), `goods-receipt.ts`, dan `VendorProductImport.tsx`. Tidak ada halaman yang menulis `vendor_products` / `vendor_price_list` dengan SQL sendiri |
+| SQL-nya hidup di modul daun yang tidak mengimpor apa pun | `src/lib/vendor-catalog-sql.ts` (statement builder, placeholder `?`) — supaya `server/demo/ledger.ts`, yang hanya **menyusun** statement dan tidak boleh menyentuh `src/lib/db`, memakai definisi yang sama. Terbukti dari `vendor_price_list.notes = 'seed demo'` di tenant demo |
+| Tepat satu `is_preferred = 1` per produk | `markPreferredVendor()` menulis `CASE WHEN vendor_id = ? THEN 1 ELSE 0`; `upsertVendorCatalogLink()` tidak pernah menurunkan preferensi (`MAX()`). Penjaga: `db/__tests__/demo-tenant.test.ts` menolak `GROUP BY product_id HAVING SUM(is_preferred) <> 1` |
+| Nama vendor dicocokkan tanpa peduli besar huruf, master tidak pernah ditulis ulang | `findVendorByName()` memakai `WHERE name = $1 COLLATE NOCASE` (indeks `idx_suppliers_name_nc`, v10); `resolveOrCreateVendor()` tidak pernah `UPDATE suppliers`. **Batasan:** `idx_suppliers_name` lama tetap UNIQUE case-sensitive, jadi dua ejaan satu vendor bisa sudah terlanjur ada di tenant lama dan tidak di-dedup oleh perubahan ini |
+| Asal harga dicatat tanpa kolom baru | `vendor_price_list.notes` dipakai sebagai provenance: `import`, `form produk`, `katalog vendor`, `penerimaan barang`, `seed demo` |
+| Harga kesepakatan tidak boleh diinjak tanpa izin | `upsertVendorPrice(mode)`: `overwrite` hanya untuk pemegang `manage_vendor_prices`, selain itu `gap-only` (`ON CONFLICT DO NOTHING`); `buy_price` ≤ 0 tidak pernah ditulis. Alur gabungan menuntut `manage_variants` **DAN** `manage_vendor_prices`, dan penolaknya ada di `src/lib/product-write.ts`, bukan hanya di UI |
+| Katalog tidak boleh berisi produk tanpa harga | `db/__tests__/demo-tenant.test.ts` menolak baris `vendor_products` yang tidak punya `vendor_price_list` pecahan faktor 1 untuk vendor yang sama |
+| Satu transaksi per blok vendor saat impor | `src/components/vendors/VendorProductImport.tsx` — `runTransaction()` per vendor, bukan per file, supaya satu baris rusak tidak membatalkan 2.000 baris yang sudah benar |
+
+Rencana dan keputusan desainnya dibekukan di
+[spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md).
 
 ---
 
@@ -504,14 +552,31 @@ Kelas error: `DbNotReadyError` (belum bootstrap), `DbTokenError` (token ditolak)
 `src/lib/db/client.ts` membuat satu klien libSQL per tenant, menyegarkan token secara *single
 flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 
+### 8.1 Modul penulis domain (`src/lib/`)
+
+Karena tidak ada server tenant, "logika backend" yang menegakkan invariant hidup di modul `src/lib/*`
+— dipanggil halaman, bukan dibalik endpoint. Empat modul yang menambah jalur tulis v10:
+
+| Modul | Baris | Tanggung jawab |
+|---|---|---|
+| `src/lib/vendor-catalog.ts` | 296 | Satu-satunya penulis relasi vendor⇄produk: resolve-or-create vendor (kode `VND-####` di-mint di dalam transaksi), tautan katalog, preferensi vendor, harga beli dua mode, resolver vendor untuk PO (`defaultVendorFor`) |
+| `src/lib/vendor-catalog-sql.ts` | 201 | Statement builder murni (nol import) untuk keempat tulis di atas + `normalizeVendorName`. Dipakai `vendor-catalog.ts` **dan** `server/demo/ledger.ts`, sehingga seeder demo tidak bisa lagi membuat katalog tanpa baris harga |
+| `src/lib/product-write.ts` | 660 | Ekstraksi `handleSaveProduct` dan blok per-baris `handleImport` dari `Inventory.tsx`: `saveProductDraft()` dan `insertImportedProduct()`. Satu penulis produk untuk form, sheet impor, dan tab Produk di layar vendor |
+| `src/lib/vendor-import.ts` | 542 | Perencana sheet vendor+produk yang murni: `groupVendorProductRows()` + `planVendorProductImport()` (`PackAction` = `create`/`overwrite`/`fill`/`skip`) — dipisah dari eksekusi supaya bisa di-unit-test tanpa browser |
+
+Test: `src/lib/vendor-catalog.test.ts` (25), `src/lib/vendor-import.test.ts` (24), perluasan
+`src/lib/bulk-io.test.ts` (19) dan `db/__tests__/demo-tenant.test.ts` (15), spesifikasi browser
+`tests/vendor-catalog.e2e.ts` (4 kasus).
+
 ---
 
 ## 9. Invariant yang tidak boleh dilanggar
 
 1. `transactions.total_amount` = nilai penjualan; `amount_paid` = uang diterima. Omzet **selalu**
-   `SUM(total_amount)`.
+   `SUM(total_amount) WHERE status = 'completed'` — bon ber-`status='void'` tidak pernah dihitung,
+   dan agregasi per item (unit terjual, produk terlaris) juga menyaring `transaction_items.voided = 0`.
 2. `change = amount_paid - total_amount` (boleh 0 untuk nontunai).
-3. `shifts.expected_cash = initial_cash + SUM(total_amount WHERE payment_method='cash')`.
+3. `shifts.expected_cash = initial_cash + SUM(total_amount WHERE payment_method='cash' AND status='completed')`.
 4. `transaction_items.quantity` dalam satuan jual; `cost_price = batch.cost_price × conversion_factor`;
    `subtotal = unit_price × quantity`.
 5. Urutan pengeluaran batch mengikuti kebijakan tenant
@@ -545,6 +610,20 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
     tidak bisa menghapus key, dan dua simpanan bersamaan yang menyentuh key sama akan saling
     menimpa (yang terakhir menang).
 
+15. **Void tidak pernah menghapus baris.** Pembatalan penjualan hanya lewat `src/lib/void.ts`
+    (`voidTransactionItems()` / `voidTransactionBon()`), selalu dalam satu `runTransaction()`: tandai
+    `voided`/`status='void'`, kembalikan stok ke **`batch_id` baris itu**, turunkan total untuk void item,
+    dan tulis `audit_logs` `action='void_transaction'`. Tidak ada halaman yang boleh `DELETE FROM
+    transaction_items` untuk membatalkan penjualan, dan tidak ada agregasi pendapatan yang boleh
+    mengabaikan filter `status`.
+
+16. **Katalog vendor punya satu penulis (v10).** `vendor_products`, `vendor_price_list`, dan
+    `is_preferred` hanya boleh ditulis lewat `src/lib/vendor-catalog.ts` (SQL-nya di
+    `vendor-catalog-sql.ts`, dipakai bersama seeder demo); produk hanya boleh ditulis lewat
+    `src/lib/product-write.ts`. Tepat satu `is_preferred = 1` per produk; master vendor/produk bersifat
+    aditif (tidak pernah di-rename baris yang sudah ada, termasuk saat impor), sedangkan harga
+    **boleh** mengikuti sheet. Lihat §5.12 dan `docs/spec-vendor-produk-terintegrasi.md`.
+
 ---
 
 ## 10. Script
@@ -554,11 +633,12 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | `npm run bootstrap:control` | Buat/siapkan control DB dari `control.sql` |
 | `npm run dev:db` | Shim Hrana loopback `:8090` agar `CONTROL_DB_URL=file:…` bisa dipakai server |
 | `npm run schema:apply-all` | Bandingkan `schema_version` setiap tenant dengan versi di repo. Dry-run bawaan; `--apply` untuk eksekusi, `--only <slug\|db_name>` untuk satu tenant. Database lama menjalankan migrasi tertunda lebih dulu, lalu `tenant.sql`; database baru (v0) cukup `tenant.sql` |
-| `npm run audit:sql` | Kumpulkan literal SQL di `src/`, putar ulang terhadap `tenant.sql` |
+| `npm run audit:sql` | Kumpulkan literal SQL di `src/`, putar ulang terhadap `tenant.sql`. Keadaan pasca-v10: **530 literal dikumpulkan**, 471 diperiksa, 59 dilewati karena dinamik, 8 dibuang karena berada di dalam komentar, dan **2 kelas temuan yang tersisa keduanya contoh di `translate.test.ts`** (tabel `t`, kolom `a..f`) yang memang memakai skema sementara sendiri. Perbaikan v10: pengumpul sebelumnya ikut membaca literal di dalam komentar, jadi narasi seperti "layar ini dulu menjalankan `UPDATE users`" berubah menjadi temuan `SYNTAX \| incomplete input`; kini rentang komentar dipisahkan lebih dulu (`commentRanges()`) sehingga hanya kode yang diaudit. `npm run audit:sql -- --show-comments` mencetak **8 situs yang dibuang** beserta baris sumbernya — pembuangan tanpa daftar membuat klaim "itu cuma dokumentasi" tidak bisa diverifikasi |
+| `npm run docs:check` | Gerbang dokumen (dev-only). Empat pemeriksaan: (1) jumlah sel setiap baris tabel markdown harus sama dengan header-nya — blok kode di-*skip*, `\|` dihitung sebagai teks; (2) versi skema harus satu angka di tiga tempat: baris stamp `tenant.sql`, `CURRENT_SCHEMA_VERSION` di `apply-schema-all.mjs`, dan prefiks tertinggi di `db/migrations`; (3) indeks dokumentasi di `README.md` harus menyebut setiap berkas `docs/*.md` dan setiap berkas yang disebut harus ada; (4) anchor `§N` yang ditulis tepat setelah tautan `[berkas.md](berkas.md)` harus menunjuk heading yang benar-benar ada di berkas target. Keluaran mencetak cakupannya sendiri (jumlah berkas markdown, baris tabel, dan anchor yang benar-benar dibaca — yang dua terakhir sengaja tidak dikutip sebagai angka di tempat lain karena keduanya berubah setiap kali sebuah tabel disunting), dan `scripts/__fixtures__/docs-check/` adalah positive control-nya: `node scripts/check-docs.mjs --root scripts/__fixtures__/docs-check` wajib keluar 1 dengan **tepat 8 masalah** — gerbang yang tidak bisa gagal sama dengan gerbang yang tidak berjalan |
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: 23 berkas, 316 test (translate, skema, seed, demo tenant, roles, date-range, inventory-utils, stock-issue, stock-movement, branch-orders, vendor, procurement, goods-receipt, pricing, variants, password, geolocation, face, pos-branch, shift-attendance) |
+| `npm test` | Vitest: **30 berkas, 419 test** (translate, skema, seed, demo tenant, roles, permission-matrix, date-range, inventory-utils, units, bulk-io, password, stock-issue, stock-movement, branch-orders, vendor, **vendor-catalog**, **vendor-import**, procurement, goods-receipt, pricing, variants, geolocation, face, pos-branch, shift-attendance, **void**, **print**: escpos/receipt-doc/zreport-doc/html-render) |
 | `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---
@@ -581,6 +661,8 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 | 2026-10-31 | **Skema v6** (`db/migrations/006_variants_pricing.sql`): tabel `product_variants` + `vendor_price_list`, `products.variant_attributes`, `product_units.cost`, `variant_id` di 7 tabel yang memindahkan stok atau mencatat uang, indeks `idx_units_prod_factor` diganti `idx_units_variant_factor` | Tenant v5: setiap produk memperoleh satu varian `Default` (SKU = SKU produk), lalu `product_units` / `product_batches` / `transaction_items` / item PO / item penerimaan / item permintaan / item transfer di-backfill ke varian pertama; `product_units.cost` diisi dari `products.cost_price`; `vendor_price_list` diisi dari `vendor_products.last_cost` untuk pecahan faktor 1. Lihat [spec-varian-harga-vendor.md](spec-varian-harga-vendor.md) |
 | 2026-11-05 | **Skema v7** (`db/migrations/007_attendance_today_guard.sql`): trigger `trg_attendance_today_only` pada `attendance` — absensi standar hanya boleh bertanggal hari berjalan (WIB/UTC+7). SPA menulis langsung ke database tenant, jadi guard harus hidup di SQL, bukan hanya di modal | Tenant v6: `CREATE TRIGGER IF NOT EXISTS` saja (tanpa perubahan tabel/data); baris lama tidak tersentuh karena trigger hanya BEFORE INSERT. Tab Libur kini memuat hari libur nasional + cuti bersama per tahun dari API Tanggal Merah (`src/lib/holidays.ts`), tanpa tabel baru |
 | 2026-11-05 | **Skema v8** (`db/migrations/008_attendance_geo_face.sql`): `branches`/`warehouses` + `latitude`/`longitude`/`geo_radius_m`/`require_geo`/`require_face`; `attendance` + kolom audit geolokasi (`location_type`/`location_id`, `check_in_lat/lng/acc/dist`, `check_out_lat/lng/dist`), wajah (`face_score`, `face_verified`), dan `source` (`self`/`owner`); tabel baru `face_enrollments` (descriptor 128-float per karyawan) | Tenant v7: `ALTER TABLE ... ADD COLUMN` dengan default konstan per kolom + `CREATE TABLE IF NOT EXISTS face_enrollments`; pemicu hari-berjalan v7 tidak berubah. Jarak GPS & kecocokan wajah dihitung di browser (tanpa server tenant) sehingga bersifat audit, bukan paksaan DB — lihat catatan batasan di §5.7. Tabel 33 → 34. Kamera/GPS butuh secure context |
+| 2026-11-16 | **Skema v9** (`db/migrations/009_transaction_voids.sql`): `transaction_items` + `voided` (`INTEGER NOT NULL DEFAULT 0`)/`void_reason`/`voided_by`/`voided_at`; `transactions` + `void_reason`/`voided_by`/`voided_at` (`status` sudah ada, nilai `void` kini benar-benar dipakai). Menegakkan izin `void_transaction` yang selama ini dideklarasikan tapi belum diterapkan | Tenant v8: `ALTER TABLE ... ADD COLUMN` dengan default konstan (SQLite tidak punya `IF NOT EXISTS`, jadi digerbang versi oleh runner). Tidak ada backfill — baris lama otomatis `voided = 0` dan tetap `completed`. Jumlah tabel tidak berubah (34). Seluruh query uang ditambah `status = 'completed'`, query per item `ti.voided = 0` — lihat catatan §5.4 dan `src/lib/__tests__/void.test.ts` |
+| 2026-11-17 | **Skema v10** (`db/migrations/010_vendor_catalog_indexes.sql`): `idx_vendor_products_pref ON vendor_products(product_id, is_preferred)` dan `idx_suppliers_name_nc ON suppliers(name COLLATE NOCASE)`. **Tidak ada tabel atau kolom baru** — yang berubah adalah cara tabel lama dibaca dan siapa yang boleh menulisnya | Tenant v9: dua `CREATE INDEX IF NOT EXISTS` saja, tanpa backfill dan tanpa perubahan data; `tenant.sql` men-stamp `(1, 10)` dan runner menaikkan `CURRENT_SCHEMA_VERSION` 9 → 10. Jumlah tabel tetap 34. Invarian baru dijaga `db/__tests__/schema.test.ts` (indeks) dan `db/__tests__/demo-tenant.test.ts` (katalog⇄harga, `is_preferred` tunggal) — lihat §5.12 dan [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md) |
 
 Cara mengubah skema ke depan:
 

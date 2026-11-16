@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-platform.md` |
-| Terakhir diperbarui | **2026-10-28** |
+| Terakhir diperbarui | **2026-11-16** |
 | Cakupan | Kemampuan operator platform: menyediakan, mengelola, dan mengawasi tenant — **bukan** data bisnis tenant |
 | Status ringkas | **Fondasi tersedia (API + CLI + database cloud + dua proyek Vercel ter-deploy), konsol UI belum ada** |
 
@@ -15,6 +15,15 @@ baris = satu kemampuan operator yang berubah, dengan tanggal dan jam.
 ---
 
 ## 1. Log perubahan kemampuan platform
+
+### 2026-11-05 — identitas karyawan tenant punya jalur tulis sendiri (belum di-commit)
+
+| Waktu | Ref | Area | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-05 | `a94ace4` | Admin user | Endpoint baru `PATCH/DELETE /api/admin/users/[id]` (`api/admin/users/[id].ts`) — ubah role/cabang/status dan hapus karyawan dikerjakan **satu kali di server**, bukan di proyeksi tenant. Aturan lama yang hidup di UI ikut pindah: owner tidak boleh di-demote/dihapus, admin tidak boleh mengunci akun sendiri, role wajib ada dalam daftar assignable tenant | Baru |
+| 2026-11-05 | `a94ace4` | Control plane | `DELETE` menghapus `session` → `account` → `user` lalu menulis ulang proyeksi tenant; sesi hidup tidak lagi bisa menukar token setelah akun dihapus (KS-36) | Baru |
+| 2026-11-05 | `a94ace4` | Auth | Status nonaktif ditulis di **dua tempat** yang benar-benar dibaca: kolom `status` (dipakai bootstrap) dan `banned` (dipakai Better Auth saat sign-in). `GET /api/tenant/bootstrap` menolak `account_inactive` sehingga perubahan peran berlaku pada request berikutnya | Ubah |
+| 2026-11-05 | `dbe44eb` | Deploy | Perbaikan `500` di produksi: `src/lib/permission-matrix.ts` tidak lagi mengimpor lewat alias `@/` karena runtime Node serverless tidak menerapkan `tsconfig paths` — aturan platform baru di `deployment.md` §8 (KS-39) | Selesai |
 
 ### 2026-10-31 — penamaan database tenant (belum di-commit)
 
@@ -81,7 +90,7 @@ baris = satu kemampuan operator yang berubah, dengan tanggal dan jam.
 | Melihat grup Turso yang tersedia sebelum provisioning | `GET /v1/organizations/{org}/groups` lewat `listGroups()` | `server/turso-platform.ts` |
 | Merilis ke produksi | `vercel --prod` dari root (back office) dan dari `tokoonline/` (toko); env diatur per proyek di dashboard | `vercel.json`, `.vercelignore`, [deployment.md](deployment.md) |
 | Merotasi token / mengganti env produksi | `vercel env rm` + `vercel env add`, lalu deploy ulang | Vercel CLI |
-| Mengelola akun karyawan tenant | `POST /api/admin/users`, `POST /api/admin/users/[id]/password` (sesi admin wajib) | `api/admin/*` |
+| Mengelola akun karyawan tenant | `POST /api/admin/users` (buat), `PATCH/DELETE /api/admin/users/[id]` (role/cabang/status, hapus + sesi), `POST /api/admin/users/[id]/password` (reset); semuanya butuh sesi admin dan menulis control DB lebih dulu | `api/admin/*`, `server/roles.ts` |
 | Memantau kesehatan layanan | `GET /api/health` | `api/health.ts` |
 | Masuk ke aplikasi sebagai `platform_owner` | Login biasa; semua route menerima peran ini | `src/App.tsx` (`ALL_ROLES`) |
 

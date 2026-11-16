@@ -158,12 +158,14 @@ export default function ApAr() {
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      // Fetch AR (Piutang)
+      // Fetch AR (Piutang) — only sales that still stand. A voided bon keeps its
+      // `total_amount` as the record of the cancellation, so without the status
+      // filter it would linger as money the customer supposedly owes (009).
       const arRes = await query(`
         SELECT t.id, t.invoice_number, t.total_amount, t.amount_paid, t.created_at, t.due_date, c.name as customer_name
         FROM transactions t
         LEFT JOIN customers c ON t.customer_id = c.id
-        WHERE t.total_amount > t.amount_paid
+        WHERE t.status = 'completed' AND t.total_amount > t.amount_paid
         ORDER BY t.created_at DESC
       `);
       setReceivables((arRes.rows as unknown as Transaction[]).map((row) => ({

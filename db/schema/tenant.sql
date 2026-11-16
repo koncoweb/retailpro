@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 8);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 10);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
 -- receipt/tax/bank settings as JSON text.
@@ -321,6 +321,12 @@ CREATE TABLE IF NOT EXISTS transactions (
   payment_method TEXT,
   notes          TEXT,
   status         TEXT NOT NULL DEFAULT 'completed',
+  -- Void audit trail (009). A voided bon keeps its rows and its original
+  -- amount; `status='void'` is what every revenue query filters out, and these
+  -- columns carry who cancelled it, when, and why for the receipt + audit.
+  void_reason    TEXT,
+  voided_by      TEXT,
+  voided_at      TEXT,
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -335,7 +341,13 @@ CREATE TABLE IF NOT EXISTS transaction_items (
   conversion_factor REAL NOT NULL DEFAULT 1,
   unit_price        INTEGER NOT NULL DEFAULT 0,
   cost_price        INTEGER NOT NULL DEFAULT 0,
-  subtotal          INTEGER NOT NULL DEFAULT 0
+  subtotal          INTEGER NOT NULL DEFAULT 0,
+  -- Void per line (009). A voided item is never deleted: it stays for the
+  -- audit trail, its stock returns to `batch_id`, and it prints struck-through.
+  voided            INTEGER NOT NULL DEFAULT 0,
+  void_reason       TEXT,
+  voided_by         TEXT,
+  voided_at         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS stock_transfers (
@@ -675,6 +687,11 @@ CREATE INDEX        IF NOT EXISTS idx_warehouses_branch    ON warehouses(branch_
 CREATE INDEX        IF NOT EXISTS idx_wh_branches_wh       ON branch_warehouses(warehouse_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_name      ON categories(name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_name       ON suppliers(name);
+-- Case-insensitive twin: a vendor typed by name on the product form or in a
+-- bulk sheet is looked up NOCASE, so "PT X" and "pt x" resolve to one vendor.
+-- The UNIQUE index above stays case-sensitive, which keeps the constraint that
+-- was shipped in 003 exactly as it was.
+CREATE INDEX        IF NOT EXISTS idx_suppliers_name_nc    ON suppliers(name COLLATE NOCASE);
 -- Partial: legacy vendors created from a product form have no code yet.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_code       ON suppliers(code) WHERE code IS NOT NULL;
 CREATE INDEX        IF NOT EXISTS idx_suppliers_status     ON suppliers(status);
@@ -734,6 +751,9 @@ CREATE INDEX        IF NOT EXISTS idx_payables_supplier    ON payables(supplier_
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vendor_products_pair ON vendor_products(vendor_id, product_id);
 CREATE INDEX        IF NOT EXISTS idx_vendor_products_prod ON vendor_products(product_id);
+-- "who is this product's preferred vendor" is read for every product row the
+-- inventory screen loads, and it is what a purchase order auto-fills from.
+CREATE INDEX        IF NOT EXISTS idx_vendor_products_pref ON vendor_products(product_id, is_preferred);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vprice_pair          ON vendor_price_list(vendor_id, variant_id, unit_name);
 CREATE INDEX        IF NOT EXISTS idx_vprice_variant       ON vendor_price_list(variant_id);
 CREATE INDEX        IF NOT EXISTS idx_vprice_vendor_active ON vendor_price_list(vendor_id, status);

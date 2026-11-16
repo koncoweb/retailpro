@@ -48,14 +48,15 @@ export function SalesChart() {
         setBranches(branchList);
 
         // 2. Fetch Sales Data (Last 7 Days)
-        // Group by Date and Branch
+        // Group by Date and Branch. Voids stay out of the chart: a whole-bon
+        // void keeps its `total_amount`, so only `completed` bons are revenue.
         const salesRes = await query(`
           SELECT 
             strftime('%Y-%m-%d', created_at) as date_key,
             branch_id,
             SUM(total_amount) as total
           FROM transactions
-          WHERE created_at >= date('now', '-6 days')
+          WHERE status = 'completed' AND created_at >= date('now', '-6 days')
           GROUP BY 1, 2
           ORDER BY 1 ASC
         `);

@@ -46,13 +46,13 @@ export function BranchPerformance() {
           LEFT JOIN (
             SELECT branch_id, SUM(total_amount) as total 
             FROM transactions 
-            WHERE created_at >= date('now','start of month') 
+            WHERE status = 'completed' AND created_at >= date('now','start of month') 
             GROUP BY branch_id
           ) curr_sales ON b.id = curr_sales.branch_id
           LEFT JOIN (
             SELECT branch_id, SUM(total_amount) as total 
             FROM transactions 
-            WHERE created_at >= date('now','start of month','-1 month') 
+            WHERE status = 'completed' AND created_at >= date('now','start of month','-1 month') 
             AND created_at < date('now','start of month') 
             GROUP BY branch_id
           ) prev_sales ON b.id = prev_sales.branch_id

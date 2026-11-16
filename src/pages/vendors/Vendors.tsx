@@ -62,6 +62,7 @@ import {
   vendorStatusLabel,
 } from "@/lib/vendor";
 import { VendorFormModal, type VendorRecord } from "@/components/vendors/VendorFormModal";
+import { VendorProductImport } from "@/components/vendors/VendorProductImport";
 import {
   VENDOR_COLUMNS,
   VENDOR_TEMPLATE_ROWS,
@@ -499,6 +500,15 @@ export default function Vendors() {
                 Import
               </Button>
             </PermissionGate>
+            {/*
+             * The master-only import above stays for people who just keep a list
+             * of vendors; this one also fills the catalogue and the buy prices.
+             */}
+            <VendorProductImport
+              userId={user?.id ?? null}
+              branchId={user?.assigned_branch_id ?? null}
+              onImported={fetchVendors}
+            />
             <PermissionGate permission="export_reports">
               <Button variant="outline" className="gap-2" onClick={() => handleExport("xlsx")}>
                 <Download className="w-4 h-4" />
@@ -754,7 +764,14 @@ export default function Vendors() {
           if (!open) setEditingVendor(null);
         }}
         vendor={editingVendor}
-        onSaved={() => {
+        onSaved={(vendorId) => {
+          // A brand-new vendor has just been created and has nothing to buy yet:
+          // land on its detail with the product form already filled in, which is
+          // the moment the operator knows what the vendor supplies.
+          if (!editingVendor) {
+            navigate(`/backoffice/vendors/${vendorId}?tambah-produk=1`);
+            return;
+          }
           fetchVendors();
         }}
       />

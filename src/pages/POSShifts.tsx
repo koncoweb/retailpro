@@ -76,6 +76,7 @@ export default function POSShifts() {
     ewallet: 0,
     qris: 0,
     total: 0,
+    voided: 0,
   });
 
   // Print context + which history row is printing. The context is read once;
@@ -175,16 +176,23 @@ export default function POSShifts() {
     try {
       // Shift takings are everything posted against this shift — the POS stamps
       // `shift_id` on each transaction, so no time-range guessing is needed.
+      // Only `completed` bons count as takings: a voided bon keeps its
+      // `total_amount` as the record of the cancelled sale, so the drawer math
+      // would otherwise book money that went back to the customer (009).
       const res = await query(
-        `SELECT payment_method, total_amount FROM transactions 
+        `SELECT payment_method, total_amount, status FROM transactions 
          WHERE shift_id = $1`,
         [shiftId]
       );
 
-      const summary = { cash: 0, card: 0, ewallet: 0, qris: 0, total: 0 };
+      const summary = { cash: 0, card: 0, ewallet: 0, qris: 0, total: 0, voided: 0 };
       
-      res.rows.forEach((t: { payment_method: string; total_amount: string | number }) => {
+      res.rows.forEach((t: { payment_method: string; total_amount: string | number; status: string }) => {
         const amount = Number(t.total_amount);
+        if (t.status !== 'completed') {
+          summary.voided += 1;
+          return;
+        }
         summary.total += amount;
         switch (t.payment_method) {
           case 'cash': summary.cash += amount; break;
@@ -467,6 +475,16 @@ export default function POSShifts() {
                         <TableCell>Total Penjualan</TableCell>
                         <TableCell className="text-right">{formatCurrency(transactionsSummary.total)}</TableCell>
                       </TableRow>
+                      {transactionsSummary.voided > 0 && (
+                        <TableRow>
+                          <TableCell className="text-muted-foreground">
+                            Bon di-void (tidak dihitung)
+                          </TableCell>
+                          <TableCell className="text-right text-muted-foreground">
+                            {transactionsSummary.voided} transaksi
+                          </TableCell>
+                        </TableRow>
+                      )}
                     </TableBody>
                   </Table>
                 </div>

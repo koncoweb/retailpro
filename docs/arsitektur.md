@@ -4,8 +4,8 @@
 |---|---|
 | Aplikasi | RetailPro — ERP/POS multi-tenant, multi-cabang (pasar Indonesia, IDR) |
 | Dokumen | `docs/arsitektur.md` |
-| Terakhir diperbarui | **2026-11-05** |
-| Versi skema tenant | `schema_version = 8` (`db/schema/tenant.sql` + `db/migrations/`) |
+| Terakhir diperbarui | **2026-11-17** |
+| Versi skema tenant | `schema_version = 10` (`db/schema/tenant.sql` + `db/migrations/`) |
 | Status | Berjalan di lokal **dan** di Vercel (back office + toko online) dengan Turso cloud; belum dipakai data produksi nyata |
 
 > Dokumen ini menjelaskan **bagaimana sistem disusun dan mengapa**. Untuk daftar fitur lihat
@@ -80,6 +80,8 @@ identitas, provisioning, penerbitan token, dan katalog publik toko.
 | DB tenant | Turso (1 per tenant) | Seluruh data bisnis | Menyimpan kredensial atau data tenant lain |
 | Scripts | `scripts/` | Bootstrap control, apply schema massal, audit SQL, seed demo lokal & cloud | Dipanggil dari browser |
 | Harness e2e | `tests/`, `e2e.config.ts` | Menjalankan SPA di Chromium untuk menguji alur UI; langkah yang butuh penilaian dinilai model lewat endpoint OpenAI-compatible | Ikut berjalan di runtime aplikasi, atau menyimpan kunci model di repo |
+| Subsistem cetak | `src/lib/print/` | Menyusun dokumen (`document.ts`, `receipt-doc.ts`, `zreport-doc.ts`), merendernya (`html-render.ts`, `escpos.ts`), dan memilih transport (`print-bridges.ts`, `print-service.ts`) | Menyentuh data bisnis selain membaca transaksi/shift; melempar error ke alur penjualan |
+| Modul pembatalan | `src/lib/void.ts` | Satu-satunya penulis kolom `void_*` dan pengembalian stok karena void; aturan guard sebagai fungsi murni | Memakai jalur lain untuk membatalkan penjualan, atau menghapus baris transaksi |
 
 ---
 
@@ -203,6 +205,107 @@ Aplikasi toko **tidak** memegang kredensial database; pesanan pengunjung masih d
 (prototype). Pembaca katalog ada satu (`server/storefront-catalog.ts`), jadi kedua endpoint tidak
 bisa menampilkan produk yang berbeda untuk tenant yang sama.
 
+### 4.7 Cetak struk & Z-report
+
+Satu dokumen, dua renderer, empat transport — semuanya di browser, tanpa dependency baru:
+
+```
+POS.tsx / POSShifts.tsx / POSTransactions.tsx
+  receipt-doc.ts | zreport-doc.ts        menyusun PrintDoc (baris teks / cols rata-kiri-kanan)
+        v
+  print-service.printDocument(doc)
+    loadPrintContext()                   tenants.settings.receipt + .printer + nama toko dari sesi
+    pilih transport:
+      mode usb  + handle WebUSB hidup    -> escpos.ts (byte) -> print-bridges.printViaWebusb
+      mode bluetooth + BLE hidup         -> escpos.ts (byte) -> printViaBle
+      selain itu / gagal di tengah tulis -> html-render.ts (iframe tersembunyi + window.print)
+                                          -> gagal lagi: unduh berkas .prn
+  hasil selalu PrintResult { ok, via, error? }  -> toast, tidak pernah melempar ke alur penjualan
+```
+
+Yang membuat alur ini berbeda dari "cetak dari web" biasa: **model dokumen berbasis karakter**, bukan
+HTML. Lebar roll menentukan jumlah kolom (58/60mm = 32, 72mm = 42, 76mm = 44, 80mm = 48), jadi layout
+dihitung sekali dan kedua renderer tinggal memenuhinya; renderer HTML menyesuaikan ukuran font agar
+colom itu benar-benar muat di kertas. Karena cetak terjadi **setelah** transaksi commit, kegagalan
+printer hanya menjadi peringatan — penjualan yang sudah tersimpan tidak pernah di-rollback, dan struk
+bisa dicetak ulang dari riwayat.
+
+### 4.8 Void transaksi (per item & per bon)
+
+```
+POSTransactions.tsx -> VoidDialog.tsx (alasan wajib, pratinjau pengurangan)
+  voidGuard(reason, actor, target)         src/lib/void.ts — murni: izin -> alasan -> status -> shift
+  runTransaction:
+    1. UPDATE transaction_items SET voided=1, void_reason/by/at   (baris TIDAK dihapus)
+    2. UPDATE product_batches SET quantity_current = quantity_current + qty*satuan-dasar
+       pada batch_id baris itu               (restock ke batch asal, bukan pool global)
+    3. UPDATE transactions SET total_amount/amount_paid = nilai baru   (void item: turun sebesar subtotal;
+       void bon: total dibiarkan, status='void')
+    4. logAuditTx('void_transaction', {kind: 'items'|'bon'})
+  -> struk dicetak ulang otomatis bila Cetak Otomatis aktif (baris dicoret, banner TRANSAKSI DIBATALKAN)
+```
+
+Keputusan desainnya ada dua, dan keduanya punya konsekuensi ke seluruh aplikasi:
+
+1. **Membatalkan = menandai.** Riwayat, audit, dan struk harus tetap menunjukkan penjualan yang
+   dibatalkan, jadi tidak ada `DELETE`. Akibatnya setiap agregasi uang wajib menyaring
+   `status = 'completed'` (dan `ti.voided = 0` untuk hitungan per item) — aturan ini menjangkau
+   Dashboard, Reports, Cabang, POS/shift, Cashflow, Piutang, dan Z-report, dan dijaga test
+   `src/lib/__tests__/void.test.ts` yang memutar ulang SQL-nya ke database sementara.
+2. **Total diturunkan, bukan dihitung ulang.** Diskon bon hanya ada sebagai selisih
+   `SUM(subtotal) − total_amount`; menghitung ulang dari sisa baris akan diam-diam menghapus diskon
+   itu. Maka `nextTotalAfterVoid()` mengurangkan subtotal baris yang dibatalkan (clamp di 0).
+
+Batas waktunya ditegakkan di `voidGuard()`: transaksi pada shift `open` boleh di-void pemegang izin
+`void_transaction`, sedangkan shift tertutup hanya owner-tier. Ini menjaga Z-report yang sudah
+diserahkan kasir tidak berubah nilai secara diam-diam.
+
+### 4.9 Katalog vendor–produk dan vendor otomatis di PO
+
+```
+AddProductModal · Vendors.tsx (?tambah-produk=1) · VendorDetail (tab Produk & Hubungkan Produk)
+· impor CSV/Excel · penerimaan barang · seeder demo
+  -> src/lib/product-write.ts   saveProductDraft() | insertImportedProduct()   (produk + varian + pack)
+  -> src/lib/vendor-catalog.ts  SATU penulis relasi vendor-produk:
+       resolveOrCreateVendor()      nama dicocokkan COLLATE NOCASE; kode kosong -> mint VND-####
+       upsertVendorCatalogLink()    vendor_products (SKU vendor, last_cost, lead time, min order)
+       markPreferredVendor()        is_preferred tepat satu per produk + produk tanpa supplier_id diadopsi
+       upsertVendorPrice()          vendor_price_list per (varian, pecahan); mode 'overwrite' | 'gap-only'
+       recordVendorLastCost()       last_cost saja (dipakai penerimaan barang)
+       defaultVendorFor()           murni: vendor tercih -> vendor utama -> vendor tunggal yang aktif
+  -> src/lib/vendor-catalog-sql.ts  pembangun statement-nya ({ sql, args }) agar UI, lib, runner migrasi,
+                                     dan seeder tidak bisa punya versi SQL masing-masing
+  -> src/lib/vendor-import.ts       groupVendorProductRows() + planVendorProductImport() = niat impor
+                                     tanpa SQL; VendorProductImport.tsx mengeksekusi rencana,
+                                     satu runTransaction() per blok vendor
+PurchaseOrderModal.tsx: pilih produk -> applyVendor(defaultVendorFor(...)) -> vendor + lead time
+                        + harga kesepakatan (vendor_price_list) terisi; ganti vendor dengan keranjang
+                        berisi = AlertDialog konfirmasi, bukan drop diam-diam
+```
+
+Empat keputusan yang membuat alur ini bisa dipercaya:
+
+1. **Satu penulis.** Sebelum rilis ini `find-or-create supplier` muncul di tiga tempat dan tautan
+   `vendor_products` di empat tempat, dan tidak satu pun menulis `vendor_price_list` kecuali
+   penerimaan barang (mode mengisi celah) — sehingga "template PO" kosong untuk vendor yang
+   harganya baru disepakati dan layar PO tidak punya harga kesepakatan untuk dibaca. Sekarang
+   semua jalur memanggil modul yang sama, dan kebijakan `ON CONFLICT` (`gap-only` vs `overwrite`)
+   hanya ada satu definisi.
+2. **Aditif untuk master, boleh untuk harga.** Vendor dan produk yang sudah ada tidak pernah diganti
+   nama/kodenya oleh impor; `last_cost` dan `buy_price` **boleh** mengikuti sheet, dan itu dijaga
+   izin `manage_vendor_prices` — tanpa izin, tulisannya otomatis `gap-only` sehingga harga kesepakatan
+   lama tidak pernah diinjak.
+3. **Izin ditegakkan di lib, bukan di UI.** `saveProductDraft()` menolak pemanggil tanpa
+   `manage_variants`, dan penulisan harga `overwrite` butuh `manage_vendor_prices`; PermissionGate di
+   layar hanya membuat gejalanya terlihat.
+4. **Satu PO tetap satu vendor.** Auto-fill hanya memilihkan vendor; setelah vendor terpilih daftar
+   produk disaring ke katalog vendor itu. PO multi-vendor ada di luar cakupan (satu header satu
+   `supplier_id`).
+
+Rincian keputusan dan bentuk sheet impor ada di
+[spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md); sisi datanya di
+[backend.md](backend.md) §5.12, sisi layarnya di [frontend.md](frontend.md) §8.
+
 ---
 
 ## 5. Isolasi dan keamanan
@@ -215,7 +318,9 @@ bisa menampilkan produk yang berbeda untuk tenant yang sama.
 | Otorisasi server | `requireAdminSession` pada endpoint admin; `ASSIGNABLE_ROLES` lama diganti `server/roles.ts` (bawaan ∪ `settings.custom_roles`, owner ditolak); `/api/tenant/bootstrap` membaca baris proyeksi sebelum mencetak token sehingga orang yang dihapus/dinonaktifkan tidak lagi dapat akses database |
 | Kredensial DB | Tidak ada di bundle. Token 60 menit diterbitkan server, disimpan di memori, tidak di storage |
 | Rahasia server | Hanya `server/` dan `api/`; `src/` tidak boleh mengimpornya (aturan tertulis di `server/env.ts`) |
-| Audit | `audit_logs` di DB tenant: checkout, produk, stok, transfer, PO, pengeluaran, karyawan, pengaturan |
+| Audit | `audit_logs` di DB tenant: checkout, produk, stok, transfer, PO, pengeluaran, karyawan, pengaturan, **void transaksi** (`details.kind` = `items`/`bon`) |
+| Cetak | Tidak menyentuh database kecuali membaca preferensi (`settings.receipt`/`settings.printer`) dan menyusun dokumen dari data transaksi. WebUSB/Web Bluetooth butuh **secure context** dan satu gesture `requestDevice` per sesi browser; kegagalan cetak tidak pernah memengaruhi data |
+| Pembatalan penjualan | `voidGuard()` menuntut izin `void_transaction`, alasan ≥ 3 karakter, bon masih `completed`, dan shift `open` (kecuali owner-tier). Sama seperti izin lain, ini lapis UX — penegakan di server adalah lanjutan terpisah (lihat catatan di bawah) |
 
 **Batas kepercayaan yang jujur:** siapa pun yang memegang token tenant dapat menjalankan SQL apa
 pun di database **perusahaannya** selama ≤ 60 menit. Karena itu token sengaja pendek, per-database,
@@ -245,8 +350,8 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 |---|---|
 | Profil | `schema_version`, `tenants`, `branches`, `warehouses`, `branch_warehouses`, `users` |
 | Katalog | `categories`, `suppliers`, `products`, **`product_variants`**, `product_units`, `product_batches` — `products` adalah model, `product_variants` adalah SKU yang benar-benar dijual dan distok |
-| Vendor | `vendor_products`, `vendor_price_list`, `vendor_payments` — `suppliers` adalah master vendor yang dipakai produk, PO, dan hutang; `vendor_price_list` menyimpan harga beli yang disepakati per varian per pecahan |
-| Penjualan | `shifts`, `transactions`, `transaction_items` |
+| Vendor | `vendor_products`, `vendor_price_list`, `vendor_payments` — `suppliers` adalah master vendor yang dipakai produk, PO, dan hutang; `vendor_price_list` menyimpan harga beli yang disepakati per varian per pecahan. Kedua tabel katalog hanya ditulis `src/lib/vendor-catalog.ts` (v10), dan `is_preferred` dijaga tepat satu per produk |
+| Penjualan | `shifts`, `transactions`, `transaction_items` — kolom `voided`/`void_*` (v9) membuat pembatalan menjadi penanda, bukan penghapusan |
 | Persediaan | `stock_requests`, `stock_request_items`, `stock_transfers`, `transfer_items`, `purchase_orders`, `purchase_order_items`, `goods_receipts`, `goods_receipt_items` — PO = niat, penerimaan = kenyataan |
 | Keuangan | `expenses`, `payables` |
 | SDM | `attendance`, `leaves`, `employees`, `face_enrollments` — `face_enrollments` menyimpan descriptor wajah 128-float per karyawan (bukan foto) untuk verifikasi absensi |
@@ -269,7 +374,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | Runtime API | Node ≥ 20 (Vercel Functions, `node:crypto`) |
 | Database | Turso libSQL cloud, grup `ap-southeast-2`; control DB + satu DB per tenant |
 | Dev lokal | `npm run dev` (SPA :8080) + `npm run dev:api` (:3000, proxy `VITE_API_PROXY_TARGET`) + `cd tokoonline && npm run dev` (:8082) |
-| Verifikasi | `npm run typecheck`, `npm test` (Vitest 19 berkas/263 test), `npm run audit:sql`, dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI |
+| Verifikasi | `npm run typecheck`, `npm test` (Vitest 30 berkas/419 test), `npm run audit:sql`, `npm run docs:check` (bentuk tabel markdown + satu versi skema di tiga tempat + indeks dokumen + anchor `§` antar-dokumen; plus positive control di `scripts/__fixtures__/docs-check` yang wajib melaporkan 8 masalah), dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI. `npm run lint` 0 error atas berkas yang diubah rilis v10; repo-wide masih 25 error `no-explicit-any` warisan di dashboard/laporan (`HEAD` sudah begitu) |
 | Variabel | Lihat tabel env di [backend.md](backend.md) §2 (lokal) dan [deployment.md](deployment.md) §4 (produksi) |
 | Kontrak platform | Import relatif `.js` di `api/`+`server/`; route bracket lewat `rewrites` di `vercel.json`; `db/schema/**` ikut ke lambda |
 
@@ -290,6 +395,9 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | 9 | 2026-10-28 — Permintaan (`stock_requests`) dipisah dari eksekusi (`stock_transfers`), dengan `shelves` per cabang dan **satu** modul perpindahan stok | (a) Menambah `branch_id` kembali ke `product_batches`; (b) menaruh logika persetujuan di masing-masing halaman | Permintaan bisa ditolak/disesuaikan tanpa menyentuh stok, dan batch hanya berpindah lewat `src/lib/stock-movement.ts`. Harga: satu dokumen tambahan, dan stok sudah bisa dijual di rak saat gudang mengirim (lihat §9) |
 | 10 | 2026-10-28 — Produksi memakai Turso **cloud** + **dua** proyek Vercel, bukan database lokal dan bukan satu deployment | (a) Deploy SPA saja dengan data contoh statis; (b) satu proyek monolit yang juga menyajikan toko; (c) database file dibundel ke fungsi | Kedua aplikasi hidup di origin terpisah dengan kunci sendiri; tidak ada kredensial database di repo maupun di toko. Harga: dua pipeline deploy, dan kode `api/`+`server/` harus patuh pada cara Vercel men-transpile tiap berkas (`.js` eksplisit, route bracket lewat rewrite). Lihat [deployment.md](deployment.md) dan KS-26/KS-27 |
 | 11 | 2026-10-31 — Uji UI end-to-end memakai tester.army (`e2e` + `@e2e-dev/web`) dengan model pihak ketiga lewat endpoint OpenAI-compatible (SumoPod) | (a) Menulis semua alur dengan selector Playwright murni; (b) membangun runner sendiri; (c) memakai gateway Vercel bawaan `e2e init` beserta kuncinya | Langkah deterministik tetap murah dan reproducible, sedangkan langkah yang butuh penilaian cukup satu `agent.assert`; menambah berkas uji tanpa menyentuh kode aplikasi. Harga: kunci API model harus ada di mesin operator, model wajib mendukung tool call, dan model tanpa `responseFormat` tidak bisa `agent.extract` (KS-32) |
+| 12 | 2026-11-06 — Cetak struk memakai **model dokumen berbasis karakter** dengan encoder ESC/POS yang ditulis sendiri, bukan library pihak ketiga (mis. `esc-pos-encoder`) dan bukan HTML/CSS saja | (a) Satu jalur HTML + `window.print()` untuk semua printer; (b) dependency npm ESC/POS; (c) backend printing (lokal agent/service) | Layout dihitung sekali dari jumlah kolom dan dipakai dua renderer, jadi hasil driver dan printer thermal 58mm konsisten; byte ESC/POS bisa dikontrol (cut, kick drawer, corettan) tanpa menambah ukuran bundle atau proses baru. Harga: code page tidak didukung (rupiah jadi ASCII `"Rp"`, karakter non-ASCII didegradasi), dan dukungan perangkat keras diuji manual per tipe printer (KS-41 s.d. KS-43) |
+| 13 | 2026-11-16 — Void = **menandai baris** (`voided`/`status='void'`), bukan menghapus; total **diturunkan** sebesar subtotal baris | (a) `DELETE` baris + hitung ulang total; (b) soft-delete tanpa menyentuh nominal | Audit trail, struk, dan riwayat pembatalan tetap terbaca; diskon bon yang disimpan implisit tidak hilang saat satu baris dibatalkan. Harga: **setiap** agregasi pendapatan wajib menyaring `status='completed'`, dan aturan itu tidak bisa dijaga oleh database — hanya oleh test dan review (lihat §4.8, KS-44) |
+| 14 | 2026-11-16 — Batas void mengikuti **window shift**, bukan umur transaksi; override hanya owner-tier | (a) Batas waktu tetap (mis. 24 jam); (b) tombol dinonaktifkan hanya di UI | Aturan yang sama dengan yang dipakai Z-report: angka yang sudah disetorkan kasir tidak berubah kecuali oleh orang yang bertanggung jawab atas buku itu. Harga: transaksi tanpa `shift_id` (data lama) lolos dari batas ini dan hanya dijaga status/izin |
 
 ---
 
@@ -327,3 +435,14 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
     dikirim dari gudangnya sendiri, dan tampilan checkout/pesanan dikelompokkan per penjual.
     Memecah keranjang menjadi satu pesanan per penjual (ongkir, pembayaran, dan settlement per
     penjual) belum dikerjakan.
+13. **Cetak hanya diuji pada driver dan ESC/POS generik.** WebUSB/Web Bluetooth menuntut `requestDevice`
+    sekali per sesi browser dan hanya jalan di secure context; printer Bluetooth murni di Windows desktop
+    tidak punya API serial Bluetooth, jadi jalur resurnya unduh `.prn` lalu drag ke antrean printer.
+    Code page ESC/POS tidak diimplementasikan, jadi karakter non-ASCII didegradasi ke `?` dan rupiah
+    dicetak sebagai `"Rp"`. Belum ada logo raster di struk (logo hanya teks) dan belum ada cetak
+    barcode/QR di struk.
+14. **Void tidak membalik uang yang sudah keluar.** Pembayaran gateway (QRIS/kartu) tetap tercatat di
+    provider — pengembalian dana dilakukan manual di terminal; laci kas sengaja tidak dibuka saat void.
+    Retur tanpa restock (barang rusak) dan alokasi diskon proporsional per item belum ada. Karena
+    RBAC ditegakkan di client, tombol void hilang untuk yang tak berhak, tetapi pemegang token tetap
+    bisa menulis `voided = 1` dengan SQL langsung (lihat §5).

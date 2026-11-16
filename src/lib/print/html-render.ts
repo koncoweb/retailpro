@@ -32,6 +32,8 @@ function lineStyle(line: PrintDocLine): string {
   if (line.align) parts.push(`text-align:${line.align}`);
   else parts.push('text-align:left');
   if (line.bold) parts.push('font-weight:700');
+  // Voided lines: crossed out, the HTML twin of the ESC/POS `ESC G` strike.
+  if (line.strikethrough) parts.push('text-decoration:line-through');
   // size 2 doubles the glyph box; in `em` it scales with the fitted base size,
   // mirroring the ESC/POS double-width header on every paper width.
   if (line.size === 2) parts.push('font-size:2em');

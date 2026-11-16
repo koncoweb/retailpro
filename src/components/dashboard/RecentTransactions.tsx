@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ShoppingCart, CreditCard, Wallet, Banknote } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { query } from "@/lib/db";
 
 interface Transaction {
@@ -12,6 +13,8 @@ interface Transaction {
   branch_name: string;
   created_at: string;
   items_count: number;
+  /** A voided bon stays in the list — it must read as cancelled, not as a sale. */
+  status: string;
 }
 
 const paymentIcons = {
@@ -49,9 +52,10 @@ export function RecentTransactions() {
             t.total_amount, 
             t.payment_method, 
             t.created_at,
+            t.status,
             b.name as branch_name,
             c.name as customer_name,
-            (SELECT COUNT(*) FROM transaction_items WHERE transaction_id = t.id) as items_count
+            (SELECT COUNT(*) FROM transaction_items WHERE transaction_id = t.id AND voided = 0) as items_count
           FROM transactions t
           LEFT JOIN branches b ON t.branch_id = b.id
           LEFT JOIN customers c ON t.customer_id = c.id
@@ -102,8 +106,13 @@ export function RecentTransactions() {
                 </div>
               </div>
               <div className="text-right">
-                <p className="font-medium text-sm">{formatCurrency(tx.total_amount)}</p>
+                <p className={cn("font-medium text-sm", tx.status !== "completed" && "line-through text-muted-foreground")}>
+                  {formatCurrency(tx.total_amount)}
+                </p>
                 <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                   {tx.status !== "completed" && (
+                     <Badge variant="destructive" className="text-[10px] px-1 py-0">Void</Badge>
+                   )}
                    <span>{new Date(tx.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</span>
                    <span>•</span>
                    <span>{tx.branch_name || 'N/A'}</span>

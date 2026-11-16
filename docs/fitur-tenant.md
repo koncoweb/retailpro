@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-tenant.md` |
-| Terakhir diperbarui | **2026-11-06** |
+| Terakhir diperbarui | **2026-11-17** |
 | Cakupan | Semua fitur yang tersedia di dalam satu tenant (POS + back office) |
 
 ## Cara memakai log ini
@@ -209,15 +209,15 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 
 | Waktu | Ref | Modul | Perubahan | Status |
 |---|---|---|---|---|
-| 2026-11-06 | — (working tree) | Karyawan/Izin | **Izin khusus per karyawan (hanya mengurangi / restrict-only)**: owner dapat **mencabut** sebagian izin yang role berikan kepada satu orang lewat aksi "Izin khusus" (ikon Shield) di `/backoffice/hr/employees` — misalnya seorang cashier kehilangan Akses POS sementara cashier lain tidak. Pengecualian disimpan di `tenants.settings.user_permissions` (peta `userId → { izin: false }`), tanpa migrasi skema. Sifatnya **hanya mengurangi**: izin yang tidak diberikan role tidak ditawarkan sama sekali, sehingga penugasan individu tidak pernah melangkahi sistem role general di Pengaturan → Role; aturan ini ditegakkan di resolver, bukan hanya UI |
-| 2026-11-06 | — (working tree) | Karyawan | Editor per individu merinci izin role per grup (dialog di desktop, `Sheet` layar penuh di ponsel), ringkasan "X dari Y izin role aktif, N dikecualikan" + "Kembalikan semua ke role"; daftar Karyawan menampilkan badge "N pengecualian", dan menghapus karyawan ikut membersihkan pengecualiannya. Setiap perubahan tercatat di audit (`update_employee_permissions`) |
-| 2026-11-06 | — (working tree) | Pengaturan | **Tab Role responsif**: daftar role yang semula menumpuk vertikal dan melewati tinggi layar pendek kini menjadi **strip geser horizontal** pada tablet/desktop kecil (`md`/`lg`); tata letak master-detail berdampingan tetap hanya di monitor besar (`xl`), dan `Sheet` layar penuh di ponsel tidak berubah |
+| 2026-11-06 | — (working tree) | Karyawan/Izin | **Izin khusus per karyawan (hanya mengurangi / restrict-only)**: owner dapat **mencabut** sebagian izin yang role berikan kepada satu orang lewat aksi "Izin khusus" (ikon Shield) di `/backoffice/hr/employees` — misalnya seorang cashier kehilangan Akses POS sementara cashier lain tidak. Pengecualian disimpan di `tenants.settings.user_permissions` (peta `userId → { izin: false }`), tanpa migrasi skema. Sifatnya **hanya mengurangi**: izin yang tidak diberikan role tidak ditawarkan sama sekali, sehingga penugasan individu tidak pernah melangkahi sistem role general di Pengaturan → Role; aturan ini ditegakkan di resolver, bukan hanya UI | Baru |
+| 2026-11-06 | — (working tree) | Karyawan | Editor per individu merinci izin role per grup (dialog di desktop, `Sheet` layar penuh di ponsel), ringkasan "X dari Y izin role aktif, N dikecualikan" + "Kembalikan semua ke role"; daftar Karyawan menampilkan badge "N pengecualian", dan menghapus karyawan ikut membersihkan pengecualiannya. Setiap perubahan tercatat di audit (`update_employee_permissions`) | Baru |
+| 2026-11-06 | — (working tree) | Pengaturan | **Tab Role responsif**: daftar role yang semula menumpuk vertikal dan melewati tinggi layar pendek kini menjadi **strip geser horizontal** pada tablet/desktop kecil (`md`/`lg`); tata letak master-detail berdampingan tetap hanya di monitor besar (`xl`), dan `Sheet` layar penuh di ponsel tidak berubah | Ubah |
 
 ### 2026-11-06 — input/output massal CSV & Excel (belum di-commit)
 
 | Waktu | Ref | Modul | Perubahan | Status |
 |---|---|---|---|---|
-| 2026-11-06 | — (working tree) | Inventori / Vendor / Pelanggan | **Buat massal lewat berkas yang mudah diedit**: setiap layar menambah **Import** (menerima `.csv`, `.xlsx`, `.xls`), **Export CSV** (bentuk siap-impor kembali), dan **unduh template CSV & Excel**. Parser, pencocokan header longgar (label Indonesia + alias Inggris), dan CSV ber-BOM agar Excel Indonesia tidak mojibake, berpusat di `src/lib/bulk-io.ts` (murni, unit-tested) |
+| 2026-11-06 | — (working tree) | Inventori / Vendor / Pelanggan | **Buat massal lewat berkas yang mudah diedit**: setiap layar menambah **Import** (menerima `.csv`, `.xlsx`, `.xls`), **Export CSV** (bentuk siap-impor kembali), dan **unduh template CSV & Excel**. Parser, pencocokan header longgar (label Indonesia + alias Inggris), dan CSV ber-BOM agar Excel Indonesia tidak mojibake, berpusat di `src/lib/bulk-io.ts` (murni, unit-tested) | Baru |
 | 2026-11-06 | — (working tree) | Inventori | **Impor produk kini aditif, bukan menimpa** (`handleImport`): SKU yang sudah ada atau kembar dalam file **dilewati** (tidak lagi meng-`UPDATE` produk owner), dan baris **tanpa SKU dibuat otomatis** meneruskan penomoran aplikasi (`KAT-YYYYMMDD-XXX` lewat `generateNextSku`/`skuPrefixForCategory`, dibaca MAX per kategori lalu dinaikkan dalam batch). Preview menampilkan jumlah ditambah / dibuat otomatis / dilewati | Ubah |
 | 2026-11-06 | — (working tree) | Vendor | Import vendor aditif: bentrok bila `code` **atau** `name` sudah ada (`idx_suppliers_code`/`idx_suppliers_name`) atau kembar → dilewati; `Kode` kosong dibuat otomatis meneruskan `VND-####` (`nextVendorCode`). Kategori/status menerima nilai Inggris maupun label; Termin menerima "30 hari" | Baru |
 | 2026-11-06 | — (working tree) | Pelanggan | Import pelanggan aditif dengan **dedup** (telepon, fallback nama) terhadap database + dalam file; tanpa ID otomatis karena pelanggan tidak punya kode manusia | Baru |
@@ -249,6 +249,34 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-11-06 | 1340350 | Cetak/Pengaturan | **Ukuran kertas nota diperluas**: selain 58mm (32 kolom) & 80mm (48 kolom) kini tersedia 60mm (32), 72mm (42), dan 76mm (44) — tipe `PaperWidth` + pemeta kolom di `document.ts`, picker "Lebar Kertas" di `ReceiptSettings.tsx` membaca dari `PAPER_WIDTHS`; nilai tersimpan tak-valid di-`normalizePaperWidth` ke 80mm agar layout tak rusak. +3 unit tes (18 lulus) | Ubah |
 | 2026-11-06 | 1340350 | Cetak/Z-report | **Rekonsiliasi penjualan per metode diperbaiki**: POS menyimpan pembayaran kartu sebagai `payment_method='debit'/'credit'` dan e-wallet (termasuk QRIS via e-wallet) sebagai `'ewallet'`, tetapi SQL Z-report hanya menghitung `'card'/'ewallet'/'qris'` sehingga kolom "Kartu" selalu Rp 0 dan penjualan debit/credit hilang dari laporan. SQL `receipt-printer.ts` kini mem-bucket `card←{card,debit,credit}`, `ewallet←{ewallet,e-wallet,ovo,gopay,dana,shopeepay}`, plus bucket **Lainnya** (`total − keempatnya`) agar rincian **selalu** sama dengan TOTAL PENJUALAN. Baris Lainnya hanya tampil bila > 0. +1 unit tes rekonsiliasi | Perbaikan |
 | 2026-11-06 | 1340350 | Cetak/HTML | **Renderer HTML menyesuaikan ukuran font ke lebar roll**: sebelumnya terpaku 9pt yang membuat 48 kolom (80mm) — dan lebih parah 72/76mm — meluber melebar. `renderReceiptHtml` menghitung `font-size` dari `columns` × lebar cetak (Courier 0.6em, 1mm=72/25.4pt, faktor aman 0.98, dijepit 4–11pt) dan header ukuran-2 kini `2em` (ikut skala). Diverifikasi di browser: 58/76/80mm **nihil overflow horizontal**. +7 unit tes `html-render.test.ts` | Perbaikan |
+
+### 2026-11-16 — void transaksi (per item & per bon) di Riwayat Kasir (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-16 | — (working tree) | Skema | Versi skema **9**: migrasi `009_transaction_voids` — `transaction_items` + `voided` (`INTEGER NOT NULL DEFAULT 0`)/`void_reason`/`voided_by`/`voided_at`, dan `transactions` + `void_reason`/`voided_by`/`voided_at` (`status` sudah ada, nilai `void` kini benar-benar ditulis). Kolom yang sama ikut di `tenant.sql` untuk database baru; jumlah tabel tetap 34, tanpa backfill (baris lama otomatis `voided = 0`) | Baru |
+| 2026-11-16 | — (working tree) | Izin | **`void_transaction` ditegakkan** — kunci ini selama ini hanya dideklarasikan di `src/config/roles.ts`. `DEFAULT_ROLE_PERMISSIONS` **tidak diubah**: owner-tier memegangnya bawaan, dan owner bisa memberikannya ke role lain lewat matriks izin (Pengaturan → Role). Void menolak actor tanpa izin, alasan kosong (<3 karakter), bon yang sudah batal, dan shift tertutup kecuali pemegang role owner-tier (`voidGuard()`) | Baru |
+| 2026-11-16 | — (working tree) | Kasir | **Void per item** (`voidTransactionItems()` di `src/lib/void.ts`): baris ditandai `voided=1` + alasan/oleh siapa/kapan, **stok kembali ke `batch_id` baris itu** sebesar `quantity × conversion_factor`, dan `total_amount`/`amount_paid` **diturunkan** sebesar subtotal baris — bukan dihitung ulang dari sisa baris — supaya diskon bon tetap utuh. Baris tidak pernah dihapus; semua tulis dalam satu `runTransaction()` | Baru |
+| 2026-11-16 | — (working tree) | Kasir | **Void per bon** (`voidTransactionBon()`): seluruh baris aktif dicoret + di-restock, bon menjadi `status='void'` dengan `total_amount` dibiarkan sebagai catatan nilai yang dibatalkan. Laci kas tidak dibuka; pembayaran gateway (QRIS/kartu) tidak dibalikkan otomatis | Baru |
+| 2026-11-16 | — (working tree) | Riwayat | Modal detail transaksi: tombol **Void** per baris item + tombol **Void Bon** di bawah (di atas "Cetak Struk"), baris void tampil **dicoret** dengan badge `VOID` + alasan, blok jejak pembatalan (alasan/pelaku/waktu) untuk bon void, filter status **Semua/Selesai/Void**, kolom "N bon di-void (tidak dihitung)" di ringkasan, dan hint bila shift sudah tertutup (hanya owner/admin). Query daftar membawa `t.void_*`, `u2.name` (nama pelaku void), `sh.status`, dan `voided`/`void_reason` per item | Baru |
+| 2026-11-16 | — (working tree) | Riwayat | **Konfirmasi beralasan wajib** lewat dialog baru `src/components/pos/VoidDialog.tsx`: pratinjau baris yang akan dicoret + besar pengurangannya, tombol batal/konfirmasi destructive, dan **cetak ulang nota void otomatis** hanya bila Cetak Otomatis aktif. Setiap void tercatat di `audit_logs` (`action='void_transaction'`, `details.kind` = `items`/`bon`) | Baru |
+| 2026-11-16 | — (working tree) | Cetak | **Item void dicoret di struk**: primitif `strikethrough` di model dokumen → `ESC G 1` (`escpos.ts`) dan `text-decoration:line-through` (`html-render.ts`), plus penanda teks `[VOID]` + `Alasan:` agar printer yang mengabaikan ESC G tetap jelas. Bon void mencetak banner ukuran 2 **"TRANSAKSI DIBATALKAN"**, seluruh baris uang dicoret, footer `--- DIBATALKAN / VOID ---`. Subtotal/diskon dihitung dari baris aktif saja | Baru |
+| 2026-11-16 | — (working tree) | Cetak/Z-report | Z-report **hanya menghitung `status='completed'`** untuk semua angka dan jumlah transaksi, lalu menambahkan seksi informatif **"void (tidak dihitung)"** dengan baris `Pembatalan (N bon) — Rp X`; laporan tutup shift tidak lagi diam-diam berkurang nilainya | Perbaikan |
+| 2026-11-16 | — (working tree) | Akuntansi | **Penyelarasan seluruh agregasi penjualan** (`status = 'completed'`, dan `ti.voided = 0` untuk hitungan per item): Dashboard (stat card, tren, chart, BranchPerformance, modal SalesDetail/TransactionDetail/ProductSales, RecentTransactions), Reports, Branches + dashboard cabang, POS (kas seharusnya shift), POSShifts (ringkasan + baris "bon di-void"), SalesReport, Cashflow, Piutang (`ApAr` — bon void tidak boleh menggantung sebagai piutang), dan totals Riwayat Transaksi (`CASE WHEN` — nominal mengecualikan void, pagination tetap menghitung barisnya). Daftar/ekspor tetap **menampilkan** baris void | Ubah |
+| 2026-11-16 | — (working tree) | Uji | `src/lib/__tests__/void.test.ts` (16 tes): guard izin/alasan/status/batas shift + override owner-tier, matematika penurunan total (invarian diskon awet & clamp 0), restock per batch lewat konversi, void bon terkecuali dari query pendapatan, bon kredit void tidak lagi jadi piutang (ApAr), "Transaksi Terbaru" menandai bon void, baris audit; SQL yang dipakai di-*replay* verbatim ke database v9 sementara. `receipt-doc.test.ts` (+3), `zreport-doc.test.ts`, `escpos.test.ts`, `html-render.test.ts` menutup jalur coret-garis/banner; `schema.test.ts` + seed/demo assertion naik ke versi **9** | Baru |
+
+### 2026-11-17 — vendor–produk terintegrasi + vendor otomatis di PO (belum di-commit)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-17 | — (working tree) | Skema | Versi skema **10**: migrasi `010_vendor_catalog_indexes` — `idx_vendor_products_pref ON vendor_products(product_id, is_preferred)` (subselect `preferred_vendor_id` di daftar produk) dan `idx_suppliers_name_nc ON suppliers(name COLLATE NOCASE)` (pencocokan nama vendor saat impor/form). **Tidak ada tabel atau kolom baru**; jumlah tabel tetap 34, tanpa backfill. `idx_suppliers_name` lama tetap UNIQUE case-sensitive — dua ejaan satu vendor bisa sudah ada di tenant lama dan tidak di-dedup | Baru |
+| 2026-11-17 | — (working tree) | Data | **Satu penulis relasi vendor⇄produk** (`src/lib/vendor-catalog.ts` + statement builder `src/lib/vendor-catalog-sql.ts`): `resolveOrCreateVendor()` (nama → master sungguhan, kode `VND-####` di-mint di dalam transaksi, kategori/kontak/telepon/email ikut tersimpan; tidak pernah menimpa baris yang sudah ada), `upsertVendorCatalogLink()`, `markPreferredVendor()` (tepat satu vendor utama per produk), `recordVendorLastCost()`, `upsertVendorPrice(mode)` dengan provenance di `notes` (`import`, `form produk`, `katalog vendor`, `penerimaan barang`, `seed demo`). Menggantikan 3 salinan find-or-create dan 4 salinan tautan katalog, termasuk tombol "Tambah Supplier Baru" di form produk | Ubah |
+| 2026-11-17 | — (working tree) | Produk | **Form produk kini mengisi template PO.** `src/lib/product-write.ts` (ekstraksi `handleSaveProduct` + blok per-baris `handleImport` dari `Inventory.tsx`) menulis `vendor_price_list` untuk tiap (varian, pecahan) yang punya harga beli — `overwrite` bila pemegang `manage_vendor_prices`, kalau tidak `gap-only` supaya harga kesepakatan tidak diinjak — plus tautan katalog `is_preferred: true`. Layar produk, impor produk, dan tab Produk vendor kini memakai penulis produk yang sama | Baru |
+| 2026-11-17 | — (working tree) | Vendor | Menyimpan vendor dari daftar **melempar ke detail vendor dengan form produk terbuka** (`?tambah-produk=1`, dibaca sekali lalu dibersihkan dari URL), jadi input vendor sekaligus bisa langsung input produk. Tab Produk mendapat **Tambah Produk Baru** (`AddProductModal` di-prefill `defaultSupplier`) dan dialog **Hubungkan Produk** kini punya switch **Jadikan vendor utama** (menyetel `is_preferred` + `products.supplier_id` bila kosong) serta mengisi harga beli yang masih bolong | Baru |
+| 2026-11-17 | — (working tree) | Import | **Import Vendor + Produk** (`components/vendors/VendorProductImport.tsx`): satu sheet flat 18 kolom (`VENDOR_PRODUCT_COLUMNS`) — satu baris = vendor × produk × pecahan; pratinjau "N vendor baru · M produk ditautkan · K harga diperbarui · X dilewati" sebelum menulis, lalu **satu transaksi per blok vendor**. Kebijakan: master aditif, harga mengikuti sheet; SKU kosong diteruskan oleh sekuens aplikasi, SKU terisi yang sudah ada tidak diduplikasi tapi baris harganya tetap jalan. Template CSV/Excel dan **Ekspor Katalog** memakai header yang sama, sehingga hasil ekspor bisa diimpor balik | Baru |
+| 2026-11-17 | — (working tree) | PO | **Pilih produk = vendor terpilih otomatis.** Selama vendor belum dipilih, picker menampilkan semua produk dengan caption vendornya; memilih satu menjalankan `defaultVendorFor()` (vendor tercih → `products.supplier_id` → vendor tunggal yang aktif), field vendor menampilkan caption **"Vendor (otomatis dari produk)"** + tombol **Ubah**, `expected_date` terisi dari lead time vendor, dan harga kesepakatan pecahan itu ikut terisi (mis. `Rp 9.000 (min. 5)`). Ganti vendor saat keranjang berisi baris vendor lain kini memunculkan **AlertDialog** yang menyebut vendor baru dan menghitung baris yang akan dihapus — menggantikan penghapusan diam-diam. "Isi dari stok rendah" dan "Isi dari template harga" mengelompokkan baris per vendor dan tidak menulis apa pun bila lebih dari satu vendor terlibat (satu PO tetap satu vendor) | Ubah |
+| 2026-11-17 | — (working tree) | Demo | Seeder demo (`server/demo/ledger.ts`) menyusun baris katalog & harga dari statement builder yang sama, jadi katalog demo tidak lagi punya produk vendor tanpa baris `vendor_price_list` (provenance `seed demo`) | Perbaikan |
+| 2026-11-17 | — (working tree) | Uji | Unit baru `src/lib/vendor-catalog.test.ts` (25: NOCASE, mint kode, preferred tunggal, dua mode harga, `defaultVendorFor`) dan `src/lib/vendor-import.test.ts` (24: grouping, taut-by-nama, skip-by-SKU, harga tetap jalan, pecahan dasar wajib); `bulk-io.test.ts` (19) menjaga header 18 kolom; `demo-tenant.test.ts` (+3 invarian); `schema.test.ts` menjaga indeks v10. Browser: `tests/vendor-catalog.e2e.ts` (4 kasus) — sheet menulis vendor+produk+katalog+harga, impor ulang tidak menduplikasi tapi mengubah harga, form vendor → form produk terisi vendor, dan PO memilih produk → vendor + harga kesepakatan muncul (termasuk konfirmasi ganti vendor) | Baru |
 
 ### Riwayat commit (aplikasi sebelum migrasi)
 
@@ -290,7 +318,7 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 
 ---
 
-## 2. Katalog fitur saat ini (per 2026-10-28)
+## 2. Katalog fitur saat ini (per 2026-11-17)
 
 Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan yang disebut •
 **Belum** = belum tersedia di UI.
@@ -326,8 +354,11 @@ Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan
 | Shift: buka/tutup kas | Ada | Kas awal (0 = tanpa uang tunai), kas akhir, kas seharusnya, selisih |
 | Satu sumber cabang POS | Ada | `use-pos-branch`: till, layar shift, dan header selalu cabang yang sama; pemilih cabang bila role melintas beberapa cabang |
 | Absensi otomatis dari shift | Ada | Buka shift = check-in, tutup shift = check-out (`source='self'`, `notes='Otomatis dari buka shift'`), best-effort tanpa membatalkan shift |
-| Riwayat transaksi & detail | Ada | Dengan pagination |
-| Void/refund transaksi | Belum | Status `void` ada di skema, belum ada aksi UI |
+| Riwayat transaksi & detail | Ada | Dengan pagination, **filter status** (Semua/Selesai/Void), dan jejak void (alasan, siapa, kapan) di daftar maupun modal detail |
+| Void transaksi per item | Ada | Tombol **Void** di tiap baris item pada modal detail: stok kembali ke batch asal baris itu, total bon turun sebesar subtotalnya (diskon bon awet), baris dicoret — tidak pernah dihapus. `voidTransactionItems()` di `src/lib/void.ts` |
+| Void transaksi per bon | Ada | Tombol **Void Bon** di dasar modal detail: seluruh baris dicoret + stok kembali, `status='void'`, nilai bon dibiarkan sebagai catatan dan otomatis keluar dari semua laporan karena agregasi memfilter `status='completed'`. `voidTransactionBon()` |
+| Void butuh alasan + konfirmasi | Ada | Dialog `src/components/pos/VoidDialog.tsx` mewajibkan alasan (min. 3 karakter), menampilkan pratinjau baris yang dicoret dan pengurangannya, dan mencatat `audit_logs` `void_transaction`. Struk void dicetak ulang otomatis bila Cetak Otomatis aktif |
+| Refund pembayaran gateway (QRIS/kartu) | Belum | Void hanya mengurangi pendapatan; pengembalian dana riil di terminal provider dilakukan manual |
 
 #### 2.2.1 Sistem Cetak Struk & Z-Report
 
@@ -348,11 +379,31 @@ Satu **document model** murni (`src/lib/print/document.ts`, `PrintDoc`) dipakai 
 
 **Batasan & catatan:** browser desktop Windows tidak punya API Bluetooth serial langsung, karena itu Bluetooth di PC lewat driver OS (route `driver`) atau unduh file `.prn`; di Android lewat Web Bluetooth. WebUSB/Web Bluetooth wajib satu tombol **Sambungkan Printer** (gesture `requestDevice`) per sesi browser; setelah itu transaksi berikutnya cetak otomatis. Auto-print dan cetak Z-report tutup shift bersifat fire-and-forget: printer mati tidak memblokir transaksi yang sudah commit.
 
+**Void di atas kertas (v9).** Baris item yang dibatalkan dicetak **dicoret** (`strikethrough` pada model dokumen → `ESC G 1` di ESC/POS dan `text-decoration:line-through` di renderer HTML) dengan penanda teks `[VOID]` + baris `Alasan:` di bawahnya, sehingga printer yang mengabaikan perintah coret tetap menunjukkan pembatalan. Subtotal & diskon dihitung dari **baris aktif saja** supaya diskon bon tidak berubah setelah satu baris di-void; total tetap `total_amount`. Bon yang di-void total mencetak **banner ukuran 2 "TRANSAKSI DIBATALKAN"** + alasan di kepala nota, seluruh baris uang dicoret (subtotal menampilkan nilai yang dibatalkan, bukan nol), dan footer diganti `--- DIBATALKAN / VOID ---`. Z-report hanya menghitung `status='completed'` dan menambahkan seksi **"void (tidak dihitung)"** dengan baris `Pembatalan (N bon) — Rp X` bila ada void pada shift itu. Laci kas **tidak** dibuka saat void.
+
+#### 2.2.2 Void transaksi (per item & per bon)
+
+Prinsip retail yang dipakai: **penjualan adalah catatan keuangan, jadi tidak pernah dihapus** — yang terjadi adalah penandaan + pengembalian stok + jejak audit. Seluruh logika ada di `src/lib/void.ts` (SQL diekspor sebagai konstanta dan keputusan sebagai fungsi murni agar bisa di-*replay* `src/lib/__tests__/void.test.ts` ke database v9 sementara).
+
+| Aspek | Aturan |
+|---|---|
+| Siapa yang bisa akses | Pemegang izin **`void_transaction`** (katalog `src/config/roles.ts`). Default **tidak diubah** — hanya owner-tier yang punya, dan owner dapat mengaktifkan role lain lewat Pengaturan → Role (matriks izin). Ini yang **menegakkan** izin yang selama ini hanya dideklarasikan |
+| Batas waktu | Hanya transaksi pada shift yang masih **`open`**. Shift tertutup boleh di-void **hanya** oleh `platform_owner`/`tenant_admin`/`tenant_owner` (override) supaya Z-report yang sudah diserahkan tidak diam-diam berubah. Non-owner melihat keterangan "hanya owner/admin yang dapat mem-void" |
+| Bon siapa | **Tidak** ada aturan "kasir hanya boleh mem-void bon sendiri". Kunci izin semacam itu tidak ada di katalog `src/config/roles.ts`, dan keputusan desainnya kontrolnya tetap matriks izin (`void_transaction`). Yang membatasi secara praktis: bon harus berada pada shift `open`, dan satu shift dimiliki satu kasir (`shifts.user_id`) — jadi kasir hanya menyentuh bon dari shift yang masih berjalan. `VOID_TARGET_SQL` sudah memuat `cashier_id`, sehingga aturan hanya-own bisa ditambahkan di `voidGuard()` nanti tanpa migrasi skema |
+| Alasan | Wajib, minimal 3 karakter, disimpan di `void_reason`/`voided_by`/`voided_at` per baris dan per bon, plus `audit_logs` (`action='void_transaction'`, `details.kind` = `items`/`bon`) |
+| Stok | Kembali ke **`batch_id` baris itu** sebesar `quantity × conversion_factor` (bukan ke pool global), sehingga harga pokok & expiry batch tetap benar. Baris tanpa batch (penjualan non-tracked) tetap ditandai void tanpa restock |
+| Uang — void item | `total_amount` dan `amount_paid` **diturunkan** sebesar subtotal baris (`nextTotalAfterVoid`), bukan dihitung ulang dari sisa baris — karena diskon bon disimpan implisit sebagai `SUM(items) − total_amount`, mengurangi selisih akan diam-diam menghapus diskon. Hasilnya clamp di 0 |
+| Uang — void bon | `total_amount` **dibiarkan** sebagai nilai penjualan yang dibatalkan; bon menjadi `status='void'` sehingga otomatis terkecuali dari semua agregasi |
+| Akuntansi selaras | Semua query uang/jumlah penjualan kini memfilter **`status = 'completed'`** — Dashboard (stat card, chart, branch performance, modal detail, recent list), Reports, Cabang (daftar + dashboard cabang), POS/POSShifts (kas seharusnya & ringkasan shift), SalesReport, Cashflow, **Piutang (Hutang/Piutang)**, Riwayat Transaksi (pakai `CASE WHEN` sehingga nominal mengecualikan void tapi pagination tetap menghitung barisnya), dan Z-report. Agregasi per item (unit terjual, produk terlaris, kategori) juga menyaring **`ti.voided = 0`** |
+| Yang tetap tampil | Daftar riwayat & lembar ekspor Detail Laporan **masih menampilkan** baris/bon void (dengan badge Void) — pembatalan harus bisa dibaca, bukan hilang |
+| Skema | v9 (`db/migrations/009_transaction_voids.sql`): `transaction_items.voided`/`void_reason`/`voided_by`/`voided_at` + kolom audit yang sama di `transactions` — lihat §1 dan [backend.md](backend.md) §5.4 |
+| Di luar cakupan | Pembalikan pembayaran gateway (QRIS/kartu) bersifat manual; retur tanpa restock (barang rusak); alokasi diskon proporsional per item; penegakan otorisasi di sisi server (mengikuti model client-trust RBAC yang ada) |
+
 ### 2.3 Inventori & pengadaan
 
 | Fitur | Status | Catatan |
 |---|---|---|
-| CRUD produk + kategori + supplier | Ada | Combobox bisa menambah kategori/supplier baru |
+| CRUD produk + kategori + supplier | Ada | Combobox bisa menambah kategori/supplier baru; supplier yang diketik jadi nama saja kini menjadi **master vendor sungguhan** (kode `VND-####` di-mint, tanpa menimpa vendor yang sudah ada) — bukan baris yatim lagi |
 | SKU otomatis | Ada | Format `PREFIX-YYYYMMDD-SEQ` |
 | Barcode per satuan | Ada | `react-barcode`, unduh PNG |
 | Multi-satuan & konversi | Ada | Unik per `(product_id, conversion_factor)` |
@@ -364,8 +415,8 @@ Satu **document model** murni (`src/lib/print/document.ts`, `PrintDoc`) dipakai 
 | Stock opname | Ada | Penyesuaian positif/negatif dengan alasan |
 | Transfer antar gudang | Ada | `pending → in_transit → completed`, per batch, simpan expiry & HPP; gudang asal/tujuan dipilih dari `warehouses`; menampilkan nomor pesanan asal bila tertaut |
 | Transfer bertahap (terima sebagian) | Sebagian | Pengiriman dan penerimaan sudah terpisah dan selisih dicatat; belum ada penerimaan bertahap dalam beberapa kedatangan |
-| Purchase order | Ada | draft/ordered/received, item + total |
-| Import/Export produk (CSV & Excel) | Ada | `xlsx`; import **aditif** (SKU existing/kembar dilewati, SKU kosong dibuat otomatis), template CSV/Excel siap-impor (parser `src/lib/bulk-io.ts`) |
+| Purchase order | Ada | draft/ordered/received, item + total; **vendor terpilih otomatis saat produk dipilih** (lihat §2.4) dan harga kesepakatan vendor mengisi `unit_cost` |
+| Import/Export produk (CSV & Excel) | Ada | `xlsx`; import **aditif** (SKU existing/kembar dilewati, SKU kosong dibuat otomatis), template CSV/Excel siap-impor (parser `src/lib/bulk-io.ts`). Vendor hasil impor juga menjadi master lengkap + tautan katalog `is_preferred` |
 | Hapus produk | Sebagian | Tetap menghapus permanen; transaksi lama kehilangan referensi produk |
 
 ### 2.4 Vendor
@@ -376,11 +427,14 @@ Satu **document model** murni (`src/lib/print/document.ts`, `PrintDoc`) dipakai 
 | Termin & kebijakan pembelian | Ada | Termin 0/7/14/30/45/60/90 hari, limit kredit, lead time, rating 0–5 bintang |
 | Rekening bank vendor | Ada | Dipakai sebagai tujuan transfer saat membayar hutang |
 | Status vendor | Ada | Aktif / nonaktif / blacklist; status tampil sebagai badge di daftar & detail |
-| Katalog produk per vendor | Ada | `vendor_products`: SKU vendor, harga beli terakhir, lead time, minimum order, penanda vendor utama |
-| Purchase order per vendor | Ada | PO memilih vendor dari master; daftar produk disaring ke katalog vendor tersebut (vendor utama + tautan `vendor_products`) |
+| Katalog produk per vendor | Ada | `vendor_products`: SKU vendor, harga beli terakhir, lead time, minimum order, penanda vendor utama. Ditulis dari **satu modul** (`src/lib/vendor-catalog.ts`) oleh form produk, impor, dialog hubungkan, penerimaan barang, dan seeder demo; `is_preferred` kini benar-benar disetel UI (tepat satu per produk) |
+| Harga beli per vendor & pecahan | Ada | `vendor_price_list` = "template PO": harga kesepakatan per (vendor, varian, pecahan) dengan `min_qty` dan status; dikelola di tab **Harga Beli** detail vendor, diisi otomatis oleh form produk/impor/penerimaan barang, dan dibaca PO saat menyusun baris |
+| Purchase order per vendor | Ada | Bila vendor belum dipilih, picker menampilkan **semua** produk dengan caption vendornya dan memilih produk = memilih vendor (`defaultVendorFor`: vendor tercih → vendor utama → vendor tunggal aktif; vendor nonaktif dilewati, ambigu → tidak menebak). Setelah vendor dipilih, daftar disaring ke katalog vendor itu (satu PO satu vendor); caption **"Vendor (otomatis dari produk)"** + **Ubah** menandai hasil auto-fill, dan mengganti vendor dengan baris vendor lain di keranjang meminta konfirmasi lewat `AlertDialog` |
 | Hutang & pembayaran vendor | Ada | Tagihan manual, bayar sebagian/penuh, metode bayar + nomor referensi, riwayat pembayaran |
 | Statistik & export | Ada | Total vendor, aktif, total hutang, tagihan lewat jatuh tempo; export Excel (report) & CSV (siap-impor) |
+| Input produk dari layar vendor | Ada | Simpan vendor di daftar melempar ke detail vendor dengan form produk terbuka (vendor sudah terisi); tab Produk punya **Tambah Produk Baru**, dan dialog **Hubungkan Produk** punya switch **Jadikan vendor utama** |
 | Import massal vendor | Ada | CSV/Excel; aditif — `code`/`name` sudah ada atau kembar dilewati, `Kode` kosong auto `VND-####`; template CSV/Excel |
+| Import vendor **+ produk** satu sheet | Ada | **Import Vendor + Produk**: sheet flat 18 kolom (satu baris = vendor × produk × pecahan), pratinjau ringkasan + status per baris sebelum menulis, satu transaksi per blok vendor; master aditif tetapi `last_cost`/`buy_price` mengikuti sheet. **Ekspor Katalog** dan kedua template memakai header yang sama, jadi hasil ekspor bisa diimpor balik |
 | Hapus vendor | Sebagian | Ditolak bila masih dipakai produk/PO/tagihan; gunakan status nonaktif |
 | Penilaian otomatis (on-time delivery) | Belum | Rating diisi manual |
 
@@ -390,7 +444,7 @@ Satu **document model** murni (`src/lib/print/document.ts`, `PrintDoc`) dipakai 
 |---|---|---|
 | Pengeluaran (expenses) | Ada | Kategori, tanggal, jatuh tempo, status, jumlah dibayar |
 | Hutang usaha (AP) | Ada | Dibaca dari `expenses` yang belum lunas + pembayaran |
-| Piutang usaha (AR) | Ada | Dari `transactions` dengan `total_amount > amount_paid` + penerimaan |
+| Piutang usaha (AR) | Ada | Dari `transactions` dengan `total_amount > amount_paid` **dan `status='completed'`** (bon void bukan piutang) + penerimaan |
 | Cashflow | Ada | Pemasukan penjualan vs pengeluaran |
 | Jurnal umum | Sebagian | Disusun saat baca (basis kas), bukan tabel jurnal |
 | Tutup buku / neraca saldo | Belum | Butuh COA + jurnal persisten |
@@ -408,7 +462,7 @@ Satu **document model** murni (`src/lib/print/document.ts`, `PrintDoc`) dipakai 
 
 | Fitur | Status | Catatan |
 |---|---|---|
-| Data karyawan + role | Ada | 7 peran (lihat §3) |
+| Data karyawan + role | Ada | Katalog 8 peran; yang hidup di dalam tenant adalah 7 (tanpa `platform_owner`) dan 6 di antaranya bisa diberikan dari layar Karyawan — lihat §3 |
 | Gaji pokok | Ada | Dipakai laporan payroll |
 | Presensi (check-in/out) | Ada | Self-service di `/absen` (GPS + wajah) **dan** otomatis dari siklus shift POS (`src/lib/shift-attendance.ts`: buka shift mencatat check-in hari WIB berjalan bila belum ada baris, tutup shift mengisi `check_out` yang masih NULL). Input owner/HR di laporan absensi tetap ada. Modal absensi mengunci tanggal hari berjalan (UTC+7) dan trigger `trg_attendance_today_only` (skema v7) menolak insert bertanggal lain — back/forward-dating lewat payload tidak bisa lagi |
 | Lembur | Sebagian | Kolom `overtime` ada, input manual |
@@ -460,37 +514,61 @@ Data berasal dari back office setiap tenant yang berstatus `active`.
 
 ## 3. Peran dan akses menu
 
-Sumber: kunci izin per rute di `src/App.tsx` (`guarded`/`guardedAny`), nilai bawaan
+Sumber: kunci izin per rute di `src/App.tsx` (`guarded`/`guardedAny`/`guardedAuthed`), nilai bawaan
 `DEFAULT_ROLE_PERMISSIONS` di `src/config/roles.ts`, dan kunci `permission` tiap item di
 `src/components/layout/nav-items.ts`. Guard tidak lagi membaca daftar peran; peran custom dan
-override owner dihormati lewat resolver `src/lib/permission-matrix.ts`. Tabel di bawah adalah
-*jangkauan keluaran* (bukan konfigurasi), dijaga identik dengan `tests/rbac.e2e.ts`.
+override owner dihormati lewat resolver `src/lib/permission-matrix.ts`. Kolom **Kunci izin** adalah
+sumber selnya — tabel ini adalah *jangkauan keluaran default* (bukan konfigurasi): owner dapat
+mengubahnya lewat matriks tanpa menyentuh kode. Sebagian sel dijaga `tests/rbac.e2e.ts`
+(POS/kartu mode-select untuk cashier, warehouse, purchasing; penolakan `/backoffice` & `/backoffice/settings`).
 
-| Menu | platform_owner | tenant_owner | tenant_admin | store_manager | cashier | warehouse | staff |
-|---|---|---|---|---|---|---|---|
-| `/pos` | ✓ | ✓ | ✓ | ✓ | ✓ | – | – |
-| `/pos/transactions` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `/pos/shifts` | ✓ | ✓ | ✓ | ✓ | ✓ | – | – |
-| `/backoffice` (dashboard) | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| CRM supplier & pelanggan | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| Daftar cabang & dashboard cabang | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| Pesanan cabang (`/backoffice/branches/orders`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
-| Gudang (`/backoffice/warehouses`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
-| Transfer stok (`/backoffice/branches/transfer`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
-| Produk (`/backoffice/inventory/products`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
-| Stok opname (`/backoffice/inventory/opname`) | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
-| Stok masuk & purchase order | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| Keuangan (jurnal, AP/AR, cashflow, pengeluaran) | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| SDM (karyawan, presensi, jadwal, payroll) | ✓ | ✓ | ✓ | – | – | – | – |
-| Laporan | ✓ | ✓ | ✓ | ✓ | – | – | – |
-| Pengaturan | ✓ | ✓ | ✓ | – | – | – | – |
+| Menu | Kunci izin | platform_owner | tenant_owner | tenant_admin | store_manager | cashier | warehouse | purchasing | staff |
+|---|---|---|---|---|---|---|---|---|---|
+| `/pos` | `access_pos` | ✓ | ✓ | ✓ | ✓ | ✓ | – | – | – |
+| `/pos/transactions` | `access_pos` **atau** `view_dashboard` **atau** `view_inventory` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – |
+| `/pos/shifts` | `access_pos` | ✓ | ✓ | ✓ | ✓ | ✓ | – | – | – |
+| `/absen` | tanpa kunci (semua user aktif) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `/backoffice` (dashboard) | `view_analytics` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
+| Vendor & CRM (supplier, pelanggan) | `view_finance` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
+| Daftar cabang & dashboard cabang | `manage_branches` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
+| Pesanan Cabang (`/backoffice/branches/orders`) | `view_inventory` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
+| Gudang (`/backoffice/warehouses`) | `view_inventory` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
+| Transfer stok (`/backoffice/branches/transfer`) | `view_inventory` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
+| Produk (`/backoffice/inventory/products`) | `view_inventory` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
+| Stok opname (`/backoffice/inventory/opname`) | `view_inventory` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
+| Stok masuk (`/backoffice/inventory/stock-in`) | `add_stock` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
+| Purchase order (`/backoffice/inventory/po`) | `view_inventory` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
+| Keuangan (jurnal, AP/AR, cashflow, pengeluaran) | `view_finance` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
+| SDM (karyawan, absensi, jadwal, payroll) | `view_employees` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
+| Pendaftaran wajah (`/backoffice/hr/face`) | `manage_attendance` | ✓ | ✓ | ✓ | – | – | – | – | – |
+| Laporan (termasuk laporan procurement) | `view_reports` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
+| Pengaturan | `view_settings` | ✓ | ✓ | ✓ | – | – | – | – | – |
+
+Jumlah kunci bawaan yang aktif: owner-tier 31/31, `store_manager` 16, `warehouse` 8, `purchasing` 6,
+`cashier` 1 (`access_pos`; `apply_discount` eksplisit `false`), `staff` 0.
 
 Catatan:
 - `admin` adalah alias lama untuk `tenant_admin` yang dipetakan resolver (`src/lib/permission-matrix.ts`),
-  bukan peran terpisah; tujuh peran resmi di atas adalah kunci katalog yang sebenarnya.
+  bukan peran terpisah. Katalog resmi punya 8 peran; `platform_owner` tidak pernah dipakai di dalam
+  tenant, `tenant_owner` dipasang oleh provisioning, dan `BUILTIN_ASSIGNABLE_ROLES` (6 peran: admin,
+  manager, cashier, warehouse, purchasing, staff) adalah yang bisa dipilih di layar Karyawan —
+  ditambah role custom `cust_*` milik tenant.
+- **purchasing** naik dari "dideklarasikan tapi tak bisa dibuat" menjadi peran nyata: memegang
+  `create_po`/`receive_po`/`cancel_po` + `view_inventory`/`add_stock`/`transfer_stock`, dan secara
+  sengaja **tidak** memegang `approve_po` (pemisahan pengaju vs penyetuju, dijaga
+  `src/lib/procurement.ts` + `procurement.test.ts`). Karena rute `/pos/transactions` terbuka untuk
+  `view_inventory`, peran ini bisa membuka buku transaksi meski kartu "POS & Kasir" tidak pernah
+  ditawarkan di mode-select — itu keadaan yang diinginkan, bukan celah.
+- **staff tidak punya satu pun izin bawaan**: tidak ada menu yang terbuka, hanya `/absen` yang
+  bisa diakses (guard `guardedAuthed`). Jadi karyawan "biasa" harus diberi izin lebih dulu di
+  Pengaturan → Role, atau dibuatkan role custom.
 - **warehouse** memakai `view_inventory` untuk dokumen stok dan diarahkan ke **Pesanan Cabang** di
   layar mode-select, karena `/backoffice` menuntut `view_analytics` yang tidak dipegang peran ini; menu
   tanpa kuncinya tidak ditampilkan agar tidak ada tautan yang berujung pengalihan.
-- Transfer stok, opname, gudang, produk, dan PO dijaga `view_inventory`; stok masuk dijaga
-  `add_stock` dan hanya tampil untuk peran yang memegangnya — staf gudang menerima barang lewat
-  pesanan cabang, bukan lewat PO.
+- `stock_opname` (`warehouse: true`) **tidak dibaca kode mana pun** saat ini — satu-satunya kunci di
+  katalog yang belum punya konsumen. Yang membuka layar opname adalah `view_inventory`, jadi sakelar
+  "Stock Opname" di matriks Role hari ini tidak mengubah apa pun. Sengaja dicatat di sini supaya
+  angka di tabel tidak disalahtafsir sebagai "sudah ditegakkan kode".
+- **Void transaksi** (`/pos/transactions`) tidak mengubah akses menu: ia dijaga izin
+  `void_transaction` di dalam layar (tombol tidak muncul tanpa izin), dan bawaannya hanya
+  owner-tier yang memilikinya — lihat §2.2.2.

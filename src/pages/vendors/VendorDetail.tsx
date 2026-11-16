@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -75,6 +75,15 @@ import {
 } from "@/lib/procurement";
 import { cn } from "@/lib/utils";
 import { VendorFormModal, type VendorRecord } from "@/components/vendors/VendorFormModal";
+import { AddProductModal } from "@/components/inventory/AddProductModal";
+import { Switch } from "@/components/ui/switch";
+import { WAREHOUSES_SQL, activeWarehouses, type WarehouseOption } from "@/lib/warehouse";
+import { saveProductDraft, type ProductFormPayload } from "@/lib/product-write";
+import {
+  markPreferredVendor,
+  upsertVendorCatalogLink,
+  upsertVendorPrice,
+} from "@/lib/vendor-catalog";
 
 interface VendorSummary {
   po_count: number;
@@ -141,6 +150,10 @@ interface ProductOption {
   sku: string;
   name: string;
   cost_price: number;
+  /** Base pack of the product's first variant, so a link can seed a price. */
+  variant_id: string | null;
+  unit_name: string | null;
+  conversion_factor: number | null;
 }
 
 /**
@@ -272,9 +285,15 @@ const VENDOR_PAYMENTS_SQL = `
 `;
 
 const UNLINKED_PRODUCTS_SQL = `
-  SELECT p.id, p.sku, p.name, p.cost_price
+  SELECT p.id, p.sku, p.name, p.cost_price,
+         v.id AS variant_id,
+         COALESCE(u.name, 'Pcs') AS unit_name,
+         COALESCE(u.conversion_factor, 1) AS conversion_factor
   FROM products p
+  LEFT JOIN product_variants v ON v.product_id = p.id
+  LEFT JOIN product_units u ON u.variant_id = v.id AND u.conversion_factor = 1
   WHERE p.id NOT IN (SELECT product_id FROM vendor_products WHERE vendor_id = $1)
+  GROUP BY p.id
   ORDER BY p.name ASC
 `;
 
@@ -345,6 +364,7 @@ const VENDOR_VARIANTS_SQL = `
 export default function VendorDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { user } = useAuth();
   const { can } = usePermissions();
   // Buy prices are the owner's negotiation, not something a clerk may edit.
@@ -364,6 +384,14 @@ export default function VendorDetail() {
 
   const [editOpen, setEditOpen] = useState(false);
 
+  // Product input from the vendor screen: the modal is the product form itself,
+  // prefilled with this vendor, so there is only one product template to learn.
+  const [addProductOpen, setAddProductOpen] = useState(false);
+  const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
+  /** Set by `?tambah-produk=1`, kept until the vendor row has actually loaded. */
+  const [pendingAddProduct, setPendingAddProduct] = useState(false);
+
   const [linkOpen, setLinkOpen] = useState(false);
   const [productOptions, setProductOptions] = useState<ProductOption[]>([]);
   const [linkForm, setLinkForm] = useState({
@@ -372,6 +400,7 @@ export default function VendorDetail() {
     lastCost: "",
     leadTime: "0",
     minOrderQty: "1",
+    makePreferred: true,
   });
   const [isSavingLink, setIsSavingLink] = useState(false);
 
@@ -527,6 +556,81 @@ export default function VendorDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  /*
+   * Coming from the vendor form's "create", the query string asks to add a
+   * product. It is copied into state and stripped on the spot: the master data is
+   * still loading at that moment, and an effect that waits for it would find the
+   * parameter already gone and never open the form.
+   */
+  useEffect(() => {
+    if (searchParams.get("tambah-produk") !== "1") return;
+    setPendingAddProduct(true);
+    setSearchParams({}, { replace: true });
+  }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!pendingAddProduct || !vendor) return;
+    setPendingAddProduct(false);
+    void openAddProduct();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAddProduct, vendor]);
+
+  /**
+   * Opens the product form with this vendor already chosen.
+   *
+   * Warehouses and categories are not part of the vendor screen's normal data,
+   * but the form cannot save without them, so they come along when it opens
+   * rather than on every page load.
+   */
+  const openAddProduct = async () => {
+    if (!can("manage_variants")) {
+      toast.error("Tidak berwenang mengelola template produk.");
+      return;
+    }
+    try {
+      const [warehouseRes, categoryRes] = await batchQuery([
+        { sql: WAREHOUSES_SQL, params: [] },
+        {
+          sql: `SELECT DISTINCT category FROM products WHERE category IS NOT NULL ORDER BY category ASC`,
+          params: [],
+        },
+      ]);
+      setWarehouses(activeWarehouses(warehouseRes.rows as unknown as WarehouseOption[]));
+      setCategories(
+        (categoryRes.rows as unknown as Array<{ category: string }>).map((row) => row.category)
+      );
+      setAddProductOpen(true);
+    } catch (error) {
+      console.error("Failed to load product form context:", error);
+      toast.error("Gagal membuka form produk");
+    }
+  };
+
+  /**
+   * Saves a product typed on the vendor screen through the one product writer,
+   * filing it straight into this vendor's catalogue as its preferred supplier.
+   */
+  const handleAddProduct = async (payload: ProductFormPayload) => {
+    if (!id) return;
+    try {
+      await saveProductDraft({
+        product: payload,
+        warehouses,
+        userId: user?.id ?? null,
+        branchId: user?.assigned_branch_id ?? null,
+        mayEditVariant: can("manage_variants"),
+        mayEditVendorPrice: canEditPrices,
+        vendorLink: { vendorId: id, isPreferred: true },
+      });
+      setAddProductOpen(false);
+      toast.success("Produk masuk ke katalog vendor");
+      loadVendor();
+    } catch (error) {
+      console.error("Failed to add vendor product:", error);
+      toast.error(error instanceof Error ? error.message : "Gagal menyimpan produk");
+    }
+  };
+
   const openLinkDialog = async () => {
     if (!id) return;
     if (!canEditPrices) {
@@ -544,6 +648,7 @@ export default function VendorDetail() {
         lastCost: "",
         leadTime: String(vendor?.lead_time_days ?? 0),
         minOrderQty: "1",
+        makePreferred: true,
       });
       setLinkOpen(true);
     } catch (error) {
@@ -563,31 +668,48 @@ export default function VendorDetail() {
       const lastCost = linkForm.lastCost ? Number(linkForm.lastCost) : selected?.cost_price ?? 0;
 
       await runTransaction(async (tx) => {
-        await tx.query(
-          `INSERT INTO vendor_products
-             (vendor_id, product_id, vendor_sku, last_cost, lead_time_days, min_order_qty)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (vendor_id, product_id) DO UPDATE SET
-             vendor_sku = excluded.vendor_sku,
-             last_cost = excluded.last_cost,
-             lead_time_days = excluded.lead_time_days,
-             min_order_qty = excluded.min_order_qty`,
-          [
-            id,
-            linkForm.productId,
-            linkForm.vendorSku.trim() || null,
-            lastCost,
-            Number(linkForm.leadTime) || 0,
-            Number(linkForm.minOrderQty) || 1,
-          ]
-        );
+        await upsertVendorCatalogLink(tx, {
+          vendorId: id,
+          productId: linkForm.productId,
+          vendorSku: linkForm.vendorSku.trim() || null,
+          lastCost,
+          leadTimeDays: Number(linkForm.leadTime) || 0,
+          minOrderQty: Number(linkForm.minOrderQty) || 1,
+          isPreferred: linkForm.makePreferred,
+        });
 
-        // A product with no main vendor adopts this one, so the product list and
-        // the procurement filter agree from now on.
+        /*
+         * "Vendor utama" is two rows kept in step: the catalogue flag the PO
+         * auto-fill reads, and `products.supplier_id` the product list shows. Only
+         * one vendor may hold the flag, so the shared writer clears the others —
+         * flipping a single row used to leave a product preferred by two vendors.
+         */
+        if (linkForm.makePreferred) {
+          await markPreferredVendor(tx, { vendorId: id, productId: linkForm.productId });
+        }
+        // A product with no main vendor adopts this one either way, so the product
+        // list and the procurement filter agree from now on.
         await tx.query(
           `UPDATE products SET supplier_id = $1 WHERE id = $2 AND supplier_id IS NULL`,
           [id, linkForm.productId]
         );
+
+        // The cost typed here is the price this vendor quoted for the base pack.
+        // It fills a gap in the agreed price list but never replaces a number the
+        // owner negotiated on the Harga Beli tab.
+        if (selected?.variant_id && lastCost > 0) {
+          await upsertVendorPrice(tx, {
+            vendorId: id,
+            variantId: selected.variant_id,
+            unitName: selected.unit_name ?? "Pcs",
+            conversionFactor: Number(selected.conversion_factor ?? 1) || 1,
+            buyPrice: lastCost,
+            minQty: Number(linkForm.minOrderQty) || 1,
+            userId: user?.id ?? null,
+            mode: "gap-only",
+            source: "katalog vendor",
+          });
+        }
 
         await logAuditTx(tx, {
           action: "update",
@@ -631,17 +753,37 @@ export default function VendorDetail() {
     }
   };
 
+  /**
+   * Star/unstar this vendor for one product.
+   *
+   * Turning it on goes through `markPreferredVendor`, which moves the flag rather
+   * than adding a second one; the PO auto-fill only works while at most one
+   * vendor per product claims it.
+   */
   const handleTogglePreferred = async (product: LinkedProduct) => {
+    if (!id) return;
     if (!product.link_id) {
       toast.info("Simpan produk sebagai katalog vendor terlebih dahulu");
       return;
     }
+    if (!canEditPrices) {
+      toast.error("Tidak berwenang mengelola template vendor.");
+      return;
+    }
     try {
-      await query(
-        `UPDATE vendor_products SET is_preferred = CASE WHEN is_preferred = 1 THEN 0 ELSE 1 END
-          WHERE id = $1`,
-        [product.link_id]
-      );
+      if (Number(product.is_preferred ?? 0) === 1) {
+        await query(`UPDATE vendor_products SET is_preferred = 0 WHERE id = $1`, [
+          product.link_id,
+        ]);
+      } else {
+        await runTransaction(async (tx) => {
+          await markPreferredVendor(tx, { vendorId: id, productId: product.id });
+          await tx.query(
+            `UPDATE products SET supplier_id = $1 WHERE id = $2 AND supplier_id IS NULL`,
+            [id, product.id]
+          );
+        });
+      }
       loadVendor();
     } catch (error) {
       console.error("Failed to toggle preferred vendor product:", error);
@@ -1125,9 +1267,19 @@ export default function VendorDetail() {
                     SKU vendor, harga modal terakhir, lead time, dan minimum order.
                   </p>
                 </div>
-                <Button size="sm" onClick={openLinkDialog} disabled={!canEditPrices}>
-                  <Link2 className="mr-2 h-4 w-4" /> Hubungkan Produk
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="gap-2"
+                    onClick={() => void openAddProduct()}
+                  >
+                    <Plus className="h-4 w-4" /> Tambah Produk Baru
+                  </Button>
+                  <Button size="sm" onClick={openLinkDialog} disabled={!canEditPrices}>
+                    <Link2 className="mr-2 h-4 w-4" /> Hubungkan Produk
+                  </Button>
+                </div>
               </div>
               <Table>
                 <TableHeader>
@@ -1599,6 +1751,23 @@ export default function VendorDetail() {
         onSaved={() => loadVendor()}
       />
 
+      {/*
+       * The product form, reused rather than re-invented: the same template the
+       * inventory screen uses, prefilled with this vendor, so a product typed
+       * here lands in the catalogue and the price list in one save.
+       */}
+      <AddProductModal
+        open={addProductOpen}
+        onOpenChange={setAddProductOpen}
+        onAdd={handleAddProduct}
+        mode="add"
+        categories={categories}
+        warehouses={warehouses}
+        canManageVariants={can("manage_variants")}
+        canManageSellPrices={can("manage_sell_prices")}
+        defaultSupplier={vendor ? { id: vendor.id, name: vendor.name } : null}
+      />
+
       <Dialog open={linkOpen} onOpenChange={setLinkOpen}>
         <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
@@ -1676,6 +1845,23 @@ export default function VendorDetail() {
                   onChange={(e) => setLinkForm({ ...linkForm, minOrderQty: e.target.value })}
                 />
               </div>
+            </div>
+
+            <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+              <div>
+                <Label htmlFor="vendor-link-preferred">Jadikan vendor utama</Label>
+                <p className="text-xs text-muted-foreground mt-1">
+                  PO untuk produk ini otomatis dibuka dengan vendor ini. Hanya satu
+                  vendor yang bisa memegang status tersebut per produk.
+                </p>
+              </div>
+              <Switch
+                id="vendor-link-preferred"
+                checked={linkForm.makePreferred}
+                onCheckedChange={(checked) =>
+                  setLinkForm((prev) => ({ ...prev, makePreferred: checked }))
+                }
+              />
             </div>
           </div>
           <DialogFooter>
