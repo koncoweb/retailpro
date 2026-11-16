@@ -3,6 +3,25 @@
 Semua perubahan penting pada RetailPro didokumentasikan di sini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [uncommitted] — 17 November 2026 — Verifikasi produksi satu perintah (`npm run verify:prod`)
+
+Runbook §7 `docs/deployment.md` yang tadinya enam perintah `curl` di sana sekarang dijalankan satu skrip terhadap deployment yang hidup. Lahir dari kekeliruan saat verifikasi pasca-push: sign-in menjawab **403** dan menyeret lima pemeriksaan lain ikut gagal, terbaca seperti "build CI produksi rusak".
+
+### Added
+
+- **`scripts/verify-production.mjs`** + `npm run verify:prod` — tujuh pemeriksaan tetap (health + control DB, bootstrap tanpa sesi harus **401 bukan 500**, marketplace, katalog, sign-in, token tenant termasuk cek `https`/panjang token/TTL, grants per peran) ditambah satu pemeriksaan per kunci yang lewat `--require-perm`. Satu baris `ok`/`FAIL` per pemeriksaan **beserta detailnya**, karena "OK" tanpa angka yang diukur tidak bisa dibedakan dari pemeriksaan yang tidak membaca apa pun.
+- **Tiga jalur keluar**: `0` semua lolos · `1` ada yang gagal (namanya disebut) · **`2` pemeriksaan sesi dilewati** karena `DEMO_PASSWORD` tidak dipasang — hijau tidak boleh berarti "belum dicek". `--base <url>` mengarahkan ke deployment tertentu (mis. URL `dpl_…` hasil build GitHub, bukan alias); `--require-perm k1,k2` menampung kunci izin rilis berjalan sehingga skripnya tidak perlu diedit tiap rilis.
+- **KS-50 + pelajaran umum no. 17** di `docs/kendala-solusi.md`, dan §7.0 di `docs/deployment.md`.
+
+### Fixed
+
+- **Bug di skripnya sendiri, ketahuan dari outputnya sendiri**: `boot.status` dibaca padahal helper mengembalikan `{ res, body }` → tampil `HTTP undefined` di tengah payload yang sempurna. Tepat karena baris cek selalu mencetak detailnya, kekeliruan itu terlihat alih-alih lolos sebagai "ok".
+- **Penyebab 403 dijawab dengan eksperimen, bukan simpulan**: Better Auth memeriksa `Origin` hanya pada request yang membawa `Sec-Fetch-Mode`; `fetch` Node mengirim `Sec-Fetch-Mode: cors` tanpa `Origin`, `curl` tidak mengirim keduanya. Itu berarti **langkah 4 `curl` di runbook sudah benar** dan justru tidak boleh "diperbaiki" — hipotesis pertama saya salah dan hampir masuk ke dokumen.
+
+### Catatan
+
+- Kredensial hanya dibaca dari environment; nilai demo tetap tinggal di blok credentials `e2e.config.ts` dan tidak diduplikasi ke berkas baru.
+
 ## [dabf287] — 17 November 2026 — Vendor–Produk Terintegrasi (satu penulis, vendor otomatis di PO)
 
 Input vendor (form **atau** sheet) sekaligus bisa input produk, dan PO memilih vendor sendiri begitu produk dipilih. Skema **v10** — **tabel dan kolom tidak ada yang baru**, migrasi `010` hanya menambah dua indeks. 14 berkas diubah (±1.054 baris ditambah, 634 dihapus) + 11 berkas baru (±4.163 baris, termasuk 1.449 baris test).

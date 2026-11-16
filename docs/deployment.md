@@ -247,6 +247,31 @@ permintaan jaringan hanya ke `retailpro-thalia.vercel.app`. Login di back office
 dashboard kosong sementara katalog benar, yang salah biasanya `BETTER_AUTH_URL` atau sesi, bukan
 database.
 
+### 7.0 Verifikasi satu perintah (skrip) untuk langkah 1, 1b, 2–5 di atas
+
+`scripts/verify-production.mjs` menjalankan urutan yang sama terhadap deployment yang hidup —
+tujuh pemeriksaan tetap ditambah kunci izin dari `--require-perm` — dan mencetak satu baris per
+pemeriksaan (dengan detailnya, supaya "ok" tidak hampa). Langkah 5 diuji lewat
+`/api/tenant/bootstrap` (muatannya sama: `dbUrl`, `token`, `expiresAt`) sehingga satu sesi cukup
+untuk keduanya:
+
+```powershell
+$env:DEMO_PASSWORD = '…'   # nilai demo ada di blok credentials e2e.config.ts; skrip tidak menyimpannya
+npm run verify:prod -- --require-perm void_transaction,manage_vendor_prices,manage_variants
+```
+
+Keluar **0** = semua pemeriksaan lolos; **1** = ada yang gagal (namanya disebut); **2** = berjalan
+tapi pemeriksaan sesi **dilewati** karena `DEMO_PASSWORD` tidak dipasang — keluar 2 bukan deploy
+sehat, hanya verifikasi tidak lengkap. `--base https://<url-deployment>` mengarahkan pemeriksaan ke
+deployment tertentu (mis. URL `dpl_…` hasil build GitHub) alih-alih alias; `--require-perm` adalah
+tempat kunci izin rilis berjalan diperiksa, sehingga skripnya tidak perlu diedit tiap rilis.
+
+Catatan header untuk verifikasi berbasis skrip: Better Auth menolak POST yang **berpola browser**
+— membawa `Sec-Fetch-Mode` — tanpa `Origin` yang cocok, dengan `403 MISSING_OR_NULL_ORIGIN`.
+`fetch` global Node selalu mengirim `Sec-Fetch-Mode: cors` (dan tidak mengirim `Origin`), jadi
+skrip wajib mengirim `origin`/`referer` = URL target; `curl` polos tidak mengirim keduanya sehingga
+**langkah 4 di atas benar apa adanya** dan tidak perlu ditambah header. Lihat KS-50.
+
 ### 7.1 Uji UI otomatis (e2e) terhadap deployment
 
 Smoke test `tests/login.e2e.ts` hanya membaca (membuka `/login`, memeriksa field dan tombol), jadi

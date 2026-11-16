@@ -66,6 +66,7 @@
 | KS-47 | 2026-11-16 | Tabel peran×menu di dokumen ditulis tangan → kehilangan `purchasing`, dan satu kunci izin ternyata tidak ditegakkan kode | Selesai (tabel dirender dari kode) |
 | KS-48 | 2026-11-16 | Dua dokumen spec masih mengklaim "belum ada kode yang ditulis" padahal fiturnya lama terpasang — plus satu anchor internal mati | Selesai (header status + catatan titik waktu) |
 | KS-49 | 2026-11-17 | Dokumen tidak punya penjaga: tabel markdown terbelah dan angka lama selamat dari re-sync, sementara auditor SQL membaca komentar sebagai kode | Selesai (`npm run docs:check` + `commentRanges()`, keduanya dengan positive control) |
+| KS-50 | 2026-11-17 | Verifikasi produksi pasca-deploy melaporkan 403 pada sign-in lalu 5 kegagalan turunan yang terbaca seperti build CI rusak — padahal browser dan `curl` login dengan normal | Selesai (`scripts/verify-production.mjs` + `npm run verify:prod`, dengan jalur gagal dan jalur skip) |
 
 ---
 
@@ -655,6 +656,18 @@
 
 ---
 
+## KS-50 · 2026-11-17 · 403 dari skrip verifikasi nyaris dilaporkan sebagai deploy rusak — dan hampir memperbaiki runbook yang benar — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Setelah push ke `main` (build GitHub-integration menggantikan deploy manual di alias), pemeriksaan produksi dijalankan lewat skrip Node. Langkah health/401/marketplace/catalog lolos, lalu `POST /api/auth/sign-in/email` menjawab **403** dan semuanya ikut jatuh: tanpa cookie sesi maka `/api/tenant/bootstrap` → 401, `grants` kosong, `dbUrl` kosong. Keluarannya **6 baris kegagalan** yang terbaca seperti "build CI produksi rusak total", padahal dua klien lain — `Invoke-WebRequest` dan `curl` — dengan kredensial yang sama menjawab 200 pada hari yang sama |
+| **Akar masalah** | Better Auth memeriksa `Origin` hanya pada request yang **berpola browser**. Header yang menjadi pemicunya adalah `Sec-Fetch-Mode`: request yang membawanya tanpa `Origin` yang cocok ditolak dengan `{"code":"MISSING_OR_NULL_ORIGIN"}`. `fetch` global Node (undici) selalu mengirim `Sec-Fetch-Mode: cors` dan **tidak** mengirim `Origin`, sedangkan `curl` tidak mengirim keduanya — jadi klien yang satu kena dan yang lain lolos pada request yang secara byte identik. Kegagalannya lalu **berantai**: satu 403 di hulu menjadi enam "temuan" di hilir, karena setiap pemeriksaan berikutnya ikut membaca sesi yang tidak pernah ada. Kesimpulan pertama saya ("Better Auth menolak POST tanpa `Origin`") salah dan nyaris masuk ke runbook sebagai "perbaikan" untuk langkah 4 `curl` — yang justru terbukti benar |
+| **Solusi** | Diagnosis dilakukan dengan A/B pada **satu** request, satu header sekali ubah, dan selalu membaca body error (field `code` menyebut penyebabnya; status saja tidak cukup): Node fetch tanpa `origin` → 403; Node fetch + `origin` = URL target → 200; `curl` polos → 200; `curl` + `-H "sec-fetch-mode: cors"` → **403** (inilah yang membantah hipotesis pertama). Temuannya dipromosikan dari skrip sekali-pakai di `.data/` menjadi alat tetap: `scripts/verify-production.mjs` + `npm run verify:prod` menjalankan §7 dengan **satu assert per pemeriksaan** yang selalu mencetak detailnya, `--base` untuk mengarahkan ke URL deployment tertentu (mis. `dpl_…`, bukan alias), `--require-perm k1,k2` sebagai tempat kunci izin rilis berjalan tanpa perlu mengedit skripnya, dan **exit 2** bila pemeriksaan sesi dilewati karena `DEMO_PASSWORD` tidak dipasang — kredensial dibaca dari environment saja, nilainya tetap tinggal di blok credentials `e2e.config.ts` dan tidak diduplikasi ke berkas baru |
+| **Bukti** | Tiga jalur dijalankan terhadap produksi dan ketiganya terbukti: **pass** → `RESULT 10 passed, 0 failed`, keluar 0 (`tenant=thalia`, `tokenChars=371`, `ttlMin=60`, `9 role(s): tenant_owner=31, cashier=2, warehouse=8, purchasing=6, …`); **negative control** → `--require-perm izin_yangtidak_ada` menghasilkan `FAIL owner grant …: value=undefined`, keluar 1 dengan nama pemeriksaan yang gagal disebut (gerbang yang tidak bisa gagal tidak dihitung — pelajaran no. 16); **skip** → tanpa `DEMO_PASSWORD`: `4 passed, 0 failed, 3 skipped (incomplete run)`, keluar 2. Bukti header dari echo service: Node mengirim `Sec-Fetch-Mode: cors` tanpa `Origin`. Skrip ini juga **menemukan bug di dirinya sendiri** pada lintasan pertama — `boot.status` seharusnya `boot.res.status`, tampil sebagai `HTTP undefined` padahal payload-nya sempurna — dan itu persis alasan setiap baris `check()` mencetak detail, bukan sekadar ok/gagal. `node --check scripts/verify-production.mjs` bersih; `package.json` menambah `verify:prod` di samping `docs:check` |
+| **Pelajaran** | (a) Kegagalan berantai dari satu sebab hulu dihitung sebagai **satu** temuan: sebelum mempercayai enam kegagalan, perbaiki yang paling awal dan lihat berapa yang ikut hilang. (b) 403/401 dari skrip adalah **klaim tentang skrip** sampai bisa direproduksi di jalur nyata (browser atau klien kedua) — pelajaran no. 10 mengatakan "uji satu request", tapi tidak mengatakan bahwa request yang gagal dari satu klien berarti apa pun. (c) Jangan menulis temuan ke runbook dari simpulan: satu eksperimen berbiaya satu header murah, dokumentasi yang salah mahal dan akan diulang orang lain. (d) Alat verifikasi wajib punya **jalur gagal** dan **jalur skip** yang terlihat (exit 1 vs exit 2), kalau tidak "hijau" berarti tiga hal berbeda |
+
+---
+
 ## Pelajaran umum (ringkas)
 
 1. **Isolasi harus fisik.** Pemfilteran data di sisi klien bukan keamanan.
@@ -704,3 +717,8 @@
     masalah) dan mencetak jumlah baris/anchor yang benar-benar diperiksa. Konsekuensinya serupa untuk
     skrip sekali-pakai: begitu sebuah pemeriksaan di `.data/` menemukan cacat nyata, angkat ke
     `scripts/` + npm script — kalau tidak, cacat berikutnya ditemukan lagi oleh kebetulan.
+17. **Gagal dari satu klien bukan kegagalan sistem.** Sebelum menyatakan deploy rusak (atau
+    "memperbaiki" runbook) karena sebuah probe mengembalikan 401/403, reproduksikan kegagalan itu pada
+    satu request dengan header diubah satu per satu dan baca body error-nya; kalau browser dan klien
+    lain lolos, yang salah adalah probe-nya. Rantai kegagalan (satu 403 → enam temuan) dihitung satu
+    kali, bukan enam — lihat KS-50.

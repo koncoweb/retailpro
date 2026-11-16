@@ -101,6 +101,7 @@ Turso secret. Never import anything from `server/` in `src/`.
 | `npm run schema:apply-all` | Dry-run drift report per tenant; `--apply` runs pending `db/migrations/*.sql` then `db/schema/tenant.sql` (`--only <slug>` for one tenant) |
 | `npm run audit:sql` | Replay every SQL literal against the tenant schema; literals inside comments are skipped, `npm run audit:sql -- --show-comments` lists what was dropped |
 | `npm run docs:check` | Documentation gate: markdown table shape, one schema version in its three places, README doc index covers `docs/`, cross-doc `§N` anchors resolve. It prints its own coverage and ships with a positive control — `node scripts/check-docs.mjs --root scripts/__fixtures__/docs-check` must report exactly 8 problems |
+| `npm run verify:prod` | Runs `docs/deployment.md` §7 against a live deployment: health, bootstrap 401-not-500, marketplace, catalog, sign-in, tenant token TTL, per-role grants. Needs `DEMO_PASSWORD` (value lives in the `e2e.config.ts` credentials block); `-- --require-perm k1,k2` asserts the keys this release added; exit 2 means the session checks were skipped, not that production is healthy |
 | `npm run demo:tenant` | Seed the demo tenant (see below) |
 | `npm run demo:cloud` | Create/reseed the demo tenant in Turso cloud; `-- --write-env` also rewrites `.env` |
 | `cd tokoonline && npm run dev` | Storefront for the online branch on port 8082 |
