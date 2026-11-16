@@ -3,7 +3,7 @@
 Semua perubahan penting pada RetailPro didokumentasikan di sini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [uncommitted] — 17 November 2026 — Verifikasi produksi satu perintah (`npm run verify:prod`)
+## [1de90d2] — 17 November 2026 — Verifikasi produksi satu perintah (`npm run verify:prod`)
 
 Runbook §7 `docs/deployment.md` yang tadinya enam perintah `curl` di sana sekarang dijalankan satu skrip terhadap deployment yang hidup. Lahir dari kekeliruan saat verifikasi pasca-push: sign-in menjawab **403** dan menyeret lima pemeriksaan lain ikut gagal, terbaca seperti "build CI produksi rusak".
 
