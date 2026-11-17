@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `requirement.md` |
-| Terakhir diperbarui | **2026-11-17** |
+| Terakhir diperbarui | **2026-11-18** |
 | Sifat dokumen | Rencana + catatan implementasi. Bila isi dokumen berbeda dengan kode, **kode yang menang** |
 | Rujukan detail | [`docs/arsitektur.md`](docs/arsitektur.md), [`docs/backend.md`](docs/backend.md), [`docs/deployment.md`](docs/deployment.md), [`docs/fitur-tenant.md`](docs/fitur-tenant.md), [`docs/fitur-platform.md`](docs/fitur-platform.md), [`docs/frontend.md`](docs/frontend.md), [`docs/kendala-solusi.md`](docs/kendala-solusi.md) |
 
@@ -28,6 +28,8 @@
 | 2026-11-16 | **Void transaksi di Riwayat Kasir — skema v9**: dua bentuk, **per item** dan **per bon**, ditegakkan lewat izin `void_transaction` yang selama ini hanya dideklarasikan. Baris tidak pernah dihapus — ditandai `voided`/`status='void'`, stok kembali ke **batch asal baris**, total diturunkan sebesar subtotal baris (diskon bon tetap), jejak di `audit_logs`, dan nota mencetak baris **dicoret** + banner `TRANSAKSI DIBATALKAN`. Seluruh agregasi uang kini memfilter `status = 'completed'` supaya akuntansi selaras. Batas: hanya shift `open`, kecuali owner-tier. Lihat `docs/fitur-tenant.md` §2.2.2 |
 | 2026-11-17 | **Vendor dan produk menjadi satu sistem — skema v10 (indeks saja, tanpa tabel/kolom baru)**: `vendor_products` dan `vendor_price_list` hanya boleh ditulis satu modul (`src/lib/vendor-catalog.ts`), sehingga form produk, impor, dialog hubungkan, penerimaan barang, dan seeder demo tidak lagi punya versinya masing-masing dan **template PO benar-benar terisi**. Impor **satu sheet** vendor+produk (18 kolom; satu baris = vendor × produk × pecahan) dengan kebijakan *master aditif, harga boleh diperbarui*; produk boleh ditambah langsung dari layar vendor (simpan vendor melempar ke detail dengan form yang sudah terisi); dan **PO memilih vendor otomatis** saat produk dipilih (vendor tercih → vendor utama → vendor tunggal aktif) dengan konfirmasi AlertDialog sebelum membuang baris vendor lain. Izin `manage_variants` + `manage_vendor_prices` ditegakkan di lib, bukan di UI saja. Lihat `docs/spec-vendor-produk-terintegrasi.md` |
 | 2026-11-17 | **Dokumen dan auditor ikut diberi penjaga** (refleksi pasca-rilis v10, tanpa perubahan kode aplikasi): `npm run docs:check` menolak tabel markdown yang terbelah, versi skema yang beda di antara tiga tempatnya, indeks dokumen yang bolong, dan anchor `§N` yang tidak menunjuk heading; `scripts/audit-sql.mjs` berhenti membaca SQL di dalam komentar (`commentRanges()`, `-- --show-comments` untuk mendaftarkan yang dibuang). Setiap gerbang membawa **positive control** — fixture yang wajib membuatnya gagal — karena pemeriksaan yang hanya mencetak "OK" tidak bisa dibedakan dari pemeriksaan yang tidak membaca apa pun. Lihat `docs/kendala-solusi.md` KS-49 |
+| 2026-11-17 | **Chat internal tim satu tenant — skema v11 (empat tabel sepenuhnya aditif, tanpa `ALTER`)**: DM dan channel bernama untuk percakapan owner ⇄ karyawan, dibaca lewat **polling** (daftar 10s, thread aktif 3s; tanpa server di jalur data — satu penulis `src/lib/chat.ts`, layar tiga panel `src/components/chat/`). Mention `@`orang dan `#`produk/invoice/PO/vendor disimpan sebagai teks natural + snapshot di `chat_mentions`, sehingga chip tetap terbaca setelah baris sumber berubah dan menaut langsung ke detailnya. Kunci izin baru `use_chat` (nyala bawaan untuk **semua** peran agar owner bisa menjangkau karyawannya) dan `manage_channels` (owner/admin/manager). Batas kepercayaan tercatat eksplisit: visibilitas channel/DM aturan UI, **bukan** batas keamanan (tanpa RLS). Lihat `docs/spec-chat-internal.md` |
+| 2026-11-18 | **Refleksi pasca-implementasi chat — empat temuan ditutup dengan bukti terukur, bukan dengan sleep.** Tiga di antaranya bug aplikasi: label DM selalu jatuh ke "Pesan pribadi" karena agregasi anggota terjadi di atas join yang sudah difilter pembaca (KS-51); Enter di composer bisa mengirim token mentah `#beras` sebelum pencarian mention kembali, tanpa satu baris `chat_mentions` pun (KS-52); dan `placeholderData: keepPreviousData` pada query yang di-*key* id membuat pane masih menampilkan percakapan sebelumnya sementara composer menulis ke pane itu — terbukti dari `chat_messages.conversation_id` yang menempatkan pesan di channel lain (KS-53). Yang keempat ada di struktur tesnya sendiri: identifier fixture memakai `Date.now()` di scope modul, sehingga instans ulang mencari channel buatan instans lain (KS-54). Yang tidak berubah: keputusan desain di §0–§8 spec tetap beku, koreksinya masuk sebagai addendum bertanggal. Run bersih: `tests/chat.e2e.ts` 8 kasus 170,49s, Vitest 31 berkas / 441 tes. Lihat `docs/kendala-solusi.md` KS-51 s.d. KS-54 |
 
 ---
 
@@ -51,7 +53,7 @@ Setiap tenant mendapat **database Turso/libSQL sendiri di cloud**.
 *   **Grup Turso**: setiap database wajib berada di grup yang sudah ada. Organisasi baru hanya punya grup lokasi otomatis, jadi `TURSO_GROUP` diisi `ap-southeast-2` (bukan `retailpro` seperti contoh lama). `listGroups()` tersedia sebagai pemeriksaan sebelum provisioning.
 *   **Akses browser**: aplikasi hanya memegang token berumur `TENANT_TOKEN_TTL` (bawaan 60 menit) yang berlaku untuk **satu** database tenant. Token organisasi Turso tidak pernah sampai ke browser.
 *   **Kuota**: `TURSO_MAX_TENANT_DATABASES` (bawaan 99, mengikuti 100 database paket gratis per organisasi) → HTTP 429 bila penuh. Slug: minimal 3 karakter, unik, daftar terlarang (`www`, `api`, `admin`, …).
-*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **10**, 34 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
+*   **Skema sebagai kode**: `db/schema/tenant.sql` (baseline) + `db/migrations/NNN_*.sql` (perubahan pada tabel yang sudah ada) + penanda `schema_version` di setiap database (saat ini **11**, 38 tabel). `npm run schema:apply-all` menerapkannya ke seluruh tenant.
 *   **Konsekuensi yang harus diingat**: tidak ada query lintas tenant; laporan lintas cabang tetap butuh filter `branch_id` eksplisit; setiap database adalah satu unit backup/restore dan satu unit biaya.
 
 **Ditolak — Shared Database, Shared Schema + RLS.** Rencana awal memakai satu database PostgreSQL (Neon) dengan kolom `tenant_id` di setiap tabel dan Row Level Security yang identitasnya diatur lewat session variable. Dibatalkan 2026-10-27 karena isolasinya bergantung pada klien yang mengaku sebagai tenant tertentu (`set_config` dijalankan aplikasi), kredensial database ikut ke bundle browser, dan setiap query harus ingat `WHERE tenant_id`. Pelajaran: isolasi yang ditentukan klien adalah janji, bukan batas. Lihat `docs/kendala-solusi.md` KS-01 dan `docs/arsitektur.md` ADR-1.
@@ -124,7 +126,7 @@ Nama `admin` masih diterima oleh guard lama sebagai alias; jangan dipakai untuk 
 
 ## 4. Struktur Database (Schema Design)
 
-Kanónik: `db/schema/tenant.sql` (versi **10**, **34 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
+Kanonik: `db/schema/tenant.sql` (versi **11**, **38 tabel**) + `db/migrations/`. Detail kolom lengkap ada di `docs/backend.md` bagian 5. Konvensi: id `TEXT` UUID, uang `INTEGER` (IDR tanpa sen), kuantitas `REAL`, timestamp `TEXT` ISO-8601 UTC, boolean `INTEGER`, JSON `TEXT`.
 
 ### A. Core / Identity & Settings
 
@@ -167,6 +169,15 @@ Kanónik: `db/schema/tenant.sql` (versi **10**, **34 tabel**) + `db/migrations/`
 *   **`transaction_items`**: `quantity` dalam **satuan jual**, `unit_name`, `conversion_factor`, `unit_price`, `cost_price`, `subtotal`, `batch_id` (batch yang dipakai). Void (v9) menambah `voided` (0/1), `void_reason`, `voided_by`, `voided_at`.
 *   **`expenses`**: sumber tunggal Hutang/AP, Cashflow, dan Jurnal (termasuk penerimaan PO yang belum lunas). Tabel `payables` masih ada tetapi belum dibaca UI mana pun (KS-19).
 *   **Piutang/AR** = `transactions` dengan `total_amount > amount_paid`.
+
+### E. Kolaborasi (v11)
+
+*   **`chat_conversations`**: `kind` (`channel`/`dm`), `name` (label channel; partial `UNIQUE(name) WHERE kind='channel'`), `topic`, `is_private`, `archived`, `created_by`, `dm_key` (kanonik `'<a>|<b>'`, partial `UNIQUE(dm_key)` — dua orang hanya bisa punya satu DM), preview denormalized `last_message_at`/`last_message_sender_id`/`last_message_preview`. Tidak ada `tenant_id` (satu database satu tenant).
+*   **`chat_participants`**: PK `(conversation_id, user_id)` + `member_role` (`owner`/`member`), `joined_at`. Menandai siapa yang boleh menamai/arsipkan channel; **tidak** memberi hak akses data.
+*   **`chat_messages`**: `conversation_id`, `sender_id`, `body` (teks natural — mention disimpan apa adanya supaya tetap terindeks penuh, bukan id tersimpan), `edited_at`, `deleted` (soft delete, baris tidak pernah dihapus), `system` (baris "channel dibuat"/"X bergabung", dirender inline), `created_at`.
+*   **`chat_mentions`**: snapshot per mention (`message_id`, `kind` `user`/`product`/`invoice`/`po`/`vendor`, `entity_id`, `label`). Tujuannya supaya chip tetap terbaca setelah baris sumber berganti nama atau dihapus; **bukan** batas keamanan — tidak ada RLS dan tidak ada server di jalur data.
+
+Empat tabel ini sepenuhnya aditif: `011_chat.sql` tidak menjalankan `ALTER` pada tabel lama.
 
 ## 5. Deployment & Infrastruktur (Vercel + Turso)
 
@@ -254,7 +265,7 @@ Tidak ada `tenant_id`.
 ## 8. Checklist Implementasi (MVP Phase 1)
 
 - [x] Setup project (Vite + React + TS + Tailwind + shadcn/ui)
-- [x] Database Turso: satu database per tenant, skema v10 (34 tabel), provisioning otomatis
+- [x] Database Turso: satu database per tenant, skema v11 (38 tabel), provisioning otomatis
 - [x] Autentikasi Better Auth + 8 peran, guard route gagal-tertutup
 - [x] CRUD master data (karyawan, cabang, gudang, produk, vendor, pelanggan)
 - [x] Modul vendor: master vendor, katalog vendor↔produk, PO per vendor, hutang & buku pembayaran

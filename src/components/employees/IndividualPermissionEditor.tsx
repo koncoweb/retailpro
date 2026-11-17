@@ -51,6 +51,7 @@ const GROUP_TITLES: Record<PermissionGroupName, string> = {
   employees: "Karyawan",
   reports: "Laporan & Keuangan",
   settings: "Pengaturan & Akses",
+  collaboration: "Kolaborasi & Chat",
 };
 
 /** Below the `md` breakpoint the editor is a full-height sheet, not a dialog. */

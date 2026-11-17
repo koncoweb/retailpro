@@ -54,6 +54,14 @@ ESC/POS byte stream for thermal printers over WebUSB/Web Bluetooth or a download
 `.prn` — for both receipts and the Z-report. `printDocument()` never throws, so a
 missing printer can't fail a committed sale.
 
+Owner and employees talk inside the app. Internal chat (schema v11, `src/lib/chat.ts`)
+is DMs and named channels over the tenant's own database — no server in the data
+path, so reads poll (3s open thread, 10s list) and writes are optimistic. `@`person
+and `#`product/invoice/PO/vendor mentions are stored as readable text plus a
+structured snapshot in `chat_mentions`, and entity chips deep-link to the record.
+Channel visibility is a UI product rule, not a security boundary — there is no
+row-level security anywhere.
+
 ## Requirements
 
 - Node.js >= 20
@@ -93,7 +101,7 @@ Turso secret. Never import anything from `server/` in `src/`.
 | `npm run dev` | Vite dev server (SPA) |
 | `npm run dev:api` | Local auth/provisioning API on port 3000 |
 | `npm run build` | Production build |
-| `npm test` | Vitest — 30 files / 419 tests (schema + migrations, seed, demo tenant, SQL translation, date range, inventory/stock-issue/stock-movement, permissions & roles, variants/units/pricing, procurement & goods receipt, vendor catalogue + vendor/product import, vendors, branch orders, bulk import, password, geolocation/face, shift attendance, the print model + both renderers, void) |
+| `npm test` | Vitest — 31 files / 441 tests (schema + migrations incl. the chat tables, seed, demo tenant, SQL translation, date range, inventory/stock-issue/stock-movement, permissions & roles, the chat mention codec, variants/units/pricing, procurement & goods receipt, vendor catalogue + vendor/product import, vendors, branch orders, bulk import, password, geolocation/face, shift attendance, the print model + both renderers, void) |
 | `npm run typecheck` | TypeScript, app project |
 | `npm run lint` | ESLint |
 | `npm run test:e2e` | End-to-end tests (tester.army), see below |
@@ -276,7 +284,7 @@ requests, rollback, release checklist): **[docs/deployment.md](docs/deployment.m
 ## Repository layout
 
 ```
-db/schema/tenant.sql     one-database-per-tenant schema (version 10, 34 tables)
+db/schema/tenant.sql     one-database-per-tenant schema (version 11, 38 tables)
 db/migrations/           stepwise migrations for databases already on an older
                          schema version, applied by `npm run schema:apply-all`
 db/schema/seed.sql       provisioning seed with {{TOKEN}} placeholders
@@ -298,19 +306,20 @@ are append-only logs, so read the newest rows first.
 
 | Document | Contents | Updated |
 | --- | --- | --- |
-| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows (incl. printing, void and the vendor catalogue), isolation, decisions | 2026-11-17 |
-| [docs/deployment.md](docs/deployment.md) | Deployment runbook: Turso cloud setup, both Vercel projects, env per project, schema migration rollout, `vercel.json` contract, verification, rollback | 2026-11-17 |
-| [docs/backend.md](docs/backend.md) | Backend and database: API surface, server modules, full 34-table schema (v10), the single vendor-catalogue writer and the domain writer modules, env vars, invariants, schema change history, deploy constraints on the code | 2026-11-17 |
-| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and allowed roles, data patterns, formatting, printing & void UI, vendor/product entry and import, the marketplace app, limits | 2026-11-17 |
-| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-11-17 |
+| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows (incl. printing, void, the vendor catalogue and the chat read/write path), isolation, decisions | 2026-11-18 |
+| [docs/deployment.md](docs/deployment.md) | Deployment runbook: Turso cloud setup, both Vercel projects, env per project, schema migration rollout, `vercel.json` contract, verification, rollback | 2026-11-18 |
+| [docs/backend.md](docs/backend.md) | Backend and database: API surface, server modules, full 38-table schema (v11), the single vendor-catalogue writer and the domain writer modules, env vars, invariants, schema change history, deploy constraints on the code | 2026-11-18 |
+| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and allowed roles (incl. the internal chat screen), data patterns, formatting, printing & void UI, vendor/product entry and import, the marketplace app, limits | 2026-11-18 |
+| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-11-18 |
 | [docs/fitur-platform.md](docs/fitur-platform.md) | Platform owner capabilities, gaps and roadmap, same dated log format | 2026-11-16 |
-| [docs/kendala-solusi.md](docs/kendala-solusi.md) | Problems, bugs and mismatches actually hit (KS-01…KS-49), with cause, fix, evidence and lesson | 2026-11-17 |
+| [docs/kendala-solusi.md](docs/kendala-solusi.md) | Problems, bugs and mismatches actually hit (KS-01…KS-54), with cause, fix, evidence and lesson | 2026-11-18 |
 | [docs/spec-purchase-order.md](docs/spec-purchase-order.md) | Design record for the PO lifecycle: four documents, state machine, goods receipt, accounting split — **shipped** as migration `005` | 2026-10-30, status 2026-11-17 |
 | [docs/spec-varian-harga-vendor.md](docs/spec-varian-harga-vendor.md) | Design record for variants, per-pack buy prices and the vendor price list as PO template; §16 lists what actually landed — **shipped** as migration `006` | 2026-10-31, status 2026-11-17 |
 | [docs/spec-vendor-produk-terintegrasi.md](docs/spec-vendor-produk-terintegrasi.md) | Design record for the integrated vendor↔product catalogue: where the relation leaked, the four locked decisions, the flat 18-column sheet, PO vendor auto-fill order, why no table or column changed — **shipped** as migration `010`; §9 maps every number it quotes to the command that proves it | 2026-11-17 |
+| [docs/spec-chat-internal.md](docs/spec-chat-internal.md) | Design record for per-tenant internal team chat: DM + channels, the `@`/`#` mention codec, polling rationale, RBAC keys, and the explicit no-RLS / UI-only-visibility caveat — **shipped** as migration `011`, plus a dated post-implementation addendum for the three behaviours that only showed up when the feature was measured | 2026-11-17, addendum 2026-11-18 |
 | [docs/ringkasan-fitur-2026-11-05-06.md](docs/ringkasan-fitur-2026-11-05-06.md) | Frozen sprint summary for 5–6 November (RBAC consolidation, printing, POS/shift hardening) | 2026-11-16 |
-| [CHANGELOG.md](CHANGELOG.md) | Release notes grouped by branch/commit, newest first, with the gate results each release shipped with | 2026-11-17 |
-| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-11-17 |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes grouped by branch/commit, newest first, with the gate results each release shipped with | 2026-11-18 |
+| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-11-18 |
 
 The `spec-*.md` files are point-in-time design records: their bodies are never
 rewritten, only given a dated status note, so the reasoning behind a decision

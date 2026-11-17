@@ -52,7 +52,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(10);
+    expect(rows[0].version).toBe(11);
   });
 
   it('exposes every table the application queries', async () => {
@@ -62,6 +62,10 @@ describe('tenant.sql', () => {
       'branch_warehouses',
       'branches',
       'categories',
+      'chat_conversations',
+      'chat_mentions',
+      'chat_messages',
+      'chat_participants',
       'customers',
       'employees',
       'expenses',
@@ -110,6 +114,99 @@ describe('tenant.sql', () => {
     await run(`INSERT INTO categories (name) VALUES (?)`, ['Minuman']);
     const rows = await run<{ id: string }>(`SELECT id FROM categories WHERE name = 'Minuman'`);
     expect(rows[0].id).toMatch(UUID_RE);
+  });
+
+  it('exposes the chat indexes', async () => {
+    const rows = await run<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_chat%'`
+    );
+    const names = rows.map((r) => r.name);
+    for (const index of [
+      'idx_chat_dm_key',
+      'idx_chat_channel_name',
+      'idx_chat_part_user',
+      'idx_chat_part_conv',
+      'idx_chat_msg_conv',
+      'idx_chat_mentions_msg',
+      'idx_chat_conv_recent',
+    ]) {
+      expect(names).toContain(index);
+    }
+  });
+});
+
+describe('chat schema', () => {
+  it('defaults conversation and mention ids to a UUID v4', async () => {
+    await run(`INSERT INTO chat_conversations (kind, name) VALUES ('channel', 'uuidprobe')`);
+    const conv = await run<{ id: string }>(
+      `SELECT id FROM chat_conversations WHERE name = 'uuidprobe'`
+    );
+    expect(conv[0].id).toMatch(UUID_RE);
+
+    await run(
+      `INSERT INTO chat_mentions (message_id, kind, entity_id, label) VALUES ('m-uuid', 'user', 'u1', '@Budi')`
+    );
+    const mention = await run<{ id: string }>(
+      `SELECT id FROM chat_mentions WHERE message_id = 'm-uuid'`
+    );
+    expect(mention[0].id).toMatch(UUID_RE);
+  });
+
+  it('enforces one row per channel name via the partial unique index', async () => {
+    await run(`INSERT INTO chat_conversations (kind, name) VALUES ('channel', 'ops')`);
+    await expect(
+      run(`INSERT INTO chat_conversations (kind, name) VALUES ('channel', 'ops')`)
+    ).rejects.toThrow();
+  });
+
+  it('collapses concurrent DMs on the canonical dm_key', async () => {
+    await run(`INSERT INTO chat_conversations (kind, dm_key) VALUES ('dm', 'user-a|user-b')`);
+    await expect(
+      run(`INSERT INTO chat_conversations (kind, dm_key) VALUES ('dm', 'user-a|user-b')`)
+    ).rejects.toThrow();
+  });
+
+  it('lets channel rows share a NULL dm_key without colliding', async () => {
+    await run(`INSERT INTO chat_conversations (kind, name) VALUES ('channel', 'kopi')`);
+    await run(`INSERT INTO chat_conversations (kind, name) VALUES ('channel', 'gudang')`);
+    const rows = await run<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM chat_conversations WHERE dm_key IS NULL AND kind = 'channel'`
+    );
+    expect(rows[0].n).toBeGreaterThanOrEqual(2);
+  });
+
+  it("reads a conversation's messages newest-first", async () => {
+    const convId = 'chat-order-conv';
+    await run(
+      `INSERT INTO chat_conversations (id, kind, name) VALUES ($1, 'channel', 'chat-order')`,
+      [convId]
+    );
+    await run(
+      `INSERT INTO chat_messages (conversation_id, sender_id, body, created_at)
+       VALUES ($1, 'u1', 'satu', '2025-01-01T00:00:00.000Z')`,
+      [convId]
+    );
+    await run(
+      `INSERT INTO chat_messages (conversation_id, sender_id, body, created_at)
+       VALUES ($1, 'u1', 'dua', '2025-01-02T00:00:00.000Z')`,
+      [convId]
+    );
+    const newestFirst = await run<{ body: string }>(
+      `SELECT body FROM chat_messages WHERE conversation_id = $1
+        ORDER BY created_at DESC, id DESC LIMIT 10`,
+      [convId]
+    );
+    expect(newestFirst.map((r) => r.body)).toEqual(['dua', 'satu']);
+  });
+
+  it("defaults a participant to the 'member' role", async () => {
+    await run(
+      `INSERT INTO chat_participants (conversation_id, user_id) VALUES ('chat-order-conv', 'u1')`
+    );
+    const member = await run<{ member_role: string }>(
+      `SELECT member_role FROM chat_participants WHERE conversation_id = 'chat-order-conv' AND user_id = 'u1'`
+    );
+    expect(member[0].member_role).toBe('member');
   });
 });
 
@@ -579,7 +676,7 @@ describe('seed state', () => {
     // what upgrades an existing (v7) tenant. The fleet runner discovers
     // migrations by numeric prefix and its target version must match.
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*10/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*11/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '008_attendance_geo_face.sql'),
       'utf8'

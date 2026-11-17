@@ -7,7 +7,7 @@
 | Date | 2026-10-30 |
 | Replaces | the single-step behaviour in `Inventory.tsx` → `handlePO` |
 | Reference implementation | branch replenishment: `stock_requests` → `stock_transfers` |
-| Schema impact | migration `005`, schema version 4 → **5** (today v10 / 34 tables, after `006`, `009` and `010`) |
+| Schema impact | migration `005`, schema version 4 → **5** (today v11 / 38 tables, after `006`, `009`, `010` and `011`) |
 
 > **Status note (2026-11-16).** The body below is kept as written — it is a point-in-time design
 > record. Everything it specifies is now in the codebase: `goods_receipts` / `goods_receipt_items`

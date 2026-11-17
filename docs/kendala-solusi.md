@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/kendala-solusi.md` |
-| Terakhir diperbarui | **2026-11-17** |
+| Terakhir diperbarui | **2026-11-18** |
 | Isi | Masalah, bug, error, dan ketidaksesuaian yang benar-benar dihadapi — beserta cara mengatasi dan pelajarannya |
 
 ## Cara memakai log ini
@@ -67,6 +67,10 @@
 | KS-48 | 2026-11-16 | Dua dokumen spec masih mengklaim "belum ada kode yang ditulis" padahal fiturnya lama terpasang — plus satu anchor internal mati | Selesai (header status + catatan titik waktu) |
 | KS-49 | 2026-11-17 | Dokumen tidak punya penjaga: tabel markdown terbelah dan angka lama selamat dari re-sync, sementara auditor SQL membaca komentar sebagai kode | Selesai (`npm run docs:check` + `commentRanges()`, keduanya dengan positive control) |
 | KS-50 | 2026-11-17 | Verifikasi produksi pasca-deploy melaporkan 403 pada sign-in lalu 5 kegagalan turunan yang terbaca seperti build CI rusak — padahal browser dan `curl` login dengan normal | Selesai (`scripts/verify-production.mjs` + `npm run verify:prod`, dengan jalur gagal dan jalur skip) |
+| KS-51 | 2026-11-18 | Semua DM di rail chat tampil sebagai "Pesan pribadi" + monogram, padahal kedua orangnya punya nama — agregasi peserta dilakukan di atas join yang sudah difilter pembaca | Selesai (subquery `chat_participants` di `listConversationsSql()`, dijaga `tests/chat.e2e.ts`) |
+| KS-52 | 2026-11-18 | Enter di composer dikirim **sebelum** pencarian mention selesai, sehingga token mentah `#beras` menjadi pesan dan jejak `chat_mentions` kosong | Selesai (gerbang `waitingForSuggestions` di `Composer.tsx`) |
+| KS-53 | 2026-11-18 | Pesan tertulis ke channel yang **salah** sementara header pane sudah menunjuk channel yang benar — `placeholderData: keepPreviousData` pada query yang di-*key* id | Selesai (placeholder dilepas dari `useConversation`/`useMessages`, skeleton saat identitas belum tiba) |
+| KS-54 | 2026-11-18 | Runner e2e menilai ulang modul uji lebih dari sekali per run, sehingga identifier ber-`Date.now()` membuat tiap kasus mencari channel milik instans modul lain (3 dari 8 kasus gagal tanpa sebab di kode) | Selesai (identifier konstanta + sweep per kasus; aturan didaftar di `frontend.md` §12) |
 
 ---
 
@@ -668,6 +672,54 @@
 
 ---
 
+## KS-51 · 2026-11-18 · Rail chat menamai setiap DM "Pesan pribadi" — agregasi peserta dibaca dari join yang sudah difilter — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Daftar percakapan di `/backoffice/chat` menampilkan DM owner ⇄ kasir sebagai **“Pesan pribadi”** dengan avatar bermonogram dua huruf, padahal kedua orang pada DM itu punya nama lengkap. Channel bernama tampil benar, hanya DM yang jatuh ke label fallback |
+| **Akar masalah** | `listConversations()` butuh dua hal yang bertentangan dalam satu statement: **membatasi** hasil ke percakapan tempat pembaca ikut (`p.user_id = $1`) dan **meng-agregasi seluruh** peserta percakapan (`json_group_array` atas `chat_participants`). Keduanya dipakai lewat satu join, sehingga setelah filter hanya tersisa baris pembaca — `dmPartner()` tidak pernah menemukan peserta kedua dan selalu mengembalikan fallback. Ini kelas yang sama dengan KS-43: angka yang ditampilkan adalah hasil dari bentuk query, bukan dari data |
+| **Solusi** | Pemisahan `listConversationsSql()` (statement builder, dipakai jalur browser **dan** tes): pembatasan menjadi subquery `c.id IN (SELECT conversation_id FROM chat_participants WHERE user_id = $1)` sehingga baris peserta untuk agregasi tidak ikut tersaring. Sisi manfaat lain: karena sekarang hanya ada satu builder, auditor SQL tidak menghitung salinan yang sama dua kali — literal yang dikumpulkan **577 → 576** dan yang dilewati karena dinamik **65 → 64** |
+| **Bukti** | `src/lib/chat.ts` (`listConversationsSql`), `src/components/chat/chat-utils.ts` (`dmPartner`). Diukur sebagai pasangan sebelum/sesudah pada baris rail yang sama di `screen-at-failure.txt`: sebelum = `button "PP Pesan pribadi …"`, sesudah = `button "SU Surya 01.17 dm halo"`. Kini dijaga `tests/chat.e2e.ts` kasus “DM terbaca dari kedua sisi” — run bersih 2026-11-18: `tests/chat.e2e.ts (8 tests) 170,49s`, `Tests 10 passed (10)` |
+| **Pelajaran** | Klausa `WHERE` yang berfungsi sebagai **share-check** tidak boleh duduk di join yang sama dengan agregasi yang membutuhkan seluruh grup: pindahkan ke `IN (SELECT …)`. Cara tercepat menemukan kelas bug ini: tanyakan “kalau filter ini diterapkan, baris apa yang hilang dari `GROUP BY`-ku?” — dan jangan percaya label fallback yang muncul **untuk semua** baris satu kategori; itu tanda kode pembaca tidak pernah mendapat data yang ia minta |
+
+---
+
+## KS-52 · 2026-11-18 · Enter mengirim token mention yang belum selesai — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Operator mengetik `#beras` lalu menekan Enter sebelum daftar saran muncul. Yang terkirim adalah teks mentah `#beras` sebagai pesan biasa: bubble di thread berisi token, **nol** baris di `chat_mentions`, dan tidak ada chip yang bisa diklik |
+| **Akar masalah** | Dua jalur berebut satu tombol. `onKeyDown` sudah tahu bahwa ada token aktif di kursor (`findActiveToken`), tetapi tidak tahu apakah pencarian entitas untuk token itu **sudah selesai**. Selama query suggestion masih `pending`, cabang “tidak ada kandidat” terlihat sama dengan “tidak ada yang cocok”, jadi Enter mengambil jalur kirim. Yang disalahkan biasanya composer; sebenarnya keadaan “sedang mencari” tidak pernah direpresentasikan |
+| **Solusi** | Gerbang eksplisit di `src/components/chat/Composer.tsx`: `waitingForSuggestions = open && suggestions.length === 0 && suggestionsQuery.status === "pending"`; selama itu true, Enter/Tab di-`preventDefault()` dan **tidak** mengirim. `status === "pending"` dipakai, bukan `isFetching`, supaya celah antara token muncul dan query mulai ikut tertutup; begitu pencarian selesai tanpa cocok, teks diperlakukan sebagai ketikan biasa dan Enter memang mengirim |
+| **Bukti** | `src/components/chat/Composer.tsx` (guard + komentar “Without this guard Enter sends the raw `#beras”`), dikunci `tests/chat.e2e.ts` kasus mention (chip `@`/`#` dari ketik sampai kirim) — kasus itu lulus pada run bersih 2026-11-18 (170,49s untuk 8 kasus) |
+| **Pelajaran** | Untuk setiap “nol hasil”, bedakan **belum ada hasil** dari **hasilnya kosong** — keduanya terlihat identik di UI dan hanya berbeda di state query. Semua pintasan keyboard yang mengambil keputusan dari daftar async harus menanyakan status query-nya lebih dulu |
+
+---
+
+## KS-53 · 2026-11-18 · Pesan mendarat di channel yang salah karena transkrip di-placeholder — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | Flaky di `tests/chat.e2e.ts` kasus “buat channel lalu kirim”: assertion layar **lulus** (header `#e2e-chat`, bubble `halo dari e2e` terlihat), tapi assertion database gagal dengan `Expected values to be strictly equal: + 'null' - 'halo dari e2e'` — `last_message_preview` channel itu kosong. Jajak `tenantClient()` membuktikan pesannya benar-benar tertulis, hanya di baris **lain**: `chat_messages` `halo dari e2e` berada di `operasional-toko` (`created_at` `2026-11-17T18:24:16.780Z`) sementara header pane sudah menunjuk `#e2e-chat`; pada percobaan ulang baris yang sama masuk ke `e2e-chat` (`18:24:49.713Z`) — karena itu tes tampak “sesekali lulus” |
+| **Akar masalah** | `placeholderData: keepPreviousData` dipasang pada query yang **key-nya memuat `conversation_id`** (`useConversation`, `useMessages`). Untuk query daftar itu benar (key tidak berubah saat berpilih), tetapi untuk query per-id ia berarti “tahan percakapan **sebelumnya** di layar sampai yang baru tiba”. Composer menerima `conversationId={conversation.id}` dari objek yang sedang tampil, jadi pada jendela transisi itu ia menulis ke channel lama. Jalur tulasnya sendiri (`src/lib/chat.ts` `sendMessage()` INSERT + `UPDATE … WHERE id = $4`) konsisten — yang salah adalah **identitas yang ditampilkan**, bukan penulisnya |
+| **Solusi** | Placeholder dilepas dari `useConversation` dan `useMessages` (komentar di `src/hooks/use-chat.ts` mencatat alasannya dan menyimpan bukti timestamp-nya); `useConversations`/`useDiscoverableChannels` tetap memakainya. `src/pages/Chat.tsx` menambah cabang `) : activeId ? (<ChatEmptyState skeleton />)` supaya jendela transisi menampilkan skeleton, **bukan** percakapan lain. Di sisi tes: assertion `getByText('#e2e-chat')` dipasang **sebelum** mengetik, sehingga identitas pane dikunci lebih dulu |
+| **Bukti** | Run sebelum perbaikan: 1 gagal (bug ini) pada 01:14:44, lalu **1 flaky** pada 01:22:51 (`tests/chat.e2e.ts (8 tests \| 1 flaky) 208,98s`) — pola flaky khas race. Run sesudah perbaikan (01:34:13): `Tests 10 passed (10)`, `Duration 194,11s`, tanpa flake. Jejak baris DB (dua `conversation_id` untuk teks yang sama) tetap menjadi bukti paling kuat di sini, bukan screenshot |
+| **Pelajaran** | (a) `keepPreviousData` hanya aman untuk query yang **ganti key berarti ganti halaman yang sama**; bila key adalah identitas record dan ada jalur tulis yang membaca record yang sedang tampil, placeholder adalah izin untuk menulis ke record yang salah. (b) Assertion yang membandingkan layar dengan database harus mengunci **identitas layar lebih dulu** — kalau tidak, keduanya bisa “benar” secara sendiri-sendiri sementara pasangan mereka salah. (c) Tes yang flaky tanpa sebab di kode jarang diselesaikan dengan sleep; diselesaikan dengan menemukan **baris mana** yang ditulis |
+
+---
+
+## KS-54 · 2026-11-18 · Runner e2e menilai ulang modul uji, identifier ber-`Date.now()` kehilangan state — **SELESAI**
+
+| | |
+|---|---|
+| **Gejala** | `tests/chat.e2e.ts` dilaporkan **3 dari 8 kasus gagal** tanpa satu pun perubahan kode aplikasi, dengan bentuk kegagalan yang berpindah-pindah setiap run. Yang hilang selalu hal yang sama: channel/DM yang “sudah dibuat” oleh kasus sebelumnya tidak ditemukan oleh kasus berikutnya |
+| **Akar masalah** | Identifier fixture dibuat di **scope modul** (`const name = 'e2e-chat-' + Date.now()`). Harness `e2e` (tester.army) menilai ulang berkas modul uji **lebih dari sekali dalam satu run** — tes yang di-retry atau tes yang dijalankan belakangan mendapat instans modul baru — sehingga setiap instans mempunyai nama berbeda dan mencari baris yang dibuat instans lain. Ini persis pelajaran no. 8 (state level modul) tetapi di sisi harness, bukan di aplikasi: yang di-evaluate ulang adalah **kode tes**, dan `Date.now()` adalah state itu |
+| **Solusi** | Identifier dijadikan **konstanta** (`CHANNEL = 'e2e-chat'`, pesan `halo dari e2e`, `dm halo`) dan setiap kasus menyapu miliknya sendiri **di awal** (`sweepChatRows()` / `sweepMentionMessages()` — hapus anak dulu: `chat_mentions` → `chat_messages` → `chat_participants` → `chat_conversations`). Karena nama channel dijaga UNIQUE oleh indeks parsial, kombinasi “nama tetap + sweep di awal” inilah yang membuat retry mulai dari state yang diketahui, bukan dari state milik instans lain |
+| **Bukti** | Komentar di kepala `tests/chat.e2e.ts` mencatat ukuran penyebabnya (“the run measured 3 of 8 cases failing purely because of that”). Setelah konstanta + sweep: run 2026-11-18 01:34:13 = `tests/chat.e2e.ts (8 tests) 170,49s`, `Tests 10 passed (10)`, `Duration 194,11s`, exit 0. Aturan turunannya didaftar di `docs/frontend.md` §12 no. 18–20 |
+| **Pelajaran** | Di harness yang menilai ulang modul, **apa pun di scope modul adalah state**. Jangan menaruh nilai waktu acak di sana; pakai identifier konstanta dan pulihkan state dari database di awal tiap kasus. Bila kegagalan sebuah suite **berpindah tempat** setiap run sementara kodenya tidak berubah, curigai struktur tes sebelum curigai aplikasi |
+
+---
+
 ## Pelajaran umum (ringkas)
 
 1. **Isolasi harus fisik.** Pemfilteran data di sisi klien bukan keamanan.
@@ -722,3 +774,11 @@
     satu request dengan header diubah satu per satu dan baca body error-nya; kalau browser dan klien
     lain lolos, yang salah adalah probe-nya. Rantai kegagalan (satu 403 → enam temuan) dihitung satu
     kali, bukan enam — lihat KS-50.
+18. **Fitur yang lulus build harus diukur sekali lagi sebagai fitur.** Empat temuan
+    KS-51…KS-54 tidak lahir dari review kode, typecheck, maupun Vitest — semuanya lahir dari
+    menjalankan alur sungguhan lalu membandingkan apa yang tampil dengan baris yang tertulis.
+    Akarnya satu keluarga: **keputusan di jalur baca ikut menentukan isi jalur tulis** —
+    placeholder menentukan channel tujuan pesan, filter join menentukan nama pasangan DM,
+    status query menentukan arti "kosong", dan scope modul menentukan siapa yang memegang
+    identifier. Setelah sebuah fitur dianggap selesai, jalankan satu alur ujung-ke-ujung dan
+    baca tabelnya; hijau di build hanya membuktikan kodenya bisa dimuat.

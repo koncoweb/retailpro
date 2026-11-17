@@ -58,7 +58,7 @@ describe('buildGrants: shipped state', () => {
     }
   });
 
-  it('gives the owner tier the whole catalog and the staff role nothing', () => {
+  it('gives the owner tier the whole catalog and the staff role only the always-on chat key', () => {
     const grants = buildGrants(undefined);
 
     for (const role of ['platform_owner', 'tenant_owner', 'tenant_admin'] as const) {
@@ -67,7 +67,9 @@ describe('buildGrants: shipped state', () => {
         expect(permissions[key], `${role}.${key}`).toBe(true);
       }
     }
-    expect(grants.staff.permissions).toEqual({});
+    // Staff default grants nothing but the collaboration key that is on for
+    // every role so owners can reach their employees (see spec-chat-internal.md).
+    expect(grants.staff.permissions).toEqual({ use_chat: true });
     // A role nobody assigns is still resolved, not dropped.
     expect(Object.keys(grants).length).toBe(ROLES.length + 1);
   });

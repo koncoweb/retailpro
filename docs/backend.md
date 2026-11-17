@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/backend.md` |
-| Terakhir diperbarui | **2026-11-17** |
+| Terakhir diperbarui | **2026-11-18** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
-| Versi skema tenant | **10** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
+| Versi skema tenant | **11** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
 
 > Dokumen ini menggantikan `Backend.md` lama (arsitektur Neon/Postgres dengan RLS) yang sudah
@@ -16,8 +16,8 @@
 ## 1. Peta kode
 
 ```
-db/schema/tenant.sql      Skema DB tenant (34 tabel + indeks + trigger), idempoten, schema_version = 10
-db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 010)
+db/schema/tenant.sql      Skema DB tenant (38 tabel + indeks + trigger), idempoten, schema_version = 11
+db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 011)
 db/schema/control.sql     Skema control DB (Better Auth 4 tabel + registry)
 db/schema/seed.sql        Seed provisioning dengan placeholder {{TOKEN}}
 db/__tests__/             Test skema, seed, dan tenant demo (DB sementara per run)
@@ -361,6 +361,10 @@ tetapi belum dipakai UI mana pun.
 | `face_enrollments` | PK `employee_id` (satu baris descriptor per karyawan) |
 | `leaves` | `(employee_id, start_date)` |
 | `audit_logs` | `(created_at)` |
+| `chat_conversations` | partial `UNIQUE(dm_key) WHERE dm_key IS NOT NULL`, partial `UNIQUE(name) WHERE kind='channel'`, `(last_message_at)` |
+| `chat_participants` | PK `(conversation_id, user_id)`, `(user_id, conversation_id)`, `(conversation_id)` |
+| `chat_messages` | `(conversation_id, created_at, id)` |
+| `chat_mentions` | `(message_id)` |
 
 ### 5.9 Cabang vs gudang (model stok)
 
@@ -449,7 +453,7 @@ blast radius besar untuk data yang toh sudah dibaca browser sebagai satu dokumen
 | `user_permissions` hanya **mengurangi**, tidak pernah menambah di luar role | `effectiveUserPermissions(grant, restrictions)` di `src/lib/permission-matrix.ts` mengabaikan nilai `true` dan hanya memakai `false`; ditulis `setUserPermissionOverrides()` (screen Employees), dan entri user dibersihkan saat karyawan dihapus |
 | Scope default `"all"` di kedua sisi | `normalizeScope()` di `src/lib/permission-matrix.ts`; nilai yang sama dengan default dihapus dari dokumen, tidak disimpan sebagai "semua" eksplisit |
 | Peran tidak dikenal ⇒ tanpa izin | `grantForRole()` mengembalikan `undefined`, `makeChecker()` menolak semua key (gagal-tertutup) |
-| **Kecuali:** tenant baru membawa snapshot `role_permissions` dari seed | `db/schema/seed.sql` menulis dokumen `role_permissions` (bukan selisih terhadap default), tetapi isinya **parsial secara historis**: hanya kunci yang ada saat seed disusun — owner-tier 18, `store_manager` 10, `warehouse` 4, `cashier` 2, `staff` 0, dari 31 kunci katalog. Karena resolver menggabung per kunci, kunci yang tidak ditulis tetap memakai default kode, jadi 13 kunci yang belum masuk snapshot tidak menghilangkan apa pun. Konsekuensi yang benar-benar berbahaya adalah kunci yang **ditulis**: mengubah default di `src/config/roles.ts` tidak menjangkau tenant yang dibuat dari seed kalau seed masih menulis nilai lama — contoh nyatanya `cashier.view_dashboard` yang harus dihapus dari seed juga, bukan hanya dari kode. Penjaga: `db/__tests__/seed.test.ts` menolak seed yang **membantah** default kode (key yang hilang boleh) |
+| **Kecuali:** tenant baru membawa snapshot `role_permissions` dari seed | `db/schema/seed.sql` menulis dokumen `role_permissions` (bukan selisih terhadap default), tetapi isinya **parsial secara historis**: hanya kunci yang ada saat seed disusun — owner-tier 18, `store_manager` 10, `warehouse` 4, `cashier` 2 (salah satunya `false`), `staff` 0, `purchasing` tidak tertulis sama sekali — dari 33 kunci katalog. Karena resolver menggabung per kunci, kunci yang tidak ditulis tetap memakai default kode, jadi 15 kunci yang belum masuk snapshot tidak menghilangkan apa pun (dua kunci `collaboration` v11 termasuk yang belum ditulis, sehingga `use_chat`/`manage_channels` tenant baru datang dari default kode, bukan dari seed). Konsekuensi yang benar-benar berbahaya adalah kunci yang **ditulis**: mengubah default di `src/config/roles.ts` tidak menjangkau tenant yang dibuat dari seed kalau seed masih menulis nilai lama — contoh nyatanya `cashier.view_dashboard` yang harus dihapus dari seed juga, bukan hanya dari kode. Penjaga: `db/__tests__/seed.test.ts` menolak seed yang **membantah** default kode (key yang hilang boleh) |
 
 Perubahan matriks di simulator lokal: `npm run dev:api` adalah `tsx` **tanpa watcher** — port 3000
 harus di-restart sebelum menguji endpoint baru, jika tidak proses lama yang menjawab (mis. 201 di
@@ -485,6 +489,35 @@ PO (Buat PO)               ──► defaultVendorFor(preferred → products.sup
 
 Rencana dan keputusan desainnya dibekukan di
 [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md).
+
+### 5.13 Chat internal (v11)
+
+Empat tabel aditif untuk chat satu-tenant (`chat_conversations`, `chat_participants`,
+`chat_messages`, `chat_mentions`) — tanpa `tenant_id`, tanpa `ALTER` pada tabel lama.
+Akses data lewat `src/lib/chat.ts` (lapisan browser, bukan endpoint); codec mention murni
+dan teruji di `src/lib/chat-mentions.ts`. Visibilitas channel/DM ditegakkan di UI dan di
+lapisan query, **bukan** row-level security — token tenant bisa `SELECT` baris mana pun.
+
+Dua aturan jalur baca/tulis yang lahir dari bug yang benar-benar terjadi (2026-11-18,
+diukur lewat `tests/chat.e2e.ts` + jajak `chat_messages`, detail di
+[kendala-solusi.md](kendala-solusi.md) KS-51 dan KS-53):
+
+| Aturan | Bentuk di kode | Kenapa |
+|---|---|---|
+| **Share-check bukan filter join** | `listConversations()` = `listConversationsSql()` dengan `WHERE c.archived = 0 AND c.id IN (SELECT conversation_id FROM chat_participants WHERE user_id = $1)` | Memfilter baris join pada pembaca (`p.user_id = $1`) membuat `json_group_array` hanya berisi satu anggota — pembaca sendiri — sehingga `dmPartner()` selalu jatuh ke label fallback "Pesan pribadi" di rail. Subquery menjaga agregasi **seluruh** peserta |
+| **Transkrip & identitas percakapan tidak boleh di-placeholder** | `useConversation`/`useMessages` (query yang key-nya memuat `conversation_id`) **tanpa** `placeholderData: keepPreviousData`; `useConversations`/`useDiscoverableChannels` tetap memakainya | `keepPreviousData` pada key ber-id membuat pane tetap menampilkan percakapan **sebelumnya** selama yang baru dimuat — dan composer menulis ke pane yang sedang tampil. Terukur: pesan `halo dari e2e` mendarat di `operasional-toko` (`conversation_id` + `created_at` 18:24:16.780Z) padahal header menampilkan `#e2e-chat` |
+
+Satu efek samping yang menguntungkan `audit:sql`: karena jalur daftar kini memakai **satu**
+builder (`listConversationsSql()`), literal SQL yang dikumpulkan auditor turun **577 → 576**
+dan yang dilewati karena dinamik **65 → 64** — bukan karena query hilang, tapi karena sebelumnya
+salinannya dihitung dua kali.
+
+| Tabel | Kolom kunci | Catatan |
+|---|---|---|
+| `chat_conversations` | `kind` (`channel`/`dm`), `dm_key`, `name`, `last_message_at` | `dm_key` = dua id user diurutkan lalu digabung (indeks unique parsial); nama kanal dinormalkan dan dijaga unik lewat indeks |
+| `chat_participants` | PK `(conversation_id, user_id)`, `member_role` | `member_role='owner'` untuk pembuat kanal |
+| `chat_messages` | `conversation_id`, `sender_id`, `body`, `deleted`, `system` | `body` teks natural (ter-search); penghapusan selalu soft (`deleted=1`) |
+| `chat_mentions` | `message_id`, `kind`, `entity_id`, `label` | `label` adalah snapshot substring saat ditulis, sehingga chip selamat dari rename/hapus entitas |
 
 ---
 
@@ -633,12 +666,12 @@ Test: `src/lib/vendor-catalog.test.ts` (25), `src/lib/vendor-import.test.ts` (24
 | `npm run bootstrap:control` | Buat/siapkan control DB dari `control.sql` |
 | `npm run dev:db` | Shim Hrana loopback `:8090` agar `CONTROL_DB_URL=file:…` bisa dipakai server |
 | `npm run schema:apply-all` | Bandingkan `schema_version` setiap tenant dengan versi di repo. Dry-run bawaan; `--apply` untuk eksekusi, `--only <slug\|db_name>` untuk satu tenant. Database lama menjalankan migrasi tertunda lebih dulu, lalu `tenant.sql`; database baru (v0) cukup `tenant.sql` |
-| `npm run audit:sql` | Kumpulkan literal SQL di `src/`, putar ulang terhadap `tenant.sql`. Keadaan pasca-v10: **530 literal dikumpulkan**, 471 diperiksa, 59 dilewati karena dinamik, 8 dibuang karena berada di dalam komentar, dan **2 kelas temuan yang tersisa keduanya contoh di `translate.test.ts`** (tabel `t`, kolom `a..f`) yang memang memakai skema sementara sendiri. Perbaikan v10: pengumpul sebelumnya ikut membaca literal di dalam komentar, jadi narasi seperti "layar ini dulu menjalankan `UPDATE users`" berubah menjadi temuan `SYNTAX \| incomplete input`; kini rentang komentar dipisahkan lebih dulu (`commentRanges()`) sehingga hanya kode yang diaudit. `npm run audit:sql -- --show-comments` mencetak **8 situs yang dibuang** beserta baris sumbernya — pembuangan tanpa daftar membuat klaim "itu cuma dokumentasi" tidak bisa diverifikasi |
+| `npm run audit:sql` | Kumpulkan literal SQL di `src/`, putar ulang terhadap `tenant.sql`. Keadaan pasca-v11: **576 literal dikumpulkan**, 512 diperiksa, 64 dilewati karena dinamik, 8 dibuang karena berada di dalam komentar, dan **2 kelas temuan yang tersisa keduanya contoh di `translate.test.ts`** (tabel `t`, kolom `a..f`) yang memang memakai skema sementara sendiri. Turun dari 577/65 karena jalur baca daftar chat memakai satu statement builder (`listConversationsSql()`) — salinan yang sama tidak dihitung dua kali lagi. Perbaikan v10: pengumpul sebelumnya ikut membaca literal di dalam komentar, jadi narasi seperti "layar ini dulu menjalankan `UPDATE users`" berubah menjadi temuan `SYNTAX \| incomplete input`; kini rentang komentar dipisahkan lebih dulu (`commentRanges()`) sehingga hanya kode yang diaudit. `npm run audit:sql -- --show-comments` mencetak **8 situs yang dibuang** beserta baris sumbernya — pembuangan tanpa daftar membuat klaim "itu cuma dokumentasi" tidak bisa diverifikasi |
 | `npm run docs:check` | Gerbang dokumen (dev-only). Empat pemeriksaan: (1) jumlah sel setiap baris tabel markdown harus sama dengan header-nya — blok kode di-*skip*, `\|` dihitung sebagai teks; (2) versi skema harus satu angka di tiga tempat: baris stamp `tenant.sql`, `CURRENT_SCHEMA_VERSION` di `apply-schema-all.mjs`, dan prefiks tertinggi di `db/migrations`; (3) indeks dokumentasi di `README.md` harus menyebut setiap berkas `docs/*.md` dan setiap berkas yang disebut harus ada; (4) anchor `§N` yang ditulis tepat setelah tautan `[berkas.md](berkas.md)` harus menunjuk heading yang benar-benar ada di berkas target. Keluaran mencetak cakupannya sendiri (jumlah berkas markdown, baris tabel, dan anchor yang benar-benar dibaca — yang dua terakhir sengaja tidak dikutip sebagai angka di tempat lain karena keduanya berubah setiap kali sebuah tabel disunting), dan `scripts/__fixtures__/docs-check/` adalah positive control-nya: `node scripts/check-docs.mjs --root scripts/__fixtures__/docs-check` wajib keluar 1 dengan **tepat 8 masalah** — gerbang yang tidak bisa gagal sama dengan gerbang yang tidak berjalan |
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: **30 berkas, 419 test** (translate, skema, seed, demo tenant, roles, permission-matrix, date-range, inventory-utils, units, bulk-io, password, stock-issue, stock-movement, branch-orders, vendor, **vendor-catalog**, **vendor-import**, procurement, goods-receipt, pricing, variants, geolocation, face, pos-branch, shift-attendance, **void**, **print**: escpos/receipt-doc/zreport-doc/html-render) |
+| `npm test` | Vitest: **31 berkas, 441 test** (translate, skema, seed, demo tenant, roles, permission-matrix, date-range, inventory-utils, units, bulk-io, password, stock-issue, stock-movement, branch-orders, vendor, **vendor-catalog**, **vendor-import**, procurement, goods-receipt, pricing, variants, geolocation, face, pos-branch, shift-attendance, **void**, **chat-mentions**, **print**: escpos/receipt-doc/zreport-doc/html-render) |
 | `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---
@@ -663,6 +696,7 @@ Test: `src/lib/vendor-catalog.test.ts` (25), `src/lib/vendor-import.test.ts` (24
 | 2026-11-05 | **Skema v8** (`db/migrations/008_attendance_geo_face.sql`): `branches`/`warehouses` + `latitude`/`longitude`/`geo_radius_m`/`require_geo`/`require_face`; `attendance` + kolom audit geolokasi (`location_type`/`location_id`, `check_in_lat/lng/acc/dist`, `check_out_lat/lng/dist`), wajah (`face_score`, `face_verified`), dan `source` (`self`/`owner`); tabel baru `face_enrollments` (descriptor 128-float per karyawan) | Tenant v7: `ALTER TABLE ... ADD COLUMN` dengan default konstan per kolom + `CREATE TABLE IF NOT EXISTS face_enrollments`; pemicu hari-berjalan v7 tidak berubah. Jarak GPS & kecocokan wajah dihitung di browser (tanpa server tenant) sehingga bersifat audit, bukan paksaan DB — lihat catatan batasan di §5.7. Tabel 33 → 34. Kamera/GPS butuh secure context |
 | 2026-11-16 | **Skema v9** (`db/migrations/009_transaction_voids.sql`): `transaction_items` + `voided` (`INTEGER NOT NULL DEFAULT 0`)/`void_reason`/`voided_by`/`voided_at`; `transactions` + `void_reason`/`voided_by`/`voided_at` (`status` sudah ada, nilai `void` kini benar-benar dipakai). Menegakkan izin `void_transaction` yang selama ini dideklarasikan tapi belum diterapkan | Tenant v8: `ALTER TABLE ... ADD COLUMN` dengan default konstan (SQLite tidak punya `IF NOT EXISTS`, jadi digerbang versi oleh runner). Tidak ada backfill — baris lama otomatis `voided = 0` dan tetap `completed`. Jumlah tabel tidak berubah (34). Seluruh query uang ditambah `status = 'completed'`, query per item `ti.voided = 0` — lihat catatan §5.4 dan `src/lib/__tests__/void.test.ts` |
 | 2026-11-17 | **Skema v10** (`db/migrations/010_vendor_catalog_indexes.sql`): `idx_vendor_products_pref ON vendor_products(product_id, is_preferred)` dan `idx_suppliers_name_nc ON suppliers(name COLLATE NOCASE)`. **Tidak ada tabel atau kolom baru** — yang berubah adalah cara tabel lama dibaca dan siapa yang boleh menulisnya | Tenant v9: dua `CREATE INDEX IF NOT EXISTS` saja, tanpa backfill dan tanpa perubahan data; `tenant.sql` men-stamp `(1, 10)` dan runner menaikkan `CURRENT_SCHEMA_VERSION` 9 → 10. Jumlah tabel tetap 34. Invarian baru dijaga `db/__tests__/schema.test.ts` (indeks) dan `db/__tests__/demo-tenant.test.ts` (katalog⇄harga, `is_preferred` tunggal) — lihat §5.12 dan [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md) |
+| 2026-11-17 | **Skema v11** (`db/migrations/011_chat.sql`): empat tabel chat internal sepenuhnya aditif — `chat_conversations` (channel/DM, denormalized `last_message_at`/`last_message_sender_id`/`last_message_preview`), `chat_participants` (PK `(conversation_id, user_id)`, `member_role`), `chat_messages` (`body` teks natural, soft-delete `deleted`), `chat_mentions` (snapshot `label` per mention); tujuh indeks termasuk partial `UNIQUE(dm_key)` dan `UNIQUE(name) WHERE kind='channel'` | Tenant v10 → v11: hanya `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`, **tidak ada `ALTER` pada tabel lama** sehingga nol risiko ke baris live; `tenant.sql` men-stamp `(1, 11)`, runner menaikkan `CURRENT_SCHEMA_VERSION` 10 → 11, jumlah tabel 34 → 38. Kunci izin `use_chat`/`manage_channels` di `src/config/roles.ts` (chat = akses data sisi browser lewat `src/lib/chat.ts`, tanpa endpoint baru). Tidak ada row-level security — visibilitas channel/DM aturan UI, bukan batas keamanan. Lihat §5.13 dan [spec-chat-internal.md](spec-chat-internal.md) |
 
 Cara mengubah skema ke depan:
 

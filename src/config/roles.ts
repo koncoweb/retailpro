@@ -213,6 +213,18 @@ export const PERMISSION_CATALOG = {
       hint: "Menambah cabang, mengatur gudang miliknya, dan menentukan kepala cabang.",
     },
   ],
+  collaboration: [
+    {
+      key: "use_chat",
+      label: "Chat Internal",
+      hint: "Membuka menu Chat untuk mengirim dan membaca pesan internal antar karyawan, baik di channel maupun pesan pribadi.",
+    },
+    {
+      key: "manage_channels",
+      label: "Kelola Channel",
+      hint: "Membuat dan mengarsipkan channel chat, serta menambah atau menghapus anggotanya.",
+    },
+  ],
 } as const satisfies Record<string, readonly PermissionEntry[]>;
 
 export type PermissionGroupName = keyof typeof PERMISSION_CATALOG;
@@ -272,6 +284,9 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     // cannot open Settings or decide roles.
     view_finance: true,
     manage_branches: true,
+    // A manager runs their branch network's conversations too.
+    use_chat: true,
+    manage_channels: true,
     // ...others false
   },
   cashier: {
@@ -282,6 +297,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     // viewing back on per role in the matrix.
     access_pos: true,
     apply_discount: false,
+    // Chat is how a cashier reaches the owner and the rest of the team.
+    use_chat: true,
     // ...others false
   },
   warehouse: {
@@ -294,6 +311,8 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     dispatch_stock: true,
     // The people who unload the truck are the ones who know what arrived.
     receive_po: true,
+    // Gudang and purchasing coordinate moves through chat.
+    use_chat: true,
     // ...others false
   },
   purchasing: {
@@ -303,10 +322,16 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     create_po: true,
     receive_po: true,
     cancel_po: true,
+    use_chat: true,
     // ...others false — approval deliberately belongs to the owner/admin
   },
   staff: {
-    // minimal access
+    // An ordinary employee cannot open the back office, but reading and
+    // writing internal chat is not back-office access — it is how they talk
+    // to the owner. `manage_channels` stays off: staff participate, they do
+    // not administer channels.
+    use_chat: true,
+    // ...others false
   },
 };
 

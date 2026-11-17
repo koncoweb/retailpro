@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/deployment.md` |
-| Terakhir diperbarui | **2026-11-17** |
+| Terakhir diperbarui | **2026-11-18** |
 | Cakupan | Cara aplikasi berjalan di produksi: dua proyek Vercel, dua database Turso cloud, variabel lingkungan, langkah deploy & verifikasi, serta aturan platform yang tidak boleh dilanggar |
-| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-49 |
+| Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-54 |
 
 > Dokumen ini adalah **runbook**, bukan rencana. Setiap nilai di bawah diambil dari proyek yang
 > benar-benar sudah ter-deploy dan sudah diverifikasi lewat HTTP serta browser pada 2026-10-28.
@@ -33,7 +33,7 @@ Dua proyek Vercel, satu organisasi Turso.
                                     v
                     +-------------------------------+
                     | DB tenant Thalia (Turso)      |  <--- browser SPA: @libsql/client/web + JWT
-                    | 34 tabel, tanpa tenant_id     |
+                    | 38 tabel, tanpa tenant_id     |
                     +-------------------------------+
 ```
 
@@ -322,7 +322,7 @@ penerimaan barang, pengeluaran) jangan diarahkan ke tenant produksi — jalankan
 | Mengisi ulang data demo | `npm run demo:cloud -- --write-env` lalu deploy ulang bila control DB berganti |
 | Memeriksa kuota | `GET /v1/organizations/{org}/usage`; batas tenant dijaga `TURSO_MAX_TENANT_DATABASES` |
 | Rotasi token yang bocor | Turso → Settings → Tokens → revoke, buat token baru, perbarui env Vercel + `.env`, deploy ulang (KS-17) |
-| Menerapkan perubahan skema ke seluruh tenant | `npm run schema:apply-all` (dry-run, membandingkan `schema_version` tiap tenant dengan `CURRENT_SCHEMA_VERSION` di kode) → `npm run schema:apply-all -- --apply`, atau `--only <slug\|db_name>` untuk satu tenant. Runner menjalankan migrasi `NNN_*.sql` yang nomornya **>** versi tercatat di dalam `BEGIN`/`COMMIT`, lalu menerapkan `tenant.sql` dan meng-upsert `schema_version`. **Wajib dijalankan setelah deploy yang menaikkan versi skema** (mis. v9 → v10 untuk indeks katalog vendor) — tanpa itu database tenant lama tidak punya kolom baru dan halaman gagal saat membaca/menulisnya. Naik versi yang hanya menambah indeks (v10 bentuknya begitu) tidak menggagalkan apa pun: datanya benar, query-nya saja yang berjalan tanpa indeks itu |
+| Menerapkan perubahan skema ke seluruh tenant | `npm run schema:apply-all` (dry-run, membandingkan `schema_version` tiap tenant dengan `CURRENT_SCHEMA_VERSION` di kode) → `npm run schema:apply-all -- --apply`, atau `--only <slug\|db_name>` untuk satu tenant. Runner menjalankan migrasi `NNN_*.sql` yang nomornya **>** versi tercatat di dalam `BEGIN`/`COMMIT`, lalu menerapkan `tenant.sql` dan meng-upsert `schema_version`. **Wajib dijalankan setelah deploy yang menaikkan versi skema** (mis. v10 → v11 untuk tabel chat internal) — tanpa itu database tenant lama tidak punya kolom baru dan halaman gagal saat membaca/menulisnya. Naik versi yang hanya menambah indeks (v10 bentuknya) atau hanya menambah tabel baru sepenuhnya aditif (v11 bentuknya) tidak menggagalkan apa pun yang sudah ada: datanya benar, query-nya saja yang berjalan tanpa indeks itu, atau fitur barunya yang belum bisa dipakai |
 
 Deployment tidak menjalankan `npm run typecheck`, `npm test`, `npm run test:e2e`, atau `npm run audit:sql` — belum ada
 CI (KS-21), jadi keempatnya dijalankan manual sebelum `vercel --prod`.

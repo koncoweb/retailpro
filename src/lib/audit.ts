@@ -45,6 +45,12 @@ export type AuditAction =
   // and the before/after map is what makes the narrowing auditable.
   | "update_employee_permissions"
   | "create_expense"
+  // Internal team chat lifecycle. Only the durable, owner-relevant events are
+  // audited — a channel being created/archived or a message being deleted —
+  // never the individual messages, which are far too many to log.
+  | "create_channel"
+  | "archive_channel"
+  | "delete_message"
   | "create_payment";
 
 /** Minimal shape of `runTransaction`'s client, so an entry can be written atomically. */

@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 10);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 11);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
 -- receipt/tax/bank settings as JSON text.
@@ -673,6 +673,82 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 
 -- ---------------------------------------------------------------------------
+-- Internal team chat (schema v11). Per-tenant: these tables hold only this
+-- company's conversations, so — like the rest of the schema — there is no
+-- tenant_id column.
+--
+-- Visibility (channel membership, DM privacy) is an application rule, NOT a
+-- security boundary: every signed-in employee holds a full-access token for
+-- this database and could read any row directly. Chat is an internal
+-- collaboration tool, not a confidential channel. See docs/spec-chat-internal.md.
+--
+-- A conversation is either a named `channel` (many members, human `name`) or a
+-- `dm` between exactly two people, deduplicated by the canonical `dm_key`
+-- (the two user ids sorted and joined with '|'). Denormalized `last_message_*`
+-- columns let the conversation list poll cheaply without a per-row subquery.
+CREATE TABLE IF NOT EXISTS chat_conversations (
+  id                  TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  -- 'channel' | 'dm'
+  kind                TEXT NOT NULL,
+  -- Channel label ("ops", "gudang"). NULL for a DM.
+  name                TEXT,
+  topic               TEXT,
+  -- Private channel: only members may see it in the browse list. Still a UI
+  -- rule, not an access boundary (see the note above).
+  is_private          INTEGER NOT NULL DEFAULT 0,
+  archived            INTEGER NOT NULL DEFAULT 0,
+  created_by          TEXT,
+  -- Canonical sorted '<a>|<b>' user-id key; present (and UNIQUE) only for DMs.
+  dm_key              TEXT,
+  -- Kept in sync with every send so the list needs no join/subquery on poll.
+  last_message_at     TEXT,
+  last_message_sender_id TEXT,
+  last_message_preview   TEXT,
+  created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at          TEXT
+);
+
+-- Membership for both channels and DMs. `member_role` marks the channel owner
+-- who may rename/archive it; it grants no data access.
+CREATE TABLE IF NOT EXISTS chat_participants (
+  conversation_id TEXT NOT NULL,
+  user_id         TEXT NOT NULL,
+  -- 'owner' | 'member'
+  member_role     TEXT NOT NULL DEFAULT 'member',
+  joined_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (conversation_id, user_id)
+);
+
+-- One row per message. `body` is the raw visible text (kept natural so it is
+-- searchable); structured mentions live in `chat_mentions`, so a chip still
+-- reads correctly even if the person/entity is later renamed or deleted.
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  conversation_id TEXT NOT NULL,
+  sender_id       TEXT NOT NULL,
+  body            TEXT NOT NULL,
+  edited_at       TEXT,
+  -- Soft delete only: never removed, so the surrounding thread keeps reading
+  -- correctly and the (conversation, created_at, id) ordering stays stable.
+  deleted         INTEGER NOT NULL DEFAULT 0,
+  -- 'channel created', 'Budi joined', etc. Rendered inline, not as a bubble.
+  system          INTEGER NOT NULL DEFAULT 0,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- Structured, snapshotted mention reference for a message. `label` is the exact
+-- '@…'/'#…' substring that was inserted; `entity_id` drives the deep link.
+CREATE TABLE IF NOT EXISTS chat_mentions (
+  id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  message_id TEXT NOT NULL,
+  -- 'user' | 'product' | 'invoice' | 'po' | 'vendor'
+  kind       TEXT NOT NULL,
+  entity_id  TEXT,
+  label      TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- ---------------------------------------------------------------------------
 -- Indexes (the Postgres schema had none; hot paths are batch lookups by
 -- product+warehouse, branch/date report filters and product search)
 -- ---------------------------------------------------------------------------
@@ -767,3 +843,16 @@ CREATE INDEX        IF NOT EXISTS idx_expenses_branch      ON expenses(branch_id
 CREATE INDEX        IF NOT EXISTS idx_attendance_emp_date  ON attendance(employee_id, date);
 CREATE INDEX        IF NOT EXISTS idx_leaves_emp           ON leaves(employee_id, start_date);
 CREATE INDEX        IF NOT EXISTS idx_audit_created        ON audit_logs(created_at);
+
+-- Chat: two DMs between the same pair collapse to one conversation; two
+-- channels cannot share a name. Both are partial so DMs (no name) and channels
+-- (no dm_key) are unaffected by the other's rule.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_dm_key       ON chat_conversations(dm_key) WHERE dm_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_channel_name ON chat_conversations(name)   WHERE kind = 'channel';
+-- "my conversations" and "who is in this conversation".
+CREATE INDEX        IF NOT EXISTS idx_chat_part_user     ON chat_participants(user_id, conversation_id);
+CREATE INDEX        IF NOT EXISTS idx_chat_part_conv     ON chat_participants(conversation_id);
+-- The message stream poll and the keyset "load older" both read this.
+CREATE INDEX        IF NOT EXISTS idx_chat_msg_conv      ON chat_messages(conversation_id, created_at, id);
+CREATE INDEX        IF NOT EXISTS idx_chat_mentions_msg  ON chat_mentions(message_id);
+CREATE INDEX        IF NOT EXISTS idx_chat_conv_recent   ON chat_conversations(last_message_at);

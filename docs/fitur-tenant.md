@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-tenant.md` |
-| Terakhir diperbarui | **2026-11-17** |
+| Terakhir diperbarui | **2026-11-18** |
 | Cakupan | Semua fitur yang tersedia di dalam satu tenant (POS + back office) |
 
 ## Cara memakai log ini
@@ -278,6 +278,16 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 | 2026-11-17 | dabf287 | Demo | Seeder demo (`server/demo/ledger.ts`) menyusun baris katalog & harga dari statement builder yang sama, jadi katalog demo tidak lagi punya produk vendor tanpa baris `vendor_price_list` (provenance `seed demo`) | Perbaikan |
 | 2026-11-17 | dabf287 | Uji | Unit baru `src/lib/vendor-catalog.test.ts` (25: NOCASE, mint kode, preferred tunggal, dua mode harga, `defaultVendorFor`) dan `src/lib/vendor-import.test.ts` (24: grouping, taut-by-nama, skip-by-SKU, harga tetap jalan, pecahan dasar wajib); `bulk-io.test.ts` (19) menjaga header 18 kolom; `demo-tenant.test.ts` (+3 invarian); `schema.test.ts` menjaga indeks v10. Browser: `tests/vendor-catalog.e2e.ts` (4 kasus) — sheet menulis vendor+produk+katalog+harga, impor ulang tidak menduplikasi tapi mengubah harga, form vendor → form produk terisi vendor, dan PO memilih produk → vendor + harga kesepakatan muncul (termasuk konfirmasi ganti vendor) | Baru |
 
+### 2026-11-18 — chat internal antar tim satu tenant (skema v11)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-18 | — (working tree) | Skema | Versi skema **11**: migrasi `011_chat.sql` — empat tabel sepenuhnya aditif: `chat_conversations` (kind `channel`/`dm`, partial `UNIQUE(dm_key)` dan partial `UNIQUE(name) WHERE kind='channel'`, preview denormalized `last_message_*`), `chat_participants` (PK `(conversation_id, user_id)` + `member_role`), `chat_messages` (`body` teks natural, soft-delete `deleted`), `chat_mentions` (snapshot `label` per mention); tujuh indeks. **Tidak ada `ALTER` pada tabel lama**; jumlah tabel 34 → 38 | Baru |
+| 2026-11-18 | — (working tree) | Chat | Layar `/backoffice/chat` (`src/pages/Chat.tsx` + 10 komponen dan `chat-utils.ts` di `src/components/chat/` + modul data `src/lib/chat.ts` + hook polling `src/hooks/use-chat.ts`): rail channel + DM, thread dengan pemisah hari & grouping pengirim, composer dengan autocomplete `@`orang dan `#`produk/invoice/PO/vendor. Mention disimpan teks natural + snapshot `chat_mentions` sehingga chip tetap terbaca setelah baris sumber berubah; chip entity menaut langsung ke detailnya (`entityRoute`). Hapus pesan = placeholder, arsip channel = `archived=1` — tidak ada baris yang benar-benar hilang. Near-real-time lewat **polling** (daftar 10 detik, thread terbuka 3 detik, tab latar pause, optimistic append); tanpa endpoint server baru — satu-satunya penulis `src/lib/chat.ts`, jejak audit `create_channel`/`archive_channel`/`delete_message` | Baru |
+| 2026-11-18 | — (working tree) | Izin | Grup izin baru `collaboration`: `use_chat` (bawaan **nyala untuk semua peran** — agar owner bisa menjangkau karyawannya; membuka menu & rute) dan `manage_channels` (owner/admin/manager — tombol Buat channel, arsip, kelola anggota, hapus pesan orang lain). Katalog resmi kini 7 grup / 33 kunci; snapshot editor Role & matriks (`GROUP_TITLES`/`groupTitles`) ikut dua kunci baru | Baru |
+| 2026-11-18 | — (working tree) | Perbaikan | **Tiga bug nyata yang ditemukan refleksi pasca-implementasi** (ketiganya punya bukti terukur, bukan dugaan): (1) rail menampilkan **"Pesan pribadi"/monogram untuk DM yang sudah punya nama** karena `listConversations()` meng-agregasi anggota di atas join yang sudah difilter `p.user_id = $1`, jadi `members` selalu berisi pembaca saja — perbaikannya subquery `c.id IN (SELECT conversation_id FROM chat_participants WHERE user_id = $1)`, sehingga nama pasangan tetap muncul; (2) **Enter di composer mengirim token mentah** (`#beras`) ketika pencarian autocomplete belum selesai — kini ada gerbang `waitingForSuggestions` sehingga Enter pertama hanya menyelesaikan token; (3) **pesan tertulis ke percakapan yang salah** — `placeholderData: keepPreviousData` pada query yang di-*key* id membuat pane masih menampilkan channel sebelumnya selama yang baru dimuat, dan composer mengirim ke apa yang sedang tampil (`chat_messages.conversation_id` membuktikan `halo dari e2e` mendarat di `operasional-toko` pada 18:24:16.780Z padahal header sudah `#e2e-chat`) — placeholder dilepas dari `useConversation`/`useMessages` (daftar tetap memakainya) dan pane menampilkan skeleton selama identitas belum tiba | Perbaikan |
+| 2026-11-18 | — (working tree) | Uji | Unit baru `src/lib/chat-mentions.test.ts` (15: find/insert token, render longest-label-first, `entityRoute`); blok chat `schema.test.ts` (4 tabel + kedua unique partial + UUID default); `roles.test.ts` + `permission-matrix.test.ts` mengikuti (staff default kini tepat `{ use_chat: true }`). Browser diverifikasi manual di tenant `rp-thalia` (buat channel, kirim, chip, deep-link, edit/hapus) dan dijaga `tests/chat.e2e.ts` (**8 kasus deterministik**: rail per peran, buat channel + pesan mendarat di channel yang benar, chip `@`/`#` + navigasi deep-link, polling dari sisi kasir, Enter-vs-autocomplete, idempotensi DM `dm_key` + DM terbaca dari kedua sisi dan tetap bernama, arsip). Hasil ukur penuh: `tests/chat.e2e.ts (8 tests) 170,49s`, satu run bersih `Tests 10 passed (10)` / `Duration 194,11s`, exit 0; suite yang sama sempat menghasilkan 1 gagal (bug 1) dan 1 flaky (bug 3) sebelum keduanya diperbaiki. Migrasi v10 → v11 diterapkan ke tenant cloud `rp-thalia` (`npm run schema:apply-all -- --apply --only rp-thalia`) | Baru |
+
 ### Riwayat commit (aplikasi sebelum migrasi)
 
 | Waktu | Ref | Modul | Perubahan | Status |
@@ -318,7 +328,7 @@ di [backend.md](backend.md) §5.3: sekarang ada tiga lapis — produk (model), v
 
 ---
 
-## 2. Katalog fitur saat ini (per 2026-11-17)
+## 2. Katalog fitur saat ini (per 2026-11-18)
 
 Keterangan: **Ada** = berfungsi penuh • **Sebagian** = berjalan dengan batasan yang disebut •
 **Belum** = belum tersedia di UI.
@@ -510,6 +520,24 @@ Data berasal dari back office setiap tenant yang berstatus `active`.
 | Pembayaran online | Belum | Metode bayar dipilih di checkout, belum ada integrasi gateway |
 | Chat CS | Sebagian | Menjawab dari katalog yang sama; bukan kanal pesan tersimpan |
 
+### 2.11 Kolaborasi internal (chat)
+
+Percakapan owner ⇄ karyawan dalam satu tenant lewat `/backoffice/chat` (skema v11) — bukan
+kanal pelanggan (itu §2.10). Tidak ada server di jalur data, jadi visibilitas channel/DM adalah
+**aturan UI, bukan batas keamanan**; alasannya tercatat di [spec-chat-internal.md](spec-chat-internal.md).
+
+| Fitur | Status | Catatan |
+|---|---|---|
+| Pesan langsung (DM) | Ada | Idempoten lewat partial `UNIQUE(dm_key)`; label rail = nama orang lain, bukan "anda" |
+| Channel bernama | Ada | Slug dinormalisasi (pratinjau sama dengan yang disimpan); privat/umum; tombol Channel hanya `manage_channels` |
+| Mention `@`orang & `#`produk/invoice/PO/vendor | Ada | Teks natural + snapshot `chat_mentions`; chip entity menaut ke detail (`?product=`/`?invoice=`/`?po=`/detail vendor) |
+| Near-real-time | Ada | Polling daftar 10 detik / thread terbuka 3 detik; tab latar tidak mem-poll; optimistic append saat kirim |
+| Edit & hapus pesan | Ada | Milik sendiri; `manage_channels` bisa menghapus pesan orang lain (moderasi). Hapus = soft-delete, placeholder "Pesan ini telah dihapus" tampil untuk semua |
+| Arsip channel | Ada | `archived=1`; hilang dari rail, baris dan riwayat tetap utuh |
+| Kelola anggota | Ada | Dialog "Kelola anggota" (`manage_channels`) + keluar sendiri untuk anggota biasa |
+| Tanda baca & notifikasi push | Belum | Tidak ada `read_at`, tidak ada badge unread, tidak ada websocket — polling hanya menyegarkan isi daftar dan thread |
+| Lampiran & reaksi | Belum | Di luar cakupan rilis pertama (lihat spec §Di luar cakupan) |
+
 ---
 
 ## 3. Peran dan akses menu
@@ -529,6 +557,7 @@ mengubahnya lewat matriks tanpa menyentuh kode. Sebagian sel dijaga `tests/rbac.
 | `/pos/shifts` | `access_pos` | ✓ | ✓ | ✓ | ✓ | ✓ | – | – | – |
 | `/absen` | tanpa kunci (semua user aktif) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `/backoffice` (dashboard) | `view_analytics` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
+| Chat (`/backoffice/chat`) | `use_chat` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | Vendor & CRM (supplier, pelanggan) | `view_finance` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
 | Daftar cabang & dashboard cabang | `manage_branches` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
 | Pesanan Cabang (`/backoffice/branches/orders`) | `view_inventory` | ✓ | ✓ | ✓ | ✓ | – | ✓ | ✓ | – |
@@ -544,8 +573,9 @@ mengubahnya lewat matriks tanpa menyentuh kode. Sebagian sel dijaga `tests/rbac.
 | Laporan (termasuk laporan procurement) | `view_reports` | ✓ | ✓ | ✓ | ✓ | – | – | – | – |
 | Pengaturan | `view_settings` | ✓ | ✓ | ✓ | – | – | – | – | – |
 
-Jumlah kunci bawaan yang aktif: owner-tier 31/31, `store_manager` 16, `warehouse` 8, `purchasing` 6,
-`cashier` 1 (`access_pos`; `apply_discount` eksplisit `false`), `staff` 0.
+Jumlah kunci bawaan yang aktif: owner-tier 33/33, `store_manager` 18, `warehouse` 9, `purchasing` 7,
+`cashier` 2 (`access_pos` + `use_chat`; `apply_discount` eksplisit `false`), `staff` 1 (`use_chat`).
+Katalognya 7 grup / 33 kunci sejak v11 menambah grup `collaboration`.
 
 Catatan:
 - `admin` adalah alias lama untuk `tenant_admin` yang dipetakan resolver (`src/lib/permission-matrix.ts`),
@@ -559,9 +589,10 @@ Catatan:
   `src/lib/procurement.ts` + `procurement.test.ts`). Karena rute `/pos/transactions` terbuka untuk
   `view_inventory`, peran ini bisa membuka buku transaksi meski kartu "POS & Kasir" tidak pernah
   ditawarkan di mode-select — itu keadaan yang diinginkan, bukan celah.
-- **staff tidak punya satu pun izin bawaan**: tidak ada menu yang terbuka, hanya `/absen` yang
-  bisa diakses (guard `guardedAuthed`). Jadi karyawan "biasa" harus diberi izin lebih dulu di
-  Pengaturan → Role, atau dibuatkan role custom.
+- **staff** hanya memegang satu izin bawaan, `use_chat` — jadi menu **Chat** dan `/absen` terbuka,
+  sementara seluruh back office lainnya tetap terkunci. Itu sengaja: owner ingin bisa menjangkau
+  setiap karyawan lewat channel/DM tanpa harus memberi mereka akses angka. Izin lain tetap harus
+  dicabut-diberikan di Pengaturan → Role, atau lewat role custom `cust_*`.
 - **warehouse** memakai `view_inventory` untuk dokumen stok dan diarahkan ke **Pesanan Cabang** di
   layar mode-select, karena `/backoffice` menuntut `view_analytics` yang tidak dipegang peran ini; menu
   tanpa kuncinya tidak ditampilkan agar tidak ada tautan yang berujung pengalihan.

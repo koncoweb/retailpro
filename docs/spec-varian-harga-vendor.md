@@ -5,7 +5,7 @@
 | Document | `docs/spec-varian-harga-vendor.md` |
 | Status | **Shipped** — dibangun penuh lewat migrasi `006_variants_pricing`; rinciannya di §16 (diverifikasi 2026-11-16) |
 | Tanggal | 2026-10-31 |
-| Schema impact | migrasi `006`, schema version 5 → **6**, 31 → **33** tabel *(hari ini v10 / 34 tabel setelah `010`)* |
+| Schema impact | migrasi `006`, schema version 5 → **6**, 31 → **33** tabel *(hari ini v11 / 38 tabel setelah `010` dan `011`)* |
 | Spec terkait | `docs/spec-purchase-order.md` (siklus PO & penerimaan barang) |
 | Keputusan pemilik | varian = tabel terpisah dengan stok sendiri; harga beli per pecahan independen; template PO = pricelist per vendor |
 
@@ -947,6 +947,11 @@ tetap berfungsi dengan angka stok tingkat produk.
 > `src/lib/vendor-catalog.ts`, dan form produk akhirnya mengisi `vendor_price_list`
 > (§14 D3) lewat `src/lib/product-write.ts`. Lihat
 > [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md).
+>
+> Diperbarui 2026-11-17 (rilis chat, skema v11): `011_chat.sql` menaikkan stamp ke **versi 11 /
+> 38 tabel** lewat empat tabel `chat_*` yang sepenuhnya aditif — tidak ada `ALTER`, jadi
+> `product_variants`, `product_units`, `vendor_price_list`, dan `vendor_products` persis seperti
+> yang dideskripsikan catatan di atas.
 
 Permintaan pemilik: hanya owner (atau user yang diberi wewenang owner) yang
 mengelola template vendor & produk; sistem satuan ritel Indonesia dengan label

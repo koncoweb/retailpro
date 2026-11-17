@@ -4,8 +4,8 @@
 |---|---|
 | Aplikasi | RetailPro — ERP/POS multi-tenant, multi-cabang (pasar Indonesia, IDR) |
 | Dokumen | `docs/arsitektur.md` |
-| Terakhir diperbarui | **2026-11-17** |
-| Versi skema tenant | `schema_version = 10` (`db/schema/tenant.sql` + `db/migrations/`) |
+| Terakhir diperbarui | **2026-11-18** |
+| Versi skema tenant | `schema_version = 11` (`db/schema/tenant.sql` + `db/migrations/`) |
 | Status | Berjalan di lokal **dan** di Vercel (back office + toko online) dengan Turso cloud; belum dipakai data produksi nyata |
 
 > Dokumen ini menjelaskan **bagaimana sistem disusun dan mengapa**. Untuk daftar fitur lihat
@@ -44,7 +44,7 @@ database, menandatangani token, dan menyimpan identitas pengguna.
               v
    +----------------------+       +----------------------+
    |  Turso DB tenant A   |       |  Turso DB tenant B   |
-   |  34 tabel, tanpa     |       |  isolasi fisik       |
+   |  38 tabel, tanpa     |       |  isolasi fisik       |
    |  kolom tenant_id     |       +----------------------+
    +----------------------+
 ```
@@ -306,6 +306,30 @@ Rincian keputusan dan bentuk sheet impor ada di
 [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md); sisi datanya di
 [backend.md](backend.md) §5.12, sisi layarnya di [frontend.md](frontend.md) §8.
 
+### 4.10 Chat internal (channel & DM, polling)
+
+Layar `/backoffice/chat` untuk percakapan owner ⇄ karyawan dalam satu tenant. Tidak ada
+endpoint baru: seluruh baca/tulis lewat `src/lib/chat.ts` langsung ke DB tenant dengan JWT
+yang sama seperti modul domain lain — konsekuensi arsitektur "browser memegang data plane"
+sudah dibayar di tempat lain, di sini ia membeli kesederhanaan.
+
+1. **Near-real-time tanpa websocket.** Daftar percakapan di-poll 10 detik, thread yang aktif
+   3 detik (`use-chat.ts`); tab latar tidak mem-poll, dan append optimistis menutupi latensi
+   kirim. Ini keputusan, bukan keterbatasan: satu-satunya jalur tulis adalah browser.
+2. **Mention = teks natural + snapshot.** Body pesan disimpan apa adanya; tiap mention
+   (`@`orang, `#`produk/invoice/PO/vendor) juga jadi baris `chat_mentions` berisi label saat
+   ditulis, sehingga chip tetap terbaca walau baris sumbernya diganti atau dihapus, dan chip
+   entity menaut langsung ke detailnya (`entityRoute`).
+3. **Batas kepercayaan eksplisit.** Visibilitas channel/DM ditegakkan di UI, bukan RLS — sama
+   seperti seluruh matriks izin app ini (lihat [frontend.md](frontend.md) §9). Chat
+   bukan ruang rahasia; itu tercatat di [spec-chat-internal.md](spec-chat-internal.md) §6.
+4. **Pane menulis ke apa yang ia tampilkan — jadi identitas dimuat lebih dulu.** Query yang
+   key-nya memuat `conversation_id` (`useConversation`, `useMessages`) sengaja tidak memakai
+   `placeholderData: keepPreviousData`; yang memakainya hanya query daftar. Harganya: perpindahan
+   channel menampilkan skeleton sebentar alih-alih transkrip lama. Alasannya terukur (KS-53):
+   dengan placeholder, pesan yang diketik tepat setelah channel baru dibuat ditulis ke channel
+   yang sedang tampil di layar, bukan ke channel yang baru dipilih.
+
 ---
 
 ## 5. Isolasi dan keamanan
@@ -344,7 +368,7 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 
 ## 6. Model data
 
-34 tabel di DB tenant, dikelompokkan:
+38 tabel di DB tenant, dikelompokkan:
 
 | Domain | Tabel |
 |---|---|
@@ -357,6 +381,7 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 | SDM | `attendance`, `leaves`, `employees`, `face_enrollments` — `face_enrollments` menyimpan descriptor wajah 128-float per karyawan (bukan foto) untuk verifikasi absensi |
 | Jejak | `audit_logs` |
 | CRM | `customers` |
+| Kolaborasi | `chat_conversations`, `chat_participants`, `chat_messages`, `chat_mentions` (v11) — channel & DM per tenant, satu-satunya penulis `src/lib/chat.ts`; visibilitas adalah aturan UI, bukan batas keamanan (tanpa RLS) |
 
 Detail kolom, indeks, dan konvensi: [backend.md](backend.md) §5.
 
@@ -374,7 +399,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | Runtime API | Node ≥ 20 (Vercel Functions, `node:crypto`) |
 | Database | Turso libSQL cloud, grup `ap-southeast-2`; control DB + satu DB per tenant |
 | Dev lokal | `npm run dev` (SPA :8080) + `npm run dev:api` (:3000, proxy `VITE_API_PROXY_TARGET`) + `cd tokoonline && npm run dev` (:8082) |
-| Verifikasi | `npm run typecheck`, `npm test` (Vitest 30 berkas/419 test), `npm run audit:sql`, `npm run docs:check` (bentuk tabel markdown + satu versi skema di tiga tempat + indeks dokumen + anchor `§` antar-dokumen; plus positive control di `scripts/__fixtures__/docs-check` yang wajib melaporkan 8 masalah), dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI. `npm run lint` 0 error atas berkas yang diubah rilis v10; repo-wide masih 25 error `no-explicit-any` warisan di dashboard/laporan (`HEAD` sudah begitu) |
+| Verifikasi | `npm run typecheck`, `npm test` (Vitest 31 berkas/441 test), `npm run audit:sql`, `npm run docs:check` (bentuk tabel markdown + satu versi skema di tiga tempat + indeks dokumen + anchor `§` antar-dokumen; plus positive control di `scripts/__fixtures__/docs-check` yang wajib melaporkan 8 masalah), dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI. `npm run lint` 0 error atas berkas yang diubah rilis v10 dan v11; repo-wide masih 25 error `no-explicit-any` warisan di dashboard/laporan (`HEAD` sudah begitu) |
 | Variabel | Lihat tabel env di [backend.md](backend.md) §2 (lokal) dan [deployment.md](deployment.md) §4 (produksi) |
 | Kontrak platform | Import relatif `.js` di `api/`+`server/`; route bracket lewat `rewrites` di `vercel.json`; `db/schema/**` ikut ke lambda |
 

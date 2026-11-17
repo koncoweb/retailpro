@@ -23,6 +23,7 @@ import {
   DollarSign,
   FileText,
   LayoutDashboard,
+  MessagesSquare,
   Package,
   ScanFace,
   Settings,
@@ -54,6 +55,7 @@ export interface NavItem {
 
 export const navItems: NavItem[] = [
   { title: "Dashboard", icon: LayoutDashboard, path: "/backoffice", permission: "view_analytics" },
+  { title: "Chat", icon: MessagesSquare, path: "/backoffice/chat", permission: "use_chat" },
   {
     title: "Cabang",
     icon: Building2,

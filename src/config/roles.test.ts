@@ -53,6 +53,7 @@ describe('permission catalog', () => {
       'employees',
       'reports',
       'settings',
+      'collaboration',
     ]);
   });
 });

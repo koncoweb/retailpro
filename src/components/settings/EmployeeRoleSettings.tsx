@@ -96,6 +96,7 @@ const GROUP_TITLES: Record<PermissionGroupName, string> = {
   employees: "Karyawan",
   reports: "Laporan & Keuangan",
   settings: "Pengaturan & Akses",
+  collaboration: "Kolaborasi & Chat",
 };
 
 interface RoleDraft {

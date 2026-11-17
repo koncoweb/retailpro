@@ -67,7 +67,7 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
     // schema is now at v10 (vendor catalogue indexes); the attendance geo/face
     // columns it carries still originate from v8 and must survive the bump.
     const version = await rows<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(Number(version[0].version)).toBe(10);
+    expect(Number(version[0].version)).toBe(11);
 
     // every branch carries coordinates so the geofence screens have a target
     const noGeo = await scalar(

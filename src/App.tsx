@@ -12,6 +12,7 @@ import POSTransactions from "./pages/POSTransactions";
 import POSShifts from "./pages/POSShifts";
 import AttendanceCheckIn from "./pages/AttendanceCheckIn";
 import Dashboard from "./pages/Dashboard";
+import Chat from "./pages/Chat";
 import Branches from "./pages/Branches";
 import Warehouses from "./pages/Warehouses";
 import Inventory from "./pages/Inventory";
@@ -127,6 +128,7 @@ const App = () => (
 
               {/* Back Office Routes */}
               <Route path="/backoffice" element={guarded(<Dashboard />, "view_analytics")} />
+              <Route path="/backoffice/chat" element={guarded(<Chat />, "use_chat")} />
               <Route path="/backoffice/crm/suppliers" element={guarded(<Vendors />, "view_finance")} />
               <Route path="/backoffice/vendors" element={guarded(<Vendors />, "view_finance")} />
               <Route path="/backoffice/vendors/:id" element={guarded(<VendorDetail />, "view_finance")} />
