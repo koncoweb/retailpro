@@ -3,7 +3,7 @@
 Semua perubahan penting pada RetailPro didokumentasikan di sini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [— (working tree)] — 18 November 2026 — Chat Internal Antar Tim Satu Tenant (skema v11)
+## [3e0330d] — 18 November 2026 — Chat Internal Antar Tim Satu Tenant (skema v11)
 
 Owner ⇄ karyawan mengobrol di dalam tenant sendiri: **DM** dan **channel** bernama, mention `@` orang serta `#` produk/invoice/PO/vendor yang menaut langsung ke recordnya, dan semuanya dibaca lewat **polling** — tanpa satu endpoint server pun yang baru. Skema **v11**: `db/migrations/011_chat.sql` menambah **empat tabel sepenuhnya aditif** (34 → 38 tabel) dengan **nol `ALTER`** pada tabel lama. 24 berkas diubah (±500 baris ditambah, 55 dihapus) + **19 berkas baru (±3.502 baris)**, termasuk spesifikasi browser 381 baris.
 
