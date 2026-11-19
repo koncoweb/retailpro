@@ -6,7 +6,7 @@
 | Terakhir diperbarui | **2026-11-19** |
 | Status | **Beku** (desain dikunci setelah implementasi selesai) |
 | Skema | **Tidak ada migrasi.** `schema_version` tetap 12; tidak ada tabel/kolom baru, tidak ada `apply-schema-all` |
-| Rilis | `— (working tree)` — lihat [CHANGELOG.md](../CHANGELOG.md) |
+| Rilis | `b14f89b` — lihat [CHANGELOG.md](../CHANGELOG.md) |
 
 Dokumen ini meneruskan [spec-impor-varian-kaya.md](spec-impor-varian-kaya.md) §6: sheet vendor+produk datar,
 `carryVendorForward`, dan harga beli yang ditarget ke varian sudah ada di sana. Yang diubah di sini adalah **bentuk

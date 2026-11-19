@@ -6,7 +6,7 @@
 | Terakhir diperbarui | **2026-11-19** |
 | Status | **Beku** (desain dikunci setelah implementasi selesai) |
 | Skema | `schema_version = 12` (`db/migrations/012_payment_channels.sql`) |
-| Rilis | `[c14b2e7]` — lihat [CHANGELOG.md](../CHANGELOG.md) |
+| Rilis | `[b14f89b]` — lihat [CHANGELOG.md](../CHANGELOG.md) |
 
 ---
 

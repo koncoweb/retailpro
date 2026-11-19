@@ -6,7 +6,7 @@
 | Terakhir diperbarui | **2026-11-19** |
 | Status | **Beku** (desain dikunci setelah implementasi selesai) |
 | Skema | **Tidak ada migrasi.** `schema_version` tetap 12; tidak ada tabel/kolom baru, tidak ada `apply-schema-all` |
-| Rilis | `— (working tree)` — lihat [CHANGELOG.md](../CHANGELOG.md) |
+| Rilis | `b14f89b` — lihat [CHANGELOG.md](../CHANGELOG.md) |
 
 Dokumen ini meneruskan [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md) §5: sheet vendor+produk
 datar 18 kolom dan satu penulis produk sudah ada di sana. Yang ditambah di sini adalah **varian** ke kedua sheet, dan
