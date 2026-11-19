@@ -23,7 +23,7 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
 
     // 2. Sell one base unit of a product that is in stock at this branch.
     await app.open('/pos');
-    const search = screen.getByPlaceholder('Cari produk...');
+    const search = screen.getByPlaceholder('Cari / scan barcode...');
     await expect(search).toBeVisible();
     await search.fill('Tepung Terigu Cakra Kembar');
     await screen.getByRole('button', { name: /Tepung Terigu Cakra Kembar/ }).tap();
@@ -72,7 +72,7 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await expect(screen.getByText('Shift Aktif')).toBeVisible();
 
     await app.open('/pos');
-    const search = screen.getByPlaceholder('Cari produk...');
+    const search = screen.getByPlaceholder('Cari / scan barcode...');
     await expect(search).toBeVisible();
     await search.fill('Susu Kental Manis');
     await screen.getByRole('button', { name: /Susu Kental Manis/ }).tap();
@@ -134,7 +134,7 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await expect(screen.getByText('Shift Aktif')).toBeVisible();
 
     await app.open('/pos');
-    const search = screen.getByPlaceholder('Cari produk...');
+    const search = screen.getByPlaceholder('Cari / scan barcode...');
     await expect(search).toBeVisible();
     await search.fill('Box Kue 20x20 Putih');
     await screen.getByRole('button', { name: /Box Kue 20x20 Putih/ }).tap();
@@ -201,5 +201,83 @@ describe('cashier', { tags: ['kasir'], agentContext: APP_CONTEXT }, () => {
     await expect(screen.getByText('Status hari ini')).toBeVisible();
     await expect(screen.getByText(/^Masuk \d{2}:\d{2}$/)).toBeVisible();
     await expect(screen.getByText('Otomatis dari buka shift')).toBeVisible();
+  });
+
+  test('cart and payment actions fit short screens at normal zoom', { session: 'kasir' }, async ({ app, screen, browser }) => {
+    await browser.setViewport({ width: 1280, height: 600 });
+    await app.open('/pos');
+    await expect(screen.getByPlaceholder('Cari / scan barcode...')).toBeVisible();
+    await expect(screen.getByRole('button', { name: /Tepung Terigu Cakra Kembar/ })).toBeVisible();
+    if (await screen.getByRole('button', 'Buka Shift', { exact: true }).isVisible()) {
+      await screen.getByRole('button', 'Buka Shift', { exact: true }).tap();
+      const opening = screen.getByRole('dialog', { name: 'Buka Shift Kasir' });
+      await opening.getByRole('button', 'Rp0', { exact: true }).tap();
+      await opening.getByRole('button', 'Buka Shift', { exact: true }).tap();
+      await expect(opening).toBeHidden();
+    }
+    await expect(screen.getByRole('button', 'Tutup Shift', { exact: true })).toBeVisible();
+
+    // Use the HID path, not product tiles. No sale is committed by this test.
+    const codes = ['TPG-001', 'TPG-002', 'TPG-003', 'TPG-004', 'TPG-005', 'GLA-001'];
+    for (let i = 0; i < codes.length; i += 1) {
+      await browser.evaluate((code) => {
+        for (const key of [...code, 'Enter']) {
+          document.body.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        }
+      }, codes[i]);
+      await expect(screen.getByText(`${i + 1} item`, { visible: true })).toBeVisible();
+    }
+
+    for (const viewport of [
+      { width: 1366, height: 640 },
+      { width: 1280, height: 600 },
+      { width: 1024, height: 600 },
+      { width: 390, height: 640 },
+      { width: 844, height: 390 },
+    ]) {
+      await browser.setViewport(viewport);
+      const pay = viewport.width >= 1024
+        ? screen.getByRole('region', 'Keranjang desktop').getByRole('button', { name: /^Bayar / })
+        : screen.getByRole('button', 'Bayar', { exact: true });
+      await expect(pay).toBeEnabled();
+      const box = await pay.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.y).toBeGreaterThanOrEqual(0);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
+      expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+      expect(await browser.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
+      console.log(await app.screenshot(`cart-${viewport.width}x${viewport.height}`));
+
+      if (viewport.width < 1024) {
+        await screen.getByRole('button', '6 item', { exact: true }).tap();
+        const sheet = screen.getByRole('dialog', { name: 'Keranjang (6 item)' });
+        await expect(sheet).toBeVisible();
+        const sheetPay = sheet.getByRole('button', { name: /^Bayar / });
+        const sheetBox = await sheetPay.boundingBox();
+        expect(sheetBox!.y).toBeGreaterThanOrEqual(0);
+        expect(sheetBox!.y + sheetBox!.height).toBeLessThanOrEqual(viewport.height);
+        console.log(await app.screenshot(`cart-sheet-${viewport.width}x${viewport.height}`));
+        await sheetPay.tap();
+      } else {
+        // Scroll the rows to the bottom; the checkout action must not move.
+        await browser.evaluate(() => {
+          const rows = document.querySelector('[aria-label="Keranjang desktop"] [aria-label="Item keranjang"]');
+          if (rows) rows.scrollTop = rows.scrollHeight;
+        });
+        const afterScroll = await pay.boundingBox();
+        expect(afterScroll!.y).toBe(box!.y);
+        await pay.tap();
+      }
+
+      const payment = screen.getByRole('dialog', { name: 'Pembayaran', exact: true });
+      await expect(payment).toBeVisible();
+      await payment.getByRole('button', 'Uang Pas').tap();
+      const confirmBox = await payment.getByRole('button', 'Bayar', { exact: true }).boundingBox();
+      expect(confirmBox!.y).toBeGreaterThanOrEqual(0);
+      expect(confirmBox!.y + confirmBox!.height).toBeLessThanOrEqual(viewport.height);
+      console.log(await app.screenshot(`payment-${viewport.width}x${viewport.height}`));
+      await payment.getByRole('button', 'Batal').tap();
+      await expect(payment).toBeHidden();
+    }
   });
 });

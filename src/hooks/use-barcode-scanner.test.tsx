@@ -26,6 +26,32 @@ describe('keyboard-wedge barcode capture', () => {
     expect(onScan.mock.calls).toEqual([['012345'], ['012345']]);
   });
 
+  it.each(['Enter', 'Tab'])('accepts a delayed %s suffix immediately and only once', (key) => {
+    const onScan = vi.fn();
+    renderHook(() => useBarcodeScanner({ onScan }));
+    for (const digit of '0123456789012') {
+      now += 5; fireEvent.keyDown(document.body, { key: digit });
+    }
+    now += 200;
+    expect(fireEvent.keyDown(document.body, { key })).toBe(false);
+    expect(onScan).toHaveBeenCalledExactlyOnceWith('0123456789012');
+    fireEvent.keyDown(document.body, { key });
+    expect(onScan).toHaveBeenCalledOnce();
+  });
+
+  it('expires stale bursts and does not merge scans separated by a pause', () => {
+    const onScan = vi.fn();
+    renderHook(() => useBarcodeScanner({ onScan }));
+    for (const key of '123456') { now += 5; fireEvent.keyDown(document.body, { key }); }
+    now += 501;
+    fireEvent.keyDown(document.body, { key: 'Enter' });
+    expect(onScan).not.toHaveBeenCalled();
+    for (const key of '654321') { now += 5; fireEvent.keyDown(document.body, { key }); }
+    now += 100;
+    burst('987654');
+    expect(onScan).toHaveBeenCalledExactlyOnceWith('987654');
+  });
+
   it('ignores slow typing, short bursts, empty Enter and modified chords', () => {
     const onScan = vi.fn();
     renderHook(() => useBarcodeScanner({ onScan }));

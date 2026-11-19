@@ -177,12 +177,13 @@ export function PaymentModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-[500px]">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-[95vw] flex-col overflow-hidden p-4 sm:max-w-[500px] sm:p-6">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Pembayaran</DialogTitle>
         </DialogHeader>
 
-        <div className="p-4 bg-primary/10 rounded-lg mb-4">
+        <div className="min-h-0 overflow-y-auto space-y-4">
+        <div className="p-4 bg-primary/10 rounded-lg">
           <p className="text-sm text-muted-foreground">Total Pembayaran</p>
           <p className="text-3xl font-bold text-primary">{formatCurrency(total)}</p>
         </div>
@@ -309,8 +310,9 @@ export function PaymentModal({
             ) : null
           )}
         </Tabs>
+        </div>
 
-        <div className="flex gap-2 pt-4">
+        <div className="flex shrink-0 gap-2 border-t pt-3">
           <Button
             variant="outline"
             className="flex-1"
@@ -332,14 +334,14 @@ export function PaymentModal({
 
       {qrisChannel && qrisDataUrl && (
         <Dialog open={zoom} onOpenChange={setZoom}>
-          <DialogContent className="max-w-[92vw] sm:max-w-[560px]">
+          <DialogContent className="max-h-[calc(100dvh-2rem)] max-w-[92vw] overflow-y-auto sm:max-w-[560px]">
             <DialogHeader>
               <DialogTitle>QRIS Pembayaran</DialogTitle>
             </DialogHeader>
             <img
               src={qrisDataUrl}
               alt="QRIS toko ukuran penuh"
-              className="w-full h-auto rounded-lg bg-white p-2"
+              className="w-full max-h-[70dvh] object-contain rounded-lg bg-white p-2"
             />
           </DialogContent>
         </Dialog>

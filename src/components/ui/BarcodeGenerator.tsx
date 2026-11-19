@@ -31,8 +31,12 @@ export const BarcodeGenerator = ({
           height: height,
           displayValue: displayValue,
           fontSize: fontSize,
-          margin: 0,
-          background: "transparent",
+          // Quiet zones keep adjacent text/packaging out of the decoder's scan.
+          margin: 8,
+          marginLeft: Math.ceil(width * 10),
+          marginRight: Math.ceil(width * 10),
+          lineColor: "#000000",
+          background: "#ffffff",
         });
       } catch (error) {
         console.error("Barcode generation failed:", error);
@@ -42,7 +46,7 @@ export const BarcodeGenerator = ({
 
   return (
     <div className={className}>
-      <svg ref={svgRef} />
+      <svg ref={svgRef} role="img" aria-label={`Barcode ${value}`} />
     </div>
   );
 };

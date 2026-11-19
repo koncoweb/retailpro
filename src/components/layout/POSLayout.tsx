@@ -10,6 +10,8 @@ import { usePosBranch } from "@/hooks/use-pos-branch";
 
 interface POSLayoutProps {
   children: ReactNode;
+  /** The register scrolls its own panels while the checkout action stays visible. */
+  viewport?: boolean;
 }
 
 const posNavItems = [
@@ -18,7 +20,7 @@ const posNavItems = [
   { title: "Shift", path: "/pos/shifts", icon: Clock },
 ];
 
-export function POSLayout({ children }: POSLayoutProps) {
+export function POSLayout({ children, viewport = false }: POSLayoutProps) {
   const location = useLocation();
   const { theme, setTheme } = useTheme();
   const signOut = useSignOut();
@@ -28,14 +30,14 @@ export function POSLayout({ children }: POSLayoutProps) {
   const { branchName, loading: branchLoading } = usePosBranch();
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className={cn("bg-background flex flex-col", viewport ? "h-dvh overflow-hidden" : "min-h-screen")}>
       {/* POS Header */}
       {/* The inline tabs need room the tablet classes never had: at `md` (768px)
          brand + branch + three tabs + the action buttons measured 855px, which
          pushed the whole header past the viewport and gave every POS screen a
          horizontal scrollbar. Tabs therefore start at `lg`, and the compact bar
          below covers everything under it. */}
-      <header className="h-14 bg-card border-b flex items-center justify-between gap-2 px-4">
+      <header className="h-14 shrink-0 bg-card border-b flex items-center justify-between gap-2 px-4">
         <div className="flex min-w-0 items-center gap-4">
           <div className="flex shrink-0 items-center gap-2">
             <div className="w-8 h-8 rounded-lg gradient-primary flex items-center justify-center">
@@ -97,7 +99,7 @@ export function POSLayout({ children }: POSLayoutProps) {
       </header>
 
       {/* Navigation */}
-      <div className="lg:hidden flex items-center justify-center gap-2 p-2 border-b bg-card">
+      <div className="lg:hidden shrink-0 flex items-center justify-center gap-2 p-2 border-b bg-card">
         {posNavItems.map((item) => (
           <Link
             key={item.path}
@@ -116,7 +118,7 @@ export function POSLayout({ children }: POSLayoutProps) {
       </div>
 
       {/* Main Content */}
-      <main className="flex-1 p-4 overflow-auto">
+      <main className={cn("flex-1 p-4", viewport ? "min-h-0 overflow-hidden" : "overflow-auto")}>
         {children}
       </main>
     </div>

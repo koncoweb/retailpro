@@ -26,7 +26,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package, MapPin } from "lucide-react";
+import { Search, Barcode, Plus, Minus, Trash2, QrCode, Percent, X, Clock, AlertTriangle, Package, MapPin } from "lucide-react";
 import { toast } from "sonner";
 import { Product, ProductUnit, ProductVariant, CartItem } from "@/types";
 import { query, runTransaction, batchQuery, parseJson, type BatchStatement } from "@/lib/db";
@@ -1311,20 +1311,24 @@ export default function POS() {
   );
 
   const cartFooter = (
-    <div className="border-t p-3 md:p-4 space-y-3 md:space-y-4">
-      <div className="flex items-center gap-2"><Button variant="outline" size="sm" className="gap-1"><User className="w-4 h-4" />Member</Button>{can("apply_discount") && <Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setActiveDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button>}</div>
-      <div className="space-y-2 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(subtotal)}</span></div>{discount > 0 && <div className="flex justify-between text-success"><span>Diskon ({discount}%)</span><span>-{formatCurrency(discountAmount)}</span></div>}<div className="flex justify-between text-lg font-bold pt-2 border-t"><span>Total</span><span className="text-primary">{formatCurrency(total)}</span></div></div>
-      <div className="grid grid-cols-3 gap-2"><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Banknote className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Tunai</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><CreditCard className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Kartu</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Wallet className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">E-Wallet</span></Button></div>
-      <Button variant="posPayment" size="xl" className="w-full" disabled={cart.length === 0 || !isShiftActive} onClick={() => { setIsMobileCartOpen(false); setIsPaymentOpen(true); }}>Bayar {formatCurrency(total)}</Button>
+    <div className="shrink-0 border-t bg-card">
+      <div className="max-h-[30dvh] overflow-y-auto p-3 md:p-4 space-y-3">
+        {can("apply_discount") && <Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setActiveDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button>}
+        <div className="space-y-2 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(subtotal)}</span></div>{discount > 0 && <div className="flex justify-between text-success"><span>Diskon ({discount}%)</span><span>-{formatCurrency(discountAmount)}</span></div>}<div className="flex justify-between text-lg font-bold pt-2 border-t"><span>Total</span><span className="text-primary">{formatCurrency(total)}</span></div></div>
+      </div>
+      {/* Payment channels are selected in PaymentModal; keep this action docked. */}
+      <div className="p-3 md:p-4 pt-0 md:pt-0">
+        <Button variant="posPayment" size="xl" className="w-full" disabled={cart.length === 0 || !isShiftActive} onClick={() => { setIsMobileCartOpen(false); setIsPaymentOpen(true); }}>Bayar {formatCurrency(total)}</Button>
+      </div>
     </div>
   );
 
   return (
-    <POSLayout>
-      <div className="h-[calc(100vh-8rem)] md:h-[calc(100vh-6rem)] flex flex-col lg:flex-row gap-4">
+    <POSLayout viewport>
+      <div className="h-full min-h-0 flex flex-col lg:flex-row gap-4">
         {/* Products */}
-        <div className="flex-1 flex flex-col bg-card rounded-xl border overflow-hidden min-h-0">
-          <div className="p-3 md:p-4 border-b space-y-3">
+        <div className="flex-1 min-w-0 flex flex-col bg-card rounded-xl border overflow-hidden min-h-0">
+          <div className="shrink-0 p-3 md:p-4 border-b space-y-3">
             <div className="flex justify-between items-center">
                 {/* Owners and admins can ring up any branch; everyone else stays
                     pinned to the branch resolved from their tenant session. A
@@ -1358,7 +1362,7 @@ export default function POS() {
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">{categories.map((category) => (<Button key={category} variant={selectedCategory === category ? "default" : "outline"} size="sm" onClick={() => setSelectedCategory(category)} className="whitespace-nowrap text-xs md:text-sm">{category}</Button>))}</div>
           </div>
-          <div className="flex-1 overflow-y-auto p-3 md:p-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-3 md:p-4">
             {/* Data load failure: say what broke and how to recover, in one
                 place the cashier is already looking at. */}
             {(loadError || branchesError) && (
@@ -1479,14 +1483,14 @@ export default function POS() {
         {/* Cart — side panel from lg up; below lg the same rows and totals
             live in the sheet dialog behind the summary bar, so the product
             grid gets to keep the whole phone screen. */}
-        <div className="hidden lg:flex w-96 flex-col bg-card rounded-xl border overflow-hidden">
-          <div className="p-3 md:p-4 border-b space-y-2"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">Keranjang</h2><p className="text-sm text-muted-foreground">{totalItems} item</p></div>{cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart} className="text-destructive"><Trash2 className="w-4 h-4 mr-1" />Hapus</Button>}</div>{cartTabBar}</div>
-          <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-2 md:space-y-3 min-h-[150px]">{cartRows}</div>
+        <div role="region" aria-label="Keranjang desktop" className="hidden lg:flex w-96 shrink-0 min-h-0 flex-col bg-card rounded-xl border overflow-hidden">
+          <div className="shrink-0 p-3 md:p-4 border-b space-y-2"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">Keranjang</h2><p className="text-sm text-muted-foreground">{totalItems} item</p></div>{cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart} className="text-destructive"><Trash2 className="w-4 h-4 mr-1" />Hapus</Button>}</div>{cartTabBar}</div>
+          <div role="region" aria-label="Item keranjang" className="flex-1 min-h-0 overflow-y-auto p-3 md:p-4 space-y-2 md:space-y-3">{cartRows}</div>
           {cartFooter}
         </div>
 
         {/* <lg summary bar: total and Bayar always within thumb reach. */}
-        <div className="lg:hidden flex items-center gap-3 bg-card border rounded-xl p-3 shadow-lg">
+        <div className="lg:hidden shrink-0 flex items-center gap-3 bg-card border rounded-xl p-3 shadow-lg">
           <Button variant="outline" size="pos" className="gap-2 shrink-0" onClick={() => setIsMobileCartOpen(true)}>
             <Package className="w-5 h-5" />
             <span className="text-xs">{totalItems} item</span>
@@ -1507,12 +1511,12 @@ export default function POS() {
       {/* The full cart as a sheet on <lg screens: same rows, same totals,
           one tap away from the summary bar. */}
       <Dialog open={isMobileCartOpen} onOpenChange={setIsMobileCartOpen}>
-        <DialogContent className="w-[95vw] max-w-[520px] max-h-[85vh] overflow-y-auto">
+        <DialogContent className="w-[95vw] max-w-[520px] max-h-[calc(100dvh-2rem)] grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-2 overflow-hidden p-4">
           <DialogHeader>
             <DialogTitle>Keranjang ({totalItems} item)</DialogTitle>
           </DialogHeader>
           <div className="pb-1">{cartTabBar}</div>
-          <div className="space-y-2 md:space-y-3 py-2">{cartRows}</div>
+          <div role="region" aria-label="Item keranjang" className="min-h-0 overflow-y-auto space-y-2 md:space-y-3 py-2">{cartRows}</div>
           {cartFooter}
         </DialogContent>
       </Dialog>

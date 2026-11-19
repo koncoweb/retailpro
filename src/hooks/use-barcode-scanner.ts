@@ -14,6 +14,8 @@ export interface UseBarcodeScannerOptions {
    * scanner emits characters every few ms; a human cannot. Default 80.
    */
   interKeyTimeoutMs?: number;
+  /** Allow a delayed Enter/Tab suffix without accepting an indefinitely stale scan. */
+  terminatorTimeoutMs?: number;
 }
 
 const TERMINATORS = new Set(["Enter", "Tab"]);
@@ -36,6 +38,7 @@ export function useBarcodeScanner({
   scanInput,
   minLength = 4,
   interKeyTimeoutMs = 80,
+  terminatorTimeoutMs = 500,
 }: UseBarcodeScannerOptions) {
   const bufferRef = useRef("");
   const lastKeyRef = useRef(0);
@@ -74,10 +77,12 @@ export function useBarcodeScanner({
       }
 
       const now = performance.now();
-      // A long pause means the previous characters were not one scan.
-      if (now - lastKeyRef.current > interKeyTimeoutMs) bufferRef.current = "";
+      const gap = now - lastKeyRef.current;
 
       if (TERMINATORS.has(event.key)) {
+        // Some HID devices delay the suffix longer than the character burst.
+        // Handle it before the inter-character reset, but expire stale scans.
+        if (gap > terminatorTimeoutMs) bufferRef.current = "";
         const manualEntry = target === input && event.key === "Enter";
         const code = manualEntry ? input.value.trim() : bufferRef.current;
         bufferRef.current = "";
@@ -93,6 +98,7 @@ export function useBarcodeScanner({
       // `event.key.length === 1` is a printable character (digits, letters and
       // the punctuation barcodes use); anything longer is a control/function key.
       if (event.key.length === 1) {
+        if (gap > interKeyTimeoutMs) bufferRef.current = "";
         bufferRef.current += event.key;
         lastKeyRef.current = now;
       } else {
@@ -102,5 +108,5 @@ export function useBarcodeScanner({
 
     window.addEventListener("keydown", handleKeyDown, true);
     return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, [enabled, scanInput, minLength, interKeyTimeoutMs]);
+  }, [enabled, scanInput, minLength, interKeyTimeoutMs, terminatorTimeoutMs]);
 }
