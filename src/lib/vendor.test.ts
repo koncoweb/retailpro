@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   dueDateFromTerms,
+  highestVendorCode,
   isOverdue,
   nextVendorCode,
   outstandingAmount,
@@ -21,6 +22,25 @@ describe("nextVendorCode", () => {
     expect(nextVendorCode("VND-0001")).toBe("VND-0002");
     expect(nextVendorCode("VND-0099")).toBe("VND-0100");
     expect(nextVendorCode("VND-9999")).toBe("VND-10000");
+  });
+});
+
+describe("highestVendorCode", () => {
+  it("ranks codes by their number, not as text", () => {
+    // Sorting as text puts `VND-10000` below `VND-2`, and every letter above
+    // every digit. Both would hand `nextVendorCode()` a number that is taken.
+    expect(highestVendorCode(["VND-2", "VND-10", "VND-10000"])).toBe("VND-10000");
+    expect(highestVendorCode(["VND-0777", "VND-E2E-KOPI"])).toBe("VND-0777");
+  });
+
+  it("skips hand-written codes and blanks, and answers null when none count", () => {
+    expect(highestVendorCode(["VND-SURIYA", null, "", "  ", "VND-0004"])).toBe("VND-0004");
+    expect(highestVendorCode(["VND-SURIYA", undefined])).toBeNull();
+    expect(highestVendorCode([])).toBeNull();
+  });
+
+  it("feeds nextVendorCode the highest number instead of the highest text", () => {
+    expect(nextVendorCode(highestVendorCode(["VND-0001", "VND-9999", "VND-ZZZ"]))).toBe("VND-10000");
   });
 });
 

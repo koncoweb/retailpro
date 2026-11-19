@@ -18,6 +18,11 @@ import { logAuditTx } from "@/lib/audit";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
 import { sortBatchesForIssue } from "@/lib/stock-issue";
 import {
+  mergeGroups,
+  parseVariantAttributes,
+  parseVariantGroups,
+  sanitizeGroups,
+  variantKey,
   variantLabel,
   variantSku,
   type VariantAttributeGroup,
@@ -523,6 +528,43 @@ export interface ImportedProductRow {
   minOrderQty?: number | null;
   /** That vendor's own article number for this product. */
   vendorSku?: string | null;
+  /** `products.variant_attributes`; empty keeps the product without axes. */
+  variantGroups?: VariantAttributeGroup[];
+  /**
+   * Every variant the sheet's lines describe. Absent or empty means "one flat
+   * product": the row's own price and stock become its single `Default`
+   * variant, so both existing callers keep behaving exactly as before.
+   */
+  variants?: ImportedVariantRow[];
+}
+
+/**
+ * One variant as the rich sheet describes it.
+ *
+ * Only `attributes` is required: a file that lists flavours without codes still
+ * gets derived codes, the default pack name and zero opening stock. Prices are
+ * always PER PACK — the base pack's answer is this variant's own summary, the
+ * way the product screen stores it.
+ */
+export interface ImportedVariantRow {
+  attributes: VariantAttributes;
+  /** `product_variants.sku`; blank derives it from the model code + attributes. */
+  sku?: string | null;
+  barcode?: string | null;
+  /** Base pack name; blank means "Pcs". */
+  unitName?: string;
+  /** Buy price of the base pack. */
+  cost?: number;
+  /** Sell price of the base pack. */
+  price?: number;
+  /** Packs beyond the base one, each priced per pack. */
+  packs?: ImportedPack[];
+  /** Opening stock of THIS variant, in base units. */
+  stock?: number;
+  /** The vendor's minimum order for this variant, when the line carries one. */
+  minOrderQty?: number | null;
+  /** The vendor's own article number for this variant. */
+  vendorSku?: string | null;
 }
 
 /**
@@ -553,60 +595,80 @@ export async function insertImportedProduct(
     priceMode?: "overwrite" | "gap-only";
   }
 ): Promise<string> {
-  const unitName = String(row.unitName ?? "").trim() || "Pcs";
-  const cost = money(row.cost);
-  const price = money(row.price);
+  const groups = sanitizeGroups(row.variantGroups ?? []);
+  const variantRows =
+    row.variants && row.variants.length > 0 ? row.variants : [defaultVariantOf(row)];
+  // `cost_price` stays a model summary — the factor-1 buy price of the first
+  // variant — because the table and the PO screen read one cost per product.
+  const summaryCost = money(variantRows[0]?.cost ?? row.cost);
 
   const res = await tx.query<{ id: string }>(
-    `INSERT INTO products (sku, name, category, cost_price, min_stock_level, supplier_id)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-    [row.sku, row.name, row.category, cost, row.minStock, options.vendorId]
+    `INSERT INTO products (sku, name, category, cost_price, min_stock_level, supplier_id, variant_attributes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+    [
+      row.sku,
+      row.name,
+      row.category,
+      summaryCost,
+      row.minStock,
+      options.vendorId,
+      JSON.stringify(groups),
+    ]
   );
   const productId = res.rows[0].id;
 
-  // Every product owns at least one variant. An imported row has no attribute
-  // axes, so it becomes the single `Default` variant.
-  const variantRes = await tx.query<{ id: string }>(
-    `INSERT INTO product_variants (product_id, sku, name, attributes, cost_price, price)
-     VALUES ($1, $2, 'Default', '{}', $3, $4)
-     RETURNING id`,
-    [productId, row.sku, cost, price]
-  );
-  const variantId = variantRes.rows[0].id;
+  // Every product owns at least one variant. A flat row has no attribute axes,
+  // so it becomes the single `Default` variant; a rich row writes one variant
+  // per line group, each with its own packs, barcode and opening stock. The
+  // order is the one `saveProductDraft` documents: variants, then packs, then
+  // stock, then the vendor rows that quote the prices the packs just got.
+  const offers: ImportedOffer[] = [];
 
-  // The factor-1 pack is where a product's buy and sell price live; a product
-  // without one has no price the POS could charge.
-  await tx.query(
-    `INSERT INTO product_units (product_id, variant_id, name, conversion_factor, cost, price)
-     VALUES ($1, $2, $3, 1, $4, $5)
-     ON CONFLICT (variant_id, conversion_factor) DO UPDATE SET
-       cost = excluded.cost,
-       price = excluded.price`,
-    [productId, variantId, unitName, cost, price]
-  );
+  for (const seed of variantRows) {
+    const attributes = seed.attributes ?? {};
+    const sku = String(seed.sku ?? "").trim() || variantSku(row.sku, attributes);
+    const cost = money(seed.cost ?? row.cost);
+    const price = money(seed.price ?? row.price);
+    const barcode = String(seed.barcode ?? "").trim() || null;
 
-  const writtenPacks: Array<{ unitName: string; conversionFactor: number; cost: number }> = [
-    { unitName, conversionFactor: 1, cost },
-  ];
-
-  // A flat sheet gives one line per pack: a carton is stocked and priced on its
-  // own row, never derived from the piece.
-  for (const pack of row.packs ?? []) {
-    const factor = Number(pack.conversionFactor) || 1;
-    const name = String(pack.unitName ?? "").trim();
-    if (!name || factor === 1 || name.toLowerCase() === unitName.toLowerCase()) continue;
-    const packCost = money(pack.cost);
-    await tx.query(
-      `INSERT INTO product_units (product_id, variant_id, name, conversion_factor, cost, price)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (variant_id, conversion_factor) DO UPDATE SET
-         name = excluded.name,
-         cost = excluded.cost,
-         price = excluded.price`,
-      [productId, variantId, name, factor, packCost, money(pack.price)]
+    const variantRes = await tx.query<{ id: string }>(
+      `INSERT INTO product_variants (product_id, sku, name, attributes, barcode, cost_price, price)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id`,
+      [
+        productId,
+        sku,
+        variantLabel(attributes, groups),
+        JSON.stringify(attributes),
+        barcode,
+        cost,
+        price,
+      ]
     );
-    writtenPacks.push({ unitName: name, conversionFactor: factor, cost: packCost });
+    const variantId = variantRes.rows[0].id;
+
+    const packs = await writeImportedPacks(tx, productId, variantId, seed);
+    offers.push({
+      variantId,
+      packs,
+      minOrderQty: seed.minOrderQty ?? row.minOrderQty ?? null,
+      vendorSku: seed.vendorSku ?? row.vendorSku ?? null,
+    });
+
+    // Opening stock lands on the variant the line spoke about, in base units: a
+    // carton is a pack, not a quantity.
+    const stock = Number(seed.stock ?? 0);
+    if (options.warehouseId && stock > 0) {
+      await tx.query(
+        `INSERT INTO product_batches
+           (warehouse_id, product_id, variant_id, batch_number, quantity_initial, quantity_current, cost_price)
+         VALUES ($1, $2, $3, $4, $5, $5, $6)`,
+        [options.warehouseId, productId, variantId, "INITIAL-IMPORT", stock, cost]
+      );
+    }
   }
+
+  const firstOffer = offers[0];
 
   // Rows that name a vendor register the catalogue link, so the vendor screen
   // and the PO auto-fill see the product immediately.
@@ -614,47 +676,381 @@ export async function insertImportedProduct(
     await upsertVendorCatalogLink(tx, {
       vendorId: options.vendorId,
       productId,
-      vendorSku: row.vendorSku ?? null,
-      lastCost: cost,
-      minOrderQty: row.minOrderQty ?? null,
+      vendorSku: row.vendorSku ?? firstOffer?.vendorSku ?? null,
+      lastCost: summaryCost,
+      minOrderQty: row.minOrderQty ?? firstOffer?.minOrderQty ?? null,
       isPreferred: options.isPreferredVendor !== false,
     });
     await markPreferredVendor(tx, { vendorId: options.vendorId, productId });
 
     // Import may write the agreed buy price: the owner typed it into the sheet,
-    // so it *is* the agreement. One row per pack, because that is how the vendor
-    // quoted it.
-    for (const pack of writtenPacks) {
-      await upsertVendorPrice(tx, {
-        vendorId: options.vendorId,
-        variantId,
-        unitName: pack.unitName,
-        conversionFactor: pack.conversionFactor,
-        buyPrice: pack.cost,
-        minQty: row.minOrderQty ?? null,
-        userId: options.userId ?? null,
-        mode: options.priceMode ?? "gap-only",
-        source: options.priceSource ?? "import",
-      });
+    // so it *is* the agreement. One row per (variant, pack), because that is how
+    // the vendor quoted it and how the PO line will be ordered.
+    for (const offer of offers) {
+      for (const pack of offer.packs) {
+        await upsertVendorPrice(tx, {
+          vendorId: options.vendorId,
+          variantId: offer.variantId,
+          unitName: pack.unitName,
+          conversionFactor: pack.conversionFactor,
+          buyPrice: pack.cost,
+          minQty: offer.minOrderQty,
+          userId: options.userId ?? null,
+          mode: options.priceMode ?? "gap-only",
+          source: options.priceSource ?? "import",
+        });
+      }
     }
-  }
-
-  if (options.warehouseId && Number(row.stock) > 0) {
-    await tx.query(
-      `INSERT INTO product_batches
-         (warehouse_id, product_id, variant_id, batch_number, quantity_initial, quantity_current, cost_price)
-       VALUES ($1, $2, $3, $4, $5, $5, $6)`,
-      [options.warehouseId, productId, variantId, "INITIAL-IMPORT", row.stock, cost]
-    );
   }
 
   await logAuditTx(tx, {
     action: "create_product",
     entity: "products",
     entityId: productId,
-    details: { sku: row.sku, name: row.name, via: "import" },
+    details: {
+      sku: row.sku,
+      name: row.name,
+      via: "import",
+      variants: variantRows.length,
+    },
     userId: options.userId ?? undefined,
   });
 
   return productId;
 }
+
+/** ---------------------------------------------------------------- import parts */
+
+/** A pack the writer just stored, for the vendor price rows that follow it. */
+interface WrittenPack {
+  unitName: string;
+  conversionFactor: number;
+  cost: number;
+}
+
+/** One variant's worth of vendor intent, collected while its rows are written. */
+interface ImportedOffer {
+  variantId: string;
+  packs: WrittenPack[];
+  minOrderQty: number | null;
+  vendorSku: string | null;
+}
+
+/** The single variant a flat (pre-variant) sheet row describes. */
+function defaultVariantOf(row: ImportedProductRow): ImportedVariantRow {
+  return {
+    attributes: {},
+    sku: row.sku,
+    unitName: row.unitName,
+    cost: row.cost,
+    price: row.price,
+    packs: row.packs ?? [],
+    stock: row.stock,
+    minOrderQty: row.minOrderQty ?? null,
+    vendorSku: row.vendorSku ?? null,
+  };
+}
+
+/**
+ * Every pack of one imported variant, the base pack first.
+ *
+ * The factor-1 pack is where a product's buy and sell price live — a product
+ * without one has no price the POS could charge — and every extra pack is its
+ * own row with its OWN prices, because a carton is not 24 x the piece. Two
+ * packs asking for the same factor is one pack: the database has a unique index
+ * on `(variant_id, conversion_factor)` and the first answer wins.
+ */
+function packsOfSeed(
+  seed: ImportedVariantRow
+): Array<{ unitName: string; conversionFactor: number; cost: number; price: number }> {
+  const unitName = String(seed.unitName ?? "").trim() || "Pcs";
+  const list = [
+    {
+      unitName,
+      conversionFactor: 1,
+      cost: money(seed.cost ?? 0),
+      price: money(seed.price ?? 0),
+    },
+  ];
+  for (const pack of seed.packs ?? []) {
+    const factor = Number(pack.conversionFactor) || 1;
+    const name = String(pack.unitName ?? "").trim();
+    if (!name || factor === 1 || name.toLowerCase() === unitName.toLowerCase()) continue;
+    if (list.some((entry) => entry.conversionFactor === factor)) continue;
+    list.push({ unitName: name, conversionFactor: factor, cost: money(pack.cost), price: money(pack.price) });
+  }
+  return list;
+}
+
+/** Inserts every pack of a brand-new variant and returns what it wrote. */
+async function writeImportedPacks(
+  tx: Transaction,
+  productId: string,
+  variantId: string,
+  seed: ImportedVariantRow
+): Promise<WrittenPack[]> {
+  const written: WrittenPack[] = [];
+  for (const pack of packsOfSeed(seed)) {
+    await tx.query(
+      `INSERT INTO product_units (product_id, variant_id, name, conversion_factor, cost, price)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (variant_id, conversion_factor) DO UPDATE SET
+         name = excluded.name,
+         cost = excluded.cost,
+         price = excluded.price`,
+      [productId, variantId, pack.unitName, pack.conversionFactor, pack.cost, pack.price]
+    );
+    written.push({
+      unitName: pack.unitName,
+      conversionFactor: pack.conversionFactor,
+      cost: pack.cost,
+    });
+  }
+  return written;
+}
+
+/** What extending an existing product with a sheet actually changed. */
+export interface ExtendImportResult {
+  addedVariants: number;
+  addedPacks: number;
+  /** Variants the sheet re-entered and the writer left alone. */
+  matchedVariants: number;
+}
+
+/**
+ * Adds what a sheet brings to a product the database ALREADY has: the variants
+ * it names that do not exist yet, the packs those variants are missing, and the
+ * vendor agreement behind them.
+ *
+ * This is the whole "extend instead of skip" policy in one place. It never
+ * renames a product, never deletes a variant, never re-prices a stored pack,
+ * never clears a summary cost and never moves a preferred vendor. The stored
+ * axis list only grows (`mergeGroups`), `products.cost_price` and
+ * `products.supplier_id` are only filled while still empty, and a buy price is
+ * only replaced when the caller says it may (`priceMode: "overwrite"`, which
+ * the UI only sets with `manage_vendor_prices`).
+ *
+ * @returns the counts the preview promised, so the toast can be checked
+ * against the plan instead of against hope.
+ */
+export async function appendImportedVariants(
+  tx: Transaction,
+  productId: string,
+  seed: {
+    sku?: string | null;
+    variantGroups?: VariantAttributeGroup[];
+    variants: ImportedVariantRow[];
+  },
+  options: {
+    warehouseId: string | null;
+    vendorId: string | null;
+    userId?: string | null;
+    priceMode?: "overwrite" | "gap-only";
+    priceSource?: "import" | "form produk" | "katalog vendor";
+    minOrderQty?: number | null;
+    vendorSku?: string | null;
+    /** Only true when the planner proved nobody prefers a vendor for it yet. */
+    claimPreference?: boolean;
+  }
+): Promise<ExtendImportResult> {
+  const productRes = await tx.query<{
+    sku: string | null;
+    variant_attributes: string | null;
+    cost_price: number | null;
+    supplier_id: string | null;
+  }>(
+    `SELECT sku, variant_attributes, cost_price, supplier_id FROM products WHERE id = $1`,
+    [productId]
+  );
+  const product = productRes.rows[0];
+  if (!product) {
+    throw new Error(`Produk "${seed.sku ?? productId}" tidak ditemukan saat menambah varian.`);
+  }
+
+  const storedVariants = await tx.query<{ id: string; sku: string | null; attributes: string | null }>(
+    `SELECT id, sku, attributes FROM product_variants WHERE product_id = $1`,
+    [productId]
+  );
+  const storedUnits = await tx.query<{ variant_id: string; conversion_factor: number }>(
+    `SELECT variant_id, conversion_factor FROM product_units WHERE product_id = $1`,
+    [productId]
+  );
+
+  const idByKey = new Map<string, string>();
+  const idBySku = new Map<string, string>();
+  for (const row of storedVariants.rows) {
+    idByKey.set(variantKey(parseVariantAttributes(row.attributes)), row.id);
+    if (row.sku) idBySku.set(row.sku.toUpperCase(), row.id);
+  }
+  const heldFactors = new Map<string, Set<number>>();
+  for (const row of storedUnits.rows) {
+    const held = heldFactors.get(row.variant_id) ?? new Set<number>();
+    held.add(Number(row.conversion_factor));
+    heldFactors.set(row.variant_id, held);
+  }
+
+  const modelSku = String(product.sku ?? seed.sku ?? "").trim();
+  const storedGroups = parseVariantGroups(product.variant_attributes);
+  const groups = mergeGroups(storedGroups, seed.variantGroups ?? []);
+
+  const offers: ImportedOffer[] = [];
+  let addedVariants = 0;
+  let addedPacks = 0;
+  let matchedVariants = 0;
+  let firstBaseCost = 0;
+
+  for (const variant of seed.variants) {
+    const attributes = variant.attributes ?? {};
+    const declared = String(variant.sku ?? "").trim().toUpperCase();
+    const key = variantKey(attributes);
+    // Codes first: a variant renamed on the product screen keeps its label and
+    // its code, and the operator's code is what the sheet's line means.
+    const existingId = (declared ? idBySku.get(declared) : undefined) ?? idByKey.get(key) ?? null;
+
+    if (existingId) {
+      matchedVariants += 1;
+      const held = heldFactors.get(existingId) ?? new Set<number>();
+      const packs: WrittenPack[] = [];
+      for (const pack of packsOfSeed(variant)) {
+        // A quoted pack is still a price agreement worth recording even when the
+        // variant already sells it; only the missing row gets inserted, and it
+        // takes its prices from the sheet because nothing was there to protect.
+        packs.push({
+          unitName: pack.unitName,
+          conversionFactor: pack.conversionFactor,
+          cost: pack.cost,
+        });
+        if (held.has(pack.conversionFactor)) continue;
+        await tx.query(
+          `INSERT INTO product_units (product_id, variant_id, name, conversion_factor, cost, price)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           ON CONFLICT (variant_id, conversion_factor) DO UPDATE SET name = excluded.name`,
+          [productId, existingId, pack.unitName, pack.conversionFactor, pack.cost, pack.price]
+        );
+        held.add(pack.conversionFactor);
+        heldFactors.set(existingId, held);
+        addedPacks += 1;
+      }
+      offers.push({
+        variantId: existingId,
+        packs,
+        minOrderQty: variant.minOrderQty ?? options.minOrderQty ?? null,
+        vendorSku: variant.vendorSku ?? options.vendorSku ?? null,
+      });
+      continue;
+    }
+
+    const sku = declared || variantSku(modelSku, attributes);
+    const cost = money(variant.cost ?? 0);
+    if (firstBaseCost === 0) firstBaseCost = cost;
+
+    const inserted = await tx.query<{ id: string }>(
+      `INSERT INTO product_variants (product_id, sku, name, attributes, barcode, cost_price, price)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id`,
+      [
+        productId,
+        sku,
+        variantLabel(attributes, groups),
+        JSON.stringify(attributes),
+        String(variant.barcode ?? "").trim() || null,
+        cost,
+        money(variant.price ?? 0),
+      ]
+    );
+    const variantId = inserted.rows[0].id;
+
+    const packs = await writeImportedPacks(tx, productId, variantId, variant);
+    offers.push({
+      variantId,
+      packs,
+      minOrderQty: variant.minOrderQty ?? options.minOrderQty ?? null,
+      vendorSku: variant.vendorSku ?? options.vendorSku ?? null,
+    });
+
+    const stock = Number(variant.stock ?? 0);
+    if (options.warehouseId && stock > 0) {
+      await tx.query(
+        `INSERT INTO product_batches
+           (warehouse_id, product_id, variant_id, batch_number, quantity_initial, quantity_current, cost_price)
+         VALUES ($1, $2, $3, $4, $5, $5, $6)`,
+        [options.warehouseId, productId, variantId, "INITIAL-IMPORT", stock, cost]
+      );
+    }
+
+    idByKey.set(key, variantId);
+    if (sku) idBySku.set(sku.toUpperCase(), variantId);
+    addedVariants += 1;
+  }
+
+  // The model row only ever gains: new axis values, a summary cost that was
+  // still zero, and a vendor when the product never had one.
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  const set = (column: string, value: unknown) => {
+    values.push(value);
+    updates.push(`${column}=$${values.length}`);
+  };
+  if (JSON.stringify(groups) !== JSON.stringify(storedGroups)) {
+    set("variant_attributes", JSON.stringify(groups));
+  }
+  if (Number(product.cost_price ?? 0) <= 0 && firstBaseCost > 0) {
+    set("cost_price", firstBaseCost);
+  }
+  if (!product.supplier_id && options.vendorId) set("supplier_id", options.vendorId);
+  if (updates.length > 0) {
+    values.push(productId);
+    await tx.query(`UPDATE products SET ${updates.join(", ")} WHERE id=$${values.length}`, values);
+  }
+
+  if (options.vendorId && offers.length > 0) {
+    await upsertVendorCatalogLink(tx, {
+      vendorId: options.vendorId,
+      productId,
+      vendorSku: options.vendorSku ?? offers[0]?.vendorSku ?? null,
+      lastCost: money(offers[0]?.packs[0]?.cost ?? 0),
+      minOrderQty: options.minOrderQty ?? offers[0]?.minOrderQty ?? null,
+      isPreferred: options.claimPreference === true,
+    });
+    // `vendorCatalogLinkStatement` never downgrades a preference, and this only
+    // ever sets one when the planner proved the product had none — so an import
+    // cannot steal another vendor's auto-fill.
+    if (options.claimPreference) {
+      await markPreferredVendor(tx, { vendorId: options.vendorId, productId });
+    }
+
+    for (const offer of offers) {
+      for (const pack of offer.packs) {
+        await upsertVendorPrice(tx, {
+          vendorId: options.vendorId,
+          variantId: offer.variantId,
+          unitName: pack.unitName,
+          conversionFactor: pack.conversionFactor,
+          buyPrice: pack.cost,
+          minQty: offer.minOrderQty,
+          userId: options.userId ?? null,
+          mode: options.priceMode ?? "gap-only",
+          source: options.priceSource ?? "import",
+        });
+      }
+    }
+  }
+
+  if (addedVariants > 0 || addedPacks > 0) {
+    await logAuditTx(tx, {
+      action: "update_product",
+      entity: "products",
+      entityId: productId,
+      details: {
+        sku: product.sku,
+        via: "import",
+        addedVariants,
+        addedPacks,
+      },
+      userId: options.userId ?? undefined,
+    });
+  }
+
+  return { addedVariants, addedPacks, matchedVariants };
+}
+

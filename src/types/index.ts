@@ -149,10 +149,16 @@ export interface Transaction {
   customer_id?: string;
   invoice_number: string;
   total_amount: number;
-  payment_method: 'cash' | 'card' | 'qris' | 'ewallet' | 'debit' | 'credit';
+  payment_method: 'cash' | 'transfer' | 'card' | 'qris' | 'ewallet' | 'debit' | 'credit';
   status: 'completed' | 'void';
   created_at: string;
   items: TransactionItem[];
+  /** Merchant fee absorbed on this tender (012). Never added to `total_amount`. */
+  fee_amount?: number;
+  /** Fee description captured at sale time, e.g. "QRIS · 0.7%". */
+  fee_label?: string | null;
+  /** Which flow produced the bon. `'online'` rows come from the storefront. */
+  source?: 'pos' | 'online';
   /** Joined from `users` by the transaction reports query; display only. */
   cashier_name?: string | null;
   /** Joined from `customers` by the transaction reports query; display only. */

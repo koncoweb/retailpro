@@ -15,7 +15,7 @@ export type VendorCategory =
   | "service"
   | "other";
 export type VendorStatus = "active" | "inactive" | "blacklisted";
-export type VendorPaymentMethod = "cash" | "transfer" | "check" | "other";
+export type VendorPaymentMethod = "cash" | "transfer" | "qris" | "check" | "other";
 
 export const VENDOR_CATEGORIES: Array<{ value: VendorCategory; label: string }> = [
   { value: "supplier", label: "Supplier" },
@@ -34,6 +34,7 @@ export const VENDOR_STATUSES: Array<{ value: VendorStatus; label: string }> = [
 
 export const VENDOR_PAYMENT_METHODS: Array<{ value: VendorPaymentMethod; label: string }> = [
   { value: "transfer", label: "Transfer Bank" },
+  { value: "qris", label: "QRIS" },
   { value: "cash", label: "Tunai" },
   { value: "check", label: "Cek / Giro" },
   { value: "other", label: "Lainnya" },
@@ -66,10 +67,36 @@ export function vendorStatusBadgeClass(value: string | null | undefined): string
   return "bg-success/20 text-success hover:bg-success/30";
 }
 
+/** The sequence number inside a generated code: `VND-0042` -> 42, anything else -> null. */
+export function vendorCodeSequence(code: string | null | undefined): number | null {
+  const match = code?.trim().match(/^[A-Z]+-(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * The highest sequence number among already-used codes, as `VND-####`.
+ *
+ * Only numeric codes count. An operator is free to name a vendor `VND-SURIYA`;
+ * that code is valid, it just is not part of the generated sequence — and a
+ * lexical sort would rank every letter above every digit, so such a code would
+ * look like the "latest" vendor and restart the counter on a value that already
+ * exists.
+ */
+export function highestVendorCode(
+  codes: Iterable<string | null | undefined>
+): string | null {
+  let top: number | null = null;
+  for (const code of codes) {
+    const seq = vendorCodeSequence(code);
+    if (seq !== null && (top === null || seq > top)) top = seq;
+  }
+  return top === null ? null : `${VENDOR_CODE_PREFIX}-${String(top).padStart(4, "0")}`;
+}
+
 /** `VND-0001` -> `VND-0002`. Null or malformed input restarts at 0001. */
 export function nextVendorCode(latestCode: string | null | undefined): string {
-  const match = latestCode?.trim().match(/^[A-Z]+-(\d+)$/);
-  const next = match ? Number(match[1]) + 1 : 1;
+  const seq = vendorCodeSequence(latestCode);
+  const next = seq === null ? 1 : seq + 1;
   return `${VENDOR_CODE_PREFIX}-${String(next).padStart(4, "0")}`;
 }
 

@@ -22,6 +22,7 @@ import {
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { query } from "@/lib/db";
+import { latestVendorCode, outsideTransaction } from "@/lib/vendor-catalog";
 import { logAudit } from "@/lib/audit";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -198,13 +199,12 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: VendorF
     setIsSaving(true);
     try {
       // Code is optional for imported vendors, but the screens sort and search by
-      // it, so a new vendor gets the next sequence automatically.
+      // it, so a new vendor gets the next sequence automatically. The read lives
+      // in `latestVendorCode()` because ranking codes is not something a second
+      // copy should get to invent (`docs/kendala-solusi.md` KS-56).
       let code = form.code.trim().toUpperCase();
       if (!code) {
-        const latest = await query<{ code: string | null }>(
-          `SELECT code FROM suppliers WHERE code LIKE 'VND-%' ORDER BY code DESC LIMIT 1`
-        );
-        code = nextVendorCode(latest.rows[0]?.code);
+        code = nextVendorCode(await latestVendorCode(outsideTransaction));
       }
 
       const settings = JSON.stringify({

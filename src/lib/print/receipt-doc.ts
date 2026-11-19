@@ -66,6 +66,7 @@ export interface ReceiptConfig {
 
 const PAYMENT_LABELS: Record<string, string> = {
   cash: 'Tunai',
+  transfer: 'Transfer Bank',
   card: 'Kartu',
   debit: 'Kartu Debit',
   credit: 'Kartu Kredit',

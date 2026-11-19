@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { VENDOR_PAYMENT_METHODS, isoDate } from "@/lib/vendor";
+import { QrisQuickView } from "@/components/settings/QrisQuickView";
 
 interface Transaction {
   id: string;
@@ -594,6 +595,7 @@ export default function ApAr() {
                 />
               </div>
               {selectedItem?.type === 'ap' && (
+                <>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid gap-2">
                     <Label>Metode Bayar</Label>
@@ -614,12 +616,19 @@ export default function ApAr() {
                     <Label htmlFor="pay_ref">No. Referensi</Label>
                     <Input
                       id="pay_ref"
-                      placeholder="Transfer / cek / giro"
+                      placeholder="Transfer / cek / giro / QRIS"
                       value={paymentReference}
                       onChange={(e) => setPaymentReference(e.target.value)}
                     />
                   </div>
                 </div>
+                {paymentMethod === 'qris' && (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span>Butuh gambar QRIS merchant?</span>
+                    <QrisQuickView />
+                  </div>
+                )}
+                </>
               )}
             </div>
             <DialogFooter>

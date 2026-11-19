@@ -27,6 +27,7 @@ import {
   Package,
   ScanFace,
   Settings,
+  ShoppingBag,
   Store,
   Truck,
   UserCheck,
@@ -133,5 +134,13 @@ export const navItems: NavItem[] = [
     ],
   },
   { title: "Laporan", icon: BarChart3, path: "/backoffice/reports", permission: "view_reports" },
+  {
+    title: "Toko Online",
+    icon: ShoppingBag,
+    permission: "view_finance",
+    children: [
+      { title: "Pesanan Online", path: "/backoffice/storefront-orders", icon: ShoppingBag },
+    ],
+  },
   { title: "Pengaturan", icon: Settings, path: "/backoffice/settings", permission: "view_settings" },
 ];

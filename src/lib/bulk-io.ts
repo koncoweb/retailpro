@@ -219,8 +219,23 @@ export function keepValid(
 // lets the templates, exports and imports share exactly the same headers.
 // ---------------------------------------------------------------------------
 
+/**
+ * The rich product sheet: one line per (variant x pack).
+ *
+ * The first eight columns are the original flat shape and stay first, so a file
+ * exported before variants existed still reads identically. `Kode Varian` and
+ * `Atribut Varian` are what unlock the variant system: a product with three
+ * axes and four values each is twelve lines, not twelve extra columns, so the
+ * number of variants a file carries is unlimited.
+ *
+ * Codes win over names everywhere: `SKU` (with `Kode` as its alias) is the
+ * model, `Kode Varian` the sellable SKU, `Kode Vendor` the master vendor. Bare
+ * `Kode` deliberately stays the PRODUCT's here — the vendor sheet is the one
+ * file where `Kode` meant the vendor, and shadowing it would silently retarget
+ * every old product file.
+ */
 export const PRODUCT_COLUMNS: ColumnDef[] = [
-  { key: "sku", label: "SKU", aliases: ["kode"], width: 16 },
+  { key: "sku", label: "SKU", aliases: ["kode", "kode produk", "sku produk"], width: 16 },
   { key: "name", label: "Nama Produk", aliases: ["nama", "produk", "product", "name"], width: 30 },
   { key: "category", label: "Kategori", aliases: ["kategori", "category"], width: 16 },
   { key: "price", label: "Harga Jual", aliases: ["harga", "price", "harga jual"], width: 12 },
@@ -228,8 +243,31 @@ export const PRODUCT_COLUMNS: ColumnDef[] = [
   { key: "stock", label: "Stok", aliases: ["stok awal", "qty", "stock"], width: 8 },
   { key: "minStock", label: "Stok Minimum", aliases: ["minimum", "min stok", "reorder"], width: 12 },
   { key: "supplier", label: "Supplier", aliases: ["vendor", "pemasok", "supplier"], width: 22 },
+  {
+    key: "variantSku",
+    label: "Kode Varian",
+    aliases: ["variant sku", "sku varian", "kode varian"],
+    width: 24,
+  },
+  {
+    key: "variantAttrs",
+    label: "Atribut Varian",
+    aliases: ["atribut", "atribut varian", "varian", "attributes", "attribute"],
+    width: 26,
+  },
+  { key: "barcode", label: "Barcode Varian", aliases: ["barcode", "kode batang"], width: 16 },
+  { key: "unit", label: "Satuan", aliases: ["satuan", "unit", "pack", "kemasan"], width: 12 },
+  { key: "factor", label: "Faktor", aliases: ["faktor", "isi", "conversion factor"], width: 10 },
+  { key: "vendorCode", label: "Kode Vendor", aliases: ["kode vendor", "vendor code"], width: 12 },
+  { key: "minOrder", label: "Min Order", aliases: ["min order", "minimum order", "moq"], width: 12 },
+  { key: "vendorSku", label: "Vendor SKU", aliases: ["vendor sku", "sku vendor"], width: 16 },
 ];
 
+/**
+ * Four lines telling the whole story: a product without variants, then a product
+ * with two axes whose first variant also has a carton pack. A person reading the
+ * template can see that a repeated `SKU` means "same product, next variant/pack".
+ */
 export const PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
   {
     sku: "CONTOH-001",
@@ -240,6 +278,68 @@ export const PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     stock: "100",
     minStock: "20",
     supplier: "PT Contoh",
+    variantSku: "",
+    variantAttrs: "",
+    barcode: "",
+    unit: "Pcs",
+    factor: "1",
+    vendorCode: "VND-9999",
+    minOrder: "1",
+    vendorSku: "",
+  },
+  {
+    sku: "CONTOH-002",
+    name: "Kopi Sachet Contoh",
+    category: "Minuman",
+    price: "1000",
+    cost: "700",
+    stock: "200",
+    minStock: "20",
+    supplier: "PT Contoh",
+    variantSku: "CONTOH-002-SUSU-250ML",
+    variantAttrs: "Rasa=Susu;Ukuran=250ml",
+    barcode: "8993000000001",
+    unit: "Pcs",
+    factor: "1",
+    vendorCode: "VND-9999",
+    minOrder: "10",
+    vendorSku: "KS-SUSU-250",
+  },
+  {
+    sku: "CONTOH-002",
+    name: "Kopi Sachet Contoh",
+    category: "Minuman",
+    price: "22000",
+    cost: "16000",
+    stock: "",
+    minStock: "20",
+    supplier: "PT Contoh",
+    variantSku: "CONTOH-002-SUSU-250ML",
+    variantAttrs: "Rasa=Susu;Ukuran=250ml",
+    barcode: "",
+    unit: "Karton",
+    factor: "24",
+    vendorCode: "VND-9999",
+    minOrder: "1",
+    vendorSku: "KS-SUSU-KRT",
+  },
+  {
+    sku: "CONTOH-002",
+    name: "Kopi Sachet Contoh",
+    category: "Minuman",
+    price: "1100",
+    cost: "750",
+    stock: "150",
+    minStock: "20",
+    supplier: "PT Contoh",
+    variantSku: "",
+    variantAttrs: "Rasa=Hitam;Ukuran=250ml",
+    barcode: "",
+    unit: "",
+    factor: "",
+    vendorCode: "VND-9999",
+    minOrder: "10",
+    vendorSku: "",
   },
 ];
 
@@ -270,12 +370,22 @@ export const VENDOR_TEMPLATE_ROWS: BulkRow[] = [
 ];
 
 /**
- * One flat sheet holding vendors AND their products: a row is
- * (vendor, product, pack), with the vendor columns repeated on every line. It
- * is deliberately the same shape as the vendor catalogue export, so a screen
- * can export its catalogue, edit the prices in Excel, and import it back.
+ * One flat sheet holding a vendor AND its products: a line is
+ * (vendor, product, variant, pack). It is deliberately the same shape as the
+ * vendor catalogue export, so a screen can export its catalogue, edit the prices
+ * in Excel, and import it back.
  *
- * Rows that carry vendor fields and no product fields are a vendor on its own.
+ * The shape a person is asked to write is ONE VENDOR PER FILE: the first data
+ * row carries only the vendor's own columns, and every row below it carries
+ * products with the vendor columns left blank — `carryVendorForward` hands the
+ * vendor down. Products and variants are unbounded because they cost rows, not
+ * columns.
+ *
+ * Still accepted, because files already in the wild look like this: a sheet that
+ * repeats the vendor on every line (what the all-vendor catalogue export writes),
+ * and a sheet holding several vendors. A line that carries vendor fields and no
+ * product fields is a vendor on its own. `SKU` may hold several codes separated
+ * by `;` to attach a batch of existing products in one line.
  */
 export const VENDOR_PRODUCT_COLUMNS: ColumnDef[] = [
   { key: "vendorCode", label: "Kode Vendor", aliases: ["kode vendor", "kode", "vendor code"], width: 12 },
@@ -296,14 +406,62 @@ export const VENDOR_PRODUCT_COLUMNS: ColumnDef[] = [
   { key: "buyPrice", label: "Harga Beli", aliases: ["harga beli", "modal", "cost", "hpp"], width: 12 },
   { key: "minOrder", label: "Min Order", aliases: ["min order", "minimum order", "moq"], width: 12 },
   { key: "vendorSku", label: "Vendor SKU", aliases: ["vendor sku", "sku vendor"], width: 16 },
+  // Appended last on purpose: a catalogue exported before these columns existed
+  // keeps a stable column order, and an old file still lines up with its header.
+  // Without them a price line cannot say WHICH flavour of a multi-variant product
+  // it is quoting, and the importer would have to guess.
+  {
+    key: "variantSku",
+    label: "Kode Varian",
+    aliases: ["variant sku", "sku varian", "kode varian"],
+    width: 24,
+  },
+  {
+    key: "variantAttrs",
+    label: "Atribut Varian",
+    aliases: ["atribut", "atribut varian", "varian", "attributes"],
+    width: 24,
+  },
+  {
+    key: "barcode",
+    label: "Barcode Varian",
+    aliases: ["barcode", "kode batang", "barcode varian"],
+    width: 18,
+  },
 ];
 
 /**
- * Two vendors, one of them with a two-pack product: the sample has to show that
- * a product spans several rows and that a vendor may arrive without products.
+ * The vendor half of `VENDOR_PRODUCT_COLUMNS` — the columns a one-vendor sheet
+ * states once, on its first data row.
+ *
+ * Two modules need exactly this list and must never disagree about it:
+ * `carryVendorForward()` copies these keys down a sheet, and the one-vendor export
+ * blanks them on every row but the first. A key added to the sheet and missing
+ * here would either re-appear on every product line or stop a product line from
+ * finding its vendor, so it lives beside the columns instead of being typed twice.
+ */
+export const VENDOR_SHEET_KEYS: readonly string[] = [
+  "vendorCode",
+  "vendorName",
+  "vendorCategory",
+  "contactPerson",
+  "phone",
+  "email",
+  "terms",
+];
+
+/**
+ * ONE vendor, told the way the importer wants a file: the first row carries the
+ * vendor and nothing else, and every row below it belongs to that vendor with
+ * its columns left blank. Six lines show everything the format can hold — a
+ * product whose packs span several lines, a variant named by its attributes, a
+ * variant named by its code, and a second variant added to a product that
+ * already exists. Products and variants are unbounded because each costs a row,
+ * never a column.
  */
 export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
   {
+    // Baris 1: hanya data vendor. Semua kolom produk dibiarkan kosong.
     vendorCode: "VND-9999",
     vendorName: "PT Contoh Vendor",
     vendorCategory: "supplier",
@@ -311,46 +469,6 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     phone: "081200000000",
     email: "contoh@vendor.id",
     terms: "30",
-    sku: "CONTOH-001",
-    productName: "Kopi Sachet Contoh",
-    productCategory: "Minuman",
-    price: "1000",
-    stock: "200",
-    minStock: "20",
-    unit: "Pcs",
-    factor: "1",
-    buyPrice: "700",
-    minOrder: "1",
-    vendorSku: "KS-1",
-  },
-  {
-    vendorCode: "VND-9999",
-    vendorName: "PT Contoh Vendor",
-    vendorCategory: "supplier",
-    contactPerson: "Bpk. Contoh",
-    phone: "081200000000",
-    email: "contoh@vendor.id",
-    terms: "30",
-    sku: "CONTOH-001",
-    productName: "Kopi Sachet Contoh",
-    productCategory: "Minuman",
-    price: "22000",
-    stock: "0",
-    minStock: "20",
-    unit: "Karton",
-    factor: "24",
-    buyPrice: "16000",
-    minOrder: "1",
-    vendorSku: "KS-CARTON",
-  },
-  {
-    vendorCode: "VND-9998",
-    vendorName: "CV Contoh Saja",
-    vendorCategory: "distributor",
-    contactPerson: "Ibu Contoh",
-    phone: "081300000000",
-    email: "cv@vendor.id",
-    terms: "14",
     sku: "",
     productName: "",
     productCategory: "",
@@ -362,6 +480,129 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     buyPrice: "",
     minOrder: "",
     vendorSku: "",
+    variantSku: "",
+    variantAttrs: "",
+    barcode: "",
+  },
+  {
+    // Baris 2 dan seterusnya: kolom vendor kosong, ikut baris di atasnya.
+    vendorCode: "",
+    vendorName: "",
+    vendorCategory: "",
+    contactPerson: "",
+    phone: "",
+    email: "",
+    terms: "",
+    sku: "CONTOH-001",
+    productName: "Kopi Sachet Contoh",
+    productCategory: "Minuman",
+    price: "1000",
+    stock: "200",
+    minStock: "20",
+    unit: "Pcs",
+    factor: "1",
+    buyPrice: "700",
+    minOrder: "1",
+    vendorSku: "KS-1",
+    variantSku: "",
+    variantAttrs: "",
+    barcode: "",
+  },
+  {
+    // Pecahan lain dari produk yang sama: `SKU` diulang, kolom vendor kosong.
+    vendorCode: "",
+    vendorName: "",
+    vendorCategory: "",
+    contactPerson: "",
+    phone: "",
+    email: "",
+    terms: "",
+    sku: "CONTOH-001",
+    productName: "",
+    productCategory: "",
+    price: "22000",
+    stock: "",
+    minStock: "",
+    unit: "Karton",
+    factor: "24",
+    buyPrice: "16000",
+    minOrder: "1",
+    vendorSku: "KS-KARTON",
+    variantSku: "",
+    variantAttrs: "",
+    barcode: "",
+  },
+  {
+    // Produk kedua: varian disebut lewat Atribut Varian.
+    vendorCode: "",
+    vendorName: "",
+    vendorCategory: "",
+    contactPerson: "",
+    phone: "",
+    email: "",
+    terms: "",
+    sku: "CONTOH-002",
+    productName: "Kopi Bubuk Contoh",
+    productCategory: "Minuman",
+    price: "9000",
+    stock: "40",
+    minStock: "5",
+    unit: "Pcs",
+    factor: "1",
+    buyPrice: "6500",
+    minOrder: "5",
+    vendorSku: "KB-SUSU",
+    variantSku: "",
+    variantAttrs: "Rasa=Susu;Ukuran=150g",
+    barcode: "8993000000101",
+  },
+  {
+    // Varian yang sama punya pecahan sendiri: satu baris per (varian x pecahan).
+    vendorCode: "",
+    vendorName: "",
+    vendorCategory: "",
+    contactPerson: "",
+    phone: "",
+    email: "",
+    terms: "",
+    sku: "CONTOH-002",
+    productName: "",
+    productCategory: "",
+    price: "216000",
+    stock: "",
+    minStock: "",
+    unit: "Karton",
+    factor: "24",
+    buyPrice: "156000",
+    minOrder: "",
+    vendorSku: "KB-SUSU-KARTON",
+    variantSku: "",
+    variantAttrs: "Rasa=Susu;Ukuran=150g",
+    barcode: "",
+  },
+  {
+    // Varian kedua produk yang sama, disebut lewat Kode Varian.
+    vendorCode: "",
+    vendorName: "",
+    vendorCategory: "",
+    contactPerson: "",
+    phone: "",
+    email: "",
+    terms: "",
+    sku: "CONTOH-002",
+    productName: "",
+    productCategory: "",
+    price: "9500",
+    stock: "30",
+    minStock: "",
+    unit: "Pcs",
+    factor: "1",
+    buyPrice: "6800",
+    minOrder: "5",
+    vendorSku: "KB-HITAM",
+    variantSku: "CONTOH-002-HITAM-150G",
+    variantAttrs: "Rasa=Hitam;Ukuran=150g",
+    barcode: "8993000000118",
   },
 ];
 

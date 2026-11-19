@@ -5,6 +5,12 @@
  * by `/api/tenant/token`; a test that creates a row through the UI needs the
  * same two handles to remove it again, so this helper reuses the server's
  * platform token and registry row instead of scraping the UI.
+ *
+ * One tenant connection is shared for the whole process and re-minted when its
+ * token is nearly spent. Minting per statement was the flake, not the app: the
+ * cloud plane needs around six seconds for a cold connect and the client gives
+ * up at ten, so a test that read five tables after one upload was five races it
+ * could lose without the feature being wrong.
  */
 import { createClient, type Client } from '@libsql/client';
 
@@ -67,7 +73,8 @@ function isLocalDatabase(url: string): boolean {
   );
 }
 
-export async function tenantClient(): Promise<Client> {
+/** Opens a tenant handle the slow way: registry row, then a freshly minted token. */
+async function openTenantClient(): Promise<Client> {
   const { dbName, dbHostname } = await tenantRegistry();
   const url =
     dbHostname.startsWith('http') || dbHostname.startsWith('file:')
@@ -84,6 +91,69 @@ export async function tenantClient(): Promise<Client> {
   const { jwt } = (await response.json()) as { jwt?: string };
   if (!jwt) throw new Error('Turso returned no token.');
   return createClient({ url, authToken: jwt });
+}
+
+/** How long the minted token is valid, and how much of that life the cache uses. */
+const TOKEN_LIFETIME_MS = 10 * 60_000;
+const CLIENT_CACHE_MS = TOKEN_LIFETIME_MS - 60_000;
+
+let shared: { handle: Client; until: number } | null = null;
+
+/**
+ * A handle that shares the process's connection and ignores `close()`.
+ *
+ * Every call site in the suite is `const client = await tenantClient()` with a
+ * `finally { client.close() }`, so releasing is what the callers ask for. The
+ * proxy keeps that shape while the real stream stays open for the next query.
+ */
+function sharedHandle(client: Client): Client {
+  return new Proxy(client, {
+    get(target, property) {
+      if (property === 'close') return () => undefined;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+/** The cloud plane answers a cold connect slowly; these are those failures. */
+function isConnectionLoss(error: unknown): boolean {
+  const text = `${(error as { message?: unknown })?.message ?? error}`;
+  return /fetch failed|Connect Timeout|ECONNRESET|ETIMEDOUT|socket hang up|ClosedExplicitly/i.test(
+    text,
+  );
+}
+
+export async function tenantClient(): Promise<Client> {
+  if (shared && shared.until > Date.now()) return shared.handle;
+  const client = await openTenantClient();
+  shared = { handle: sharedHandle(client), until: Date.now() + CLIENT_CACHE_MS };
+  return shared.handle;
+}
+
+/** What the suite binds into a statement: the primitives libsql accepts. */
+export type TenantArg = string | number | bigint | null | ArrayBuffer;
+
+/**
+ * Runs one statement on the shared handle.
+ *
+ * This is the retry the cached connection exists for: a stream the cloud
+ * dropped between two assertions is re-established once and the statement is
+ * handed to it again, instead of failing a test that never touched the app.
+ */
+export async function executeTenant(
+  sql: string,
+  args: TenantArg[] = []
+): Promise<Awaited<ReturnType<Client['execute']>>> {
+  for (let attempt = 1; ; attempt += 1) {
+    const handle = await tenantClient();
+    try {
+      return await handle.execute({ sql, args });
+    } catch (error) {
+      if (attempt >= 3 || !isConnectionLoss(error)) throw error;
+      shared = null;
+    }
+  }
 }
 
 /**

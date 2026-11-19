@@ -7,10 +7,20 @@ import { formatIDR, todayPlus } from "@/lib/format";
 import { SHOP, type Fulfillment, type PaymentMethod } from "@/lib/shop";
 import { cartTotal, sellerGroups, useShop } from "@/lib/store";
 import { cn } from "@/lib/utils";
+import {
+  availableChannelsForSellers,
+  usePaymentConfigs,
+  type PaymentChannelView,
+} from "@/lib/payment-config";
 
 export const Route = createFileRoute("/checkout")({ component: Checkout });
 
 const SLOTS = ["10.00–12.00", "12.00–15.00", "15.00–18.00", "18.00–20.00"];
+
+/** Where the back-office API listens (same origin logic as `catalog.ts`). */
+const API_BASE = (
+  (import.meta.env.VITE_CATALOG_API_URL as string | undefined) ?? "http://localhost:3000"
+).replace(/\/+$/, "");
 
 function Checkout() {
   const cart = useShop((s) => s.cart);
@@ -24,14 +34,34 @@ function Checkout() {
   const [fulfillment, setFulfillment] = useState<Fulfillment>("delivery");
   const [date, setDate] = useState(todayPlus(SHOP.leadDays));
   const [slot, setSlot] = useState(SLOTS[1]);
-  const [payment, setPayment] = useState<PaymentMethod>("bca");
+  const [payment, setPayment] = useState<PaymentMethod>("transfer");
+  const [selectedBankId, setSelectedBankId] = useState<string>("");
   const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
   const deliveryFee = fulfillment === "delivery" ? SHOP.deliveryFee : 0;
   const total = subtotal + deliveryFee;
   const minDate = todayPlus(SHOP.leadDays);
   // One basket, one payment — but the goods leave from more than one shop.
   const groups = sellerGroups(cart);
+  const paymentConfigs = usePaymentConfigs();
+  const configs = paymentConfigs.status === "loading" ? [] : paymentConfigs.configs;
+
+  // Determine which sellers are in this basket.
+  const sellerSlugs = [...new Set(cart.map((item) => item.tenant))];
+  const availableChannels = availableChannelsForSellers(configs, sellerSlugs);
+
+  // Ensure the selected payment method is still available.
+  const availableIds = availableChannels.map((ch) => ch.id);
+  const effectivePayment: PaymentMethod = availableIds.includes(payment) ? payment : ((availableIds[0] ?? "transfer") as PaymentMethod);
+  const transferChannel = availableChannels.find((ch) => ch.id === "transfer");
+  const transferBanks = transferChannel?.banks ?? [];
+
+  // Ensure selected bank is valid.
+  const effectiveBankId =
+    selectedBankId && transferBanks.some((b) => b.id === selectedBankId)
+      ? selectedBankId
+      : transferBanks[0]?.id ?? "";
 
   if (cart.length === 0) {
     return (
@@ -44,7 +74,7 @@ function Checkout() {
     );
   }
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault();
     if (!name.trim() || !phone.trim()) {
       toast.error("Nama dan WhatsApp wajib diisi");
@@ -54,14 +84,69 @@ function Checkout() {
       toast.error("Alamat pengantaran wajib diisi");
       return;
     }
+    if (effectivePayment === "transfer" && !effectiveBankId) {
+      toast.error("Pilih rekening bank untuk transfer");
+      return;
+    }
+
+    // Save the local order first so the shopper has a reference even if the
+    // server call fails.
     const order = placeOrder({
       customer: { name: name.trim(), phone: phone.trim(), address: address.trim() },
       fulfillment,
       date,
       slot,
-      payment,
+      payment: effectivePayment,
+      paymentBankId: effectivePayment === "transfer" ? effectiveBankId : undefined,
       notes: notes.trim(),
+      sellerSlugs,
     });
+
+    setSubmitting(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/storefront/orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: cart.map((item) => ({
+            tenant: item.tenant,
+            productId: item.productId,
+            variantId: item.variantId ?? null,
+            unitName: item.unitName,
+            qty: item.qty,
+          })),
+          customer: { name: name.trim(), phone: phone.trim(), address: address.trim() || null },
+          fulfillment,
+          slot,
+          notes: notes.trim() || null,
+          paymentChannel: effectivePayment,
+          paymentBankId: effectivePayment === "transfer" ? effectiveBankId : null,
+        }),
+      });
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => null);
+        throw new Error(
+          (errorBody as { message?: string })?.message ?? `HTTP ${response.status}`
+        );
+      }
+      const result = (await response.json()) as { parentId: string };
+      // Patch the local order with the server parent id so the order page can
+      // poll for status updates.
+      useShop.setState({
+        orders: useShop.getState().orders.map((o) =>
+          o.id === order.id ? { ...o, parentId: result.parentId } : o
+        ),
+      });
+    } catch (error) {
+      // The order is already saved locally; warn the shopper and let them retry.
+      toast.error(
+        `Pesanan tersimpan lokal, tapi belum terkirim ke toko. ${error instanceof Error ? error.message : ""}`,
+        { duration: 8000 }
+      );
+    } finally {
+      setSubmitting(false);
+    }
+
     navigate({ to: "/order/$id", params: { id: order.id } });
   }
 
@@ -170,47 +255,18 @@ function Checkout() {
         </div>
       </section>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-[13px] font-medium tracking-wide text-muted">
-          Pembayaran
-        </h2>
-        <p className="text-[12px] leading-relaxed text-subtle">
-          Gateway otomatis (QRIS, kartu, VA) menyusul. Sementara transfer manual
-          atau tunai di toko.
-        </p>
-        {(
-          [
-            ["bca", "Transfer BCA"],
-            ["mandiri", "Transfer Mandiri"],
-            ["qris", "QRIS — segera"],
-            ["cash", "Tunai saat ambil"],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            disabled={id === "qris"}
-            onClick={() => setPayment(id)}
-            className={cn(
-              "flex h-12 items-center justify-between rounded-md px-3.5 text-left text-[14px]",
-              payment === id
-                ? "bg-primary text-primary-fg"
-                : "bg-surface shadow-[inset_0_0_0_1px_var(--color-line)]",
-              id === "qris" && "opacity-45",
-            )}
-          >
-            {label}
-            {id === "qris" && (
-              <span className="text-[11px] tracking-wide">SOON</span>
-            )}
-          </button>
-        ))}
-        {fulfillment === "delivery" && payment === "cash" && (
-          <p className="text-[12px] text-muted">
-            Tunai hanya untuk ambil di toko. Ganti ke transfer untuk pengantaran.
-          </p>
-        )}
-      </section>
+      <PaymentSection
+        channels={availableChannels}
+        payment={effectivePayment as PaymentMethod}
+        setPayment={setPayment}
+        selectedBankId={effectiveBankId}
+        setSelectedBankId={setSelectedBankId}
+        transferBanks={transferBanks}
+        sellerSlugs={sellerSlugs}
+        qrisImageUrl={(slug: string) => paymentConfigs.qrisImageUrl(slug)}
+        qrisAvailable={paymentConfigs.qrisAvailable()}
+        fulfillment={fulfillment}
+      />
 
       <Field label="Catatan">
         <Textarea
@@ -270,10 +326,123 @@ function Checkout() {
         type="submit"
         size="lg"
         className="w-full"
-        disabled={fulfillment === "delivery" && payment === "cash"}
+        disabled={(fulfillment === "delivery" && payment === "cash") || submitting}
       >
-        Buat pesanan
+        {submitting ? "Mengirim pesanan…" : "Buat pesanan"}
       </Button>
     </form>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Payment section — dynamic channels from the config                          */
+/* -------------------------------------------------------------------------- */
+
+function PaymentSection(props: {
+  channels: PaymentChannelView[];
+  payment: PaymentMethod;
+  setPayment: (m: PaymentMethod) => void;
+  selectedBankId: string;
+  setSelectedBankId: (id: string) => void;
+  transferBanks: { id: string; name: string; accountNumber: string; accountName: string }[];
+  sellerSlugs: string[];
+  qrisImageUrl: (slug: string) => string;
+  qrisAvailable: boolean;
+  fulfillment: Fulfillment;
+}) {
+  const {
+    channels,
+    payment,
+    setPayment,
+    selectedBankId,
+    setSelectedBankId,
+    transferBanks,
+    sellerSlugs,
+    qrisImageUrl,
+    qrisAvailable,
+    fulfillment,
+  } = props;
+
+  const channelLabel = (ch: PaymentChannelView) => {
+    if (ch.id === "cash") return "Tunai saat ambil";
+    if (ch.id === "transfer") return "Transfer Bank";
+    if (ch.id === "qris") return "QRIS";
+    return ch.label;
+  };
+
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-[13px] font-medium tracking-wide text-muted">
+        Pembayaran
+      </h2>
+      {channels.length === 0 && (
+        <p className="text-[12px] text-subtle">
+          Memuat metode pembayaran…
+        </p>
+      )}
+      {channels.map((ch) => (
+        <button
+          key={ch.id}
+          type="button"
+          onClick={() => setPayment(ch.id as PaymentMethod)}
+          className={cn(
+            "flex h-12 items-center justify-between rounded-md px-3.5 text-left text-[14px]",
+            payment === ch.id
+              ? "bg-primary text-primary-fg"
+              : "bg-surface shadow-[inset_0_0_0_1px_var(--color-line)]",
+          )}
+        >
+          {channelLabel(ch)}
+        </button>
+      ))}
+
+      {/* Transfer: bank selection */}
+      {payment === "transfer" && transferBanks.length > 0 && (
+        <div className="flex flex-col gap-2 rounded-md bg-surface px-3.5 py-3 shadow-[inset_0_0_0_1px_var(--color-line)]">
+          <p className="text-[12px] font-medium text-muted">Pilih rekening</p>
+          {transferBanks.map((bank) => (
+            <button
+              key={bank.id}
+              type="button"
+              onClick={() => setSelectedBankId(bank.id)}
+              className={cn(
+                "flex items-center justify-between rounded-md px-3 py-2 text-left text-[13px]",
+                selectedBankId === bank.id
+                  ? "bg-primary/10 text-fg"
+                  : "text-muted hover:bg-muted/10",
+              )}
+            >
+              <span>
+                {bank.name} — {bank.accountNumber}
+              </span>
+              <span className="text-[11px] text-subtle">{bank.accountName}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* QRIS: show image from the first seller that has one */}
+      {payment === "qris" && qrisAvailable && sellerSlugs.length > 0 && (
+        <div className="flex flex-col items-center gap-2 rounded-md bg-surface px-3.5 py-3 shadow-[inset_0_0_0_1px_var(--color-line)]">
+          <p className="text-[12px] font-medium text-muted">Pindai QRIS berikut</p>
+          <img
+            src={qrisImageUrl(sellerSlugs[0])}
+            alt="QRIS pembayaran"
+            className="max-h-64 w-auto rounded-md"
+          />
+        </div>
+      )}
+      {payment === "qris" && !qrisAvailable && (
+        <p className="text-[12px] text-subtle">
+          QRIS belum tersedia. Pilih transfer atau tunai.
+        </p>
+      )}
+
+      {fulfillment === "delivery" && payment === "cash" && (
+        <p className="text-[12px] text-muted">
+          Tunai hanya untuk ambil di toko. Ganti ke transfer untuk pengantaran.
+        </p>
+      )}
+    </section>
   );
 }

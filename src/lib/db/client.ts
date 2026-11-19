@@ -29,7 +29,10 @@ export class DbTokenError extends Error {
   }
 }
 
-const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? '';
+// `import.meta.env` only exists when Vite built this module; the same file is
+// imported by Node-run scripts (`scripts/`, via `src/lib/*`), where reading a
+// property off undefined would crash at import time rather than at call time.
+const apiBase = (import.meta.env?.VITE_API_BASE_URL as string | undefined) ?? '';
 
 let client: Client | null = null;
 let clientUrl: string | null = null;

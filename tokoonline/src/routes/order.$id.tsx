@@ -1,25 +1,76 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { formatDateID, formatIDR } from "@/lib/format";
 import { SHOP, waLink } from "@/lib/shop";
 import { useShop, sellerGroups, type OrderStatus } from "@/lib/store";
+import { usePaymentConfigs, type PaymentBank } from "@/lib/payment-config";
 
 export const Route = createFileRoute("/order/$id")({ component: OrderPage });
 
+/** Where the back-office API listens (same origin logic as `catalog.ts`). */
+const API_BASE = (
+  (import.meta.env.VITE_CATALOG_API_URL as string | undefined) ?? "http://localhost:3000"
+).replace(/\/+$/, "");
+
 const STATUS: Record<OrderStatus, string> = {
+  pending_payment: "Menunggu pembayaran",
   waiting_payment: "Menunggu pembayaran",
   confirmed: "Dikonfirmasi",
   packing: "Sedang disiapkan dari gudang",
   shipped: "Dikirim",
   done: "Selesai",
+  cancelled: "Dibatalkan",
+  void: "Dibatalkan",
 };
+
+interface ServerOrderStatus {
+  tenant: string;
+  orderId: string;
+  invoiceNumber: string;
+  status: string;
+  total: number;
+  createdAt: string | null;
+}
 
 function OrderPage() {
   const { id } = Route.useParams();
   const order = useShop((s) => s.orders.find((o) => o.id === id));
   const [copied, setCopied] = useState(false);
+  const [serverStatuses, setServerStatuses] = useState<ServerOrderStatus[]>([]);
+  const paymentConfigs = usePaymentConfigs();
+  const parentId = order?.parentId;
+
+  // Poll the server for status updates when we have a parentId.
+  useEffect(() => {
+    if (!parentId) return;
+    let live = true;
+
+    async function poll() {
+      if (!parentId) return;
+      try {
+        const response = await fetch(
+          `${API_BASE}/api/storefront/orders?parent=${encodeURIComponent(parentId)}`,
+        );
+        if (!response.ok) return;
+        const data = (await response.json()) as {
+          parent: string;
+          orders: ServerOrderStatus[];
+        };
+        if (live) setServerStatuses(data.orders ?? []);
+      } catch {
+        // Network error — keep showing the last known status.
+      }
+    }
+
+    poll();
+    const interval = setInterval(poll, 15_000);
+    return () => {
+      live = false;
+      clearInterval(interval);
+    };
+  }, [parentId]);
 
   if (!order) {
     return (
@@ -32,17 +83,41 @@ function OrderPage() {
     );
   }
 
-  const bank = SHOP.banks.find((b) => b.id === order.payment);
+  // Determine the effective status: server wins when available.
+  const serverStatus = serverStatuses.find(
+    (s) => s.status !== "cancelled" && s.status !== "void"
+  ) ?? serverStatuses[0];
+  const effectiveStatus: OrderStatus = serverStatus
+    ? (serverStatus.status as OrderStatus)
+    : order.status;
+
+  // Resolve payment instructions from the config (fallback to SHOP.banks).
+  const configs = paymentConfigs.status === "ready" ? paymentConfigs.configs : [];
+  const sellerSlug = order.sellerSlugs?.[0] ?? order.items[0]?.tenant ?? "";
+  const tenantConfig = configs.find((c) => c.tenant === sellerSlug);
+  const transferBanks: PaymentBank[] =
+    tenantConfig?.banks ??
+    SHOP.banks.map((b) => ({
+      id: b.id,
+      name: b.name,
+      accountNumber: b.account,
+      accountName: b.holder,
+    }));
+  const selectedBank = transferBanks.find((b) => b.id === order.paymentBankId) ?? transferBanks[0];
+
   // The order was paid once, but each shop ships its own lines from its gudang.
   const groups = sellerGroups(order.items);
   const waText = `Halo CS Toko Bahan Kue, saya sudah memesan ${order.id} a.n. ${order.customer.name}, total ${formatIDR(order.total)}.`;
 
   async function copyRekening() {
-    if (!bank) return;
-    await navigator.clipboard.writeText(bank.account.replace(/\s/g, ""));
+    if (!selectedBank) return;
+    await navigator.clipboard.writeText(selectedBank.accountNumber.replace(/\s/g, ""));
     setCopied(true);
     setTimeout(() => setCopied(false), 1600);
   }
+
+  const isWaitingPayment =
+    effectiveStatus === "pending_payment" || effectiveStatus === "waiting_payment";
 
   return (
     <div className="flex flex-col gap-6 px-4 pt-4 pb-10">
@@ -52,17 +127,22 @@ function OrderPage() {
         </p>
         <h1 className="font-display mt-1 text-[30px] leading-none">{order.id}</h1>
         <p className="mt-3 inline-flex rounded-full bg-surface px-3 py-1 text-[12px] text-fg shadow-[inset_0_0_0_1px_var(--color-line)]">
-          {STATUS[order.status]}
+          {STATUS[effectiveStatus] ?? effectiveStatus}
         </p>
+        {serverStatus && (
+          <p className="mt-1 text-[11px] text-subtle">
+            No. invoice: {serverStatus.invoiceNumber}
+          </p>
+        )}
       </div>
 
-      {bank && order.status === "waiting_payment" && (
+      {selectedBank && isWaitingPayment && order.payment !== "cash" && (
         <section className="rounded-xl bg-surface px-4 py-4 shadow-[var(--shadow-border)]">
-          <p className="text-[13px] font-medium">Transfer {bank.name}</p>
-          <p className="mt-1 text-[12px] text-muted">a.n. {bank.holder}</p>
+          <p className="text-[13px] font-medium">Transfer {selectedBank.name}</p>
+          <p className="mt-1 text-[12px] text-muted">a.n. {selectedBank.accountName}</p>
           <div className="mt-3 flex items-center justify-between">
             <p className="font-display text-[26px] tracking-wide tabular-nums">
-              {bank.account}
+              {selectedBank.accountNumber}
             </p>
             <button
               type="button"
@@ -78,7 +158,7 @@ function OrderPage() {
             </button>
           </div>
           <p className="mt-2 text-[13px] tabular-nums">
-            Nominal {formatIDR(order.total)}
+            Nominal {formatIDR(serverStatus?.total ?? order.total)}
           </p>
           <p className="mt-3 text-[12px] leading-relaxed text-subtle">
             Kirim bukti transfer via chat atau WhatsApp. Pembayaran otomatis
@@ -87,10 +167,31 @@ function OrderPage() {
         </section>
       )}
 
+      {/* QRIS image when the payment was QRIS */}
+      {order.payment === "qris" && isWaitingPayment && tenantConfig?.qrisAvailable && (
+        <section className="flex flex-col items-center gap-2 rounded-xl bg-surface px-4 py-4 shadow-[var(--shadow-border)]">
+          <p className="text-[13px] font-medium">Pindai QRIS berikut</p>
+          <img
+            src={paymentConfigs.qrisImageUrl(sellerSlug)}
+            alt="QRIS pembayaran"
+            className="max-h-64 w-auto rounded-md"
+          />
+          <p className="text-[13px] tabular-nums">
+            Nominal {formatIDR(serverStatus?.total ?? order.total)}
+          </p>
+        </section>
+      )}
+
       {order.payment === "cash" && (
         <p className="rounded-xl bg-surface px-4 py-3 text-[13px] text-muted shadow-[var(--shadow-border)]">
           Bayar tunai saat ambil di toko penjual. Nomor pesanan menunjukkan
           barang mana yang diambil di toko mana.
+        </p>
+      )}
+
+      {(effectiveStatus === "cancelled" || effectiveStatus === "void") && (
+        <p className="rounded-xl bg-destructive/10 px-4 py-3 text-[13px] text-destructive shadow-[var(--shadow-border)]">
+          Pesanan ini telah dibatalkan.
         </p>
       )}
 
@@ -113,7 +214,9 @@ function OrderPage() {
         ))}
         <div className="mt-2 flex justify-between border-t border-line pt-2">
           <span className="text-muted">Total</span>
-          <span className="font-medium tabular-nums">{formatIDR(order.total)}</span>
+          <span className="font-medium tabular-nums">
+            {formatIDR(serverStatus?.total ?? order.total)}
+          </span>
         </div>
       </section>
 

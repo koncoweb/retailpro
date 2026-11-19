@@ -243,7 +243,19 @@ export default function Reports() {
         const filename = `Report_${period}_${new Date().getTime()}.xlsx`;
 
         if (type === 'sales' || !type) {
-             // Sheet 1: Sales Summary
+             // Sheet 1: Sales Summary. Net revenue = gross sales minus the
+             // merchant fee the store absorbed on transfer/QRIS bons; the fee
+             // never changed what customers paid, only what landed with us.
+            const [sumStart, sumEnd] = getDateRange();
+            const netRes = await query(`
+                SELECT
+                  COALESCE(SUM(t.total_amount), 0) AS gross,
+                  COALESCE(SUM(t.fee_amount), 0) AS fee
+                FROM transactions t
+                WHERE ${revenueWhere("t")}
+            `, scopeArgs(sumStart, sumEnd));
+            const grossSales = Number(netRes.rows[0]?.gross ?? 0);
+            const merchantFee = Number(netRes.rows[0]?.fee ?? 0);
             const salesData = [
                 ["Laporan Penjualan", `Periode: ${period}`],
                 [""],
@@ -251,7 +263,12 @@ export default function Reports() {
                 ...salesByBranch.map(s => [s.name, s.value]),
                 [""],
                 ["Kategori", "Total Penjualan", "Persentase"],
-                ...salesByCategory.map(s => [s.name, s.value, `${s.percentage}%`])
+                ...salesByCategory.map(s => [s.name, s.value, `${s.percentage}%`]),
+                [""],
+                ["Ringkasan", "Nilai"],
+                ["Total Penjualan", grossSales],
+                ["Biaya Merchant", merchantFee],
+                ["Pendapatan Bersih", grossSales - merchantFee]
             ];
             const wsSales = XLSX.utils.aoa_to_sheet(salesData);
             XLSX.utils.book_append_sheet(wb, wsSales, "Ringkasan Penjualan");
@@ -265,6 +282,8 @@ export default function Reports() {
                     b.name as branch, 
                     t.total_amount, 
                     t.payment_method,
+                    t.fee_amount,
+                    t.source,
                     t.status
                 FROM transactions t
                 JOIN branches b ON t.branch_id = b.id
@@ -278,6 +297,8 @@ export default function Reports() {
                 "Cabang": t.branch,
                 "Total": Number(t.total_amount),
                 "Metode Pembayaran": t.payment_method,
+                "Kanal": t.source === "online" ? "Online" : "Kasir",
+                "Biaya Merchant": Number(t.fee_amount) || 0,
                 "Status": t.status
             }));
             const wsTrans = XLSX.utils.json_to_sheet(transData);

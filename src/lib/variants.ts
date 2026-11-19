@@ -41,6 +41,36 @@ export function sanitizeGroups(groups: readonly VariantAttributeGroup[]): Varian
 }
 
 /**
+ * The axis list a set of combinations implies, in the order they were written.
+ *
+ * Both rich importers need this: a sheet never declares its axes as a list, it
+ * declares one variant per line, and the product's `variant_attributes` has to
+ * say which axes those lines used. First-seen name and value order is kept, so
+ * a file that lists `Rasa` before `Ukuran` shows them in that order on the
+ * product screen too.
+ */
+export function groupsFromAttributes(
+  attributes: readonly VariantAttributes[]
+): VariantAttributeGroup[] {
+  const groups: VariantAttributeGroup[] = [];
+  for (const combination of attributes) {
+    for (const [name, value] of Object.entries(combination ?? {})) {
+      const trimmed = String(value ?? "").trim();
+      if (!trimmed) continue;
+      const existing = groups.find((group) => group.name.toLowerCase() === name.toLowerCase());
+      if (existing) {
+        if (!existing.values.some((held) => held.toLowerCase() === trimmed.toLowerCase())) {
+          existing.values.push(trimmed);
+        }
+        continue;
+      }
+      groups.push({ name, values: [trimmed] });
+    }
+  }
+  return sanitizeGroups(groups);
+}
+
+/**
  * Every combination of the groups, in a stable order (first group varies
  * slowest, like an odometer). A product with no groups yields `[]` — the caller
  * then creates the single `Default` variant.
@@ -142,6 +172,101 @@ export function alignToGroups(
     if (!(name in aligned)) aligned[name] = value;
   }
   return aligned;
+}
+
+/**
+ * Append-only union of two axis lists, used when an import extends a product
+ * that already exists.
+ *
+ * Order is what the operator sees on the product screen, so the stored list
+ * keeps its shape and the incoming one may only ADD: a group in the same
+ * position, an extra value at the end of a group, or a new group at the end. A
+ * value is never removed — variants that are still selling or holding stock
+ * reference it, and an import has no licence to break them.
+ */
+export function mergeGroups(
+  stored: readonly VariantAttributeGroup[],
+  incoming: readonly VariantAttributeGroup[]
+): VariantAttributeGroup[] {
+  const merged = sanitizeGroups(stored).map((group) => ({
+    name: group.name,
+    values: [...group.values],
+  }));
+
+  for (const group of sanitizeGroups(incoming)) {
+    const existing = merged.find(
+      (candidate) => candidate.name.toLowerCase() === group.name.toLowerCase()
+    );
+    if (!existing) {
+      merged.push({ name: group.name, values: [...group.values] });
+      continue;
+    }
+    for (const value of group.values) {
+      if (!existing.values.some((held) => held.toLowerCase() === value.toLowerCase())) {
+        existing.values.push(value);
+      }
+    }
+  }
+  return merged;
+}
+
+/**
+ * Parse a sheet's attribute cell — `Rasa=Susu;Ukuran=250ml` — into
+ * `{ Rasa: "Susu", Ukuran: "250ml" }`.
+ *
+ * Someone writing a file by hand reaches for `;`, `|` or a newline as separator
+ * and `=` or `:` between name and value, so all four are accepted. A bare value
+ * with no name at all becomes its own numbered axis, which is what a
+ * "just list the flavours" column produces. Blank, `-` or `Default` means the
+ * product has no axes.
+ */
+export function parseAttributeCell(raw: string | null | undefined): VariantAttributes {
+  const text = String(raw ?? "").trim();
+  if (!text || text.toLowerCase() === "default" || text === "-") return {};
+
+  const attributes: VariantAttributes = {};
+  for (const chunk of text.split(/[;|\r\n]+/)) {
+    const piece = chunk.trim();
+    if (!piece) continue;
+    const separator = piece.search(/[=:]/);
+    if (separator > 0) {
+      const name = piece.slice(0, separator).trim();
+      const value = piece.slice(separator + 1).trim();
+      if (name && value) {
+        attributes[name] = value;
+        continue;
+      }
+    }
+    attributes[`Varian ${Object.keys(attributes).length + 1}`] = piece;
+  }
+  return attributes;
+}
+
+/**
+ * The inverse of `parseAttributeCell`: render attributes back into the sheet's
+ * `Rasa=Susu;Ukuran=250ml` form, in the order the product's axes were authored.
+ *
+ * Export has to write what import can read, in both screen's column sets, so the
+ * formatter lives here rather than next to one caller.
+ */
+export function formatAttributeCell(
+  attributes: VariantAttributes,
+  groups: readonly VariantAttributeGroup[] = []
+): string {
+  const names = new Set<string>();
+  const parts: string[] = [];
+  for (const group of groups) {
+    const value = attributes[group.name];
+    if (!value) continue;
+    parts.push(`${group.name}=${value}`);
+    names.add(group.name);
+  }
+  // An axis that survived a group rename must still round-trip.
+  for (const [name, value] of Object.entries(attributes)) {
+    if (names.has(name) || !value) continue;
+    parts.push(`${name}=${value}`);
+  }
+  return parts.join(";");
 }
 
 /** Parse `product_variants.attributes` without trusting its contents. */

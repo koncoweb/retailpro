@@ -49,6 +49,7 @@ import {
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import { batchQuery, query, runTransaction } from "@/lib/db";
+import { latestVendorCode, outsideTransaction } from "@/lib/vendor-catalog";
 import { logAudit } from "@/lib/audit";
 import { useAuth } from "@/hooks/use-auth";
 import { formatCurrency } from "@/lib/formatters";
@@ -418,10 +419,7 @@ export default function Vendors() {
       });
 
       const usedCodes = new Set(fresh.filter((v) => v.code).map((v) => v.code.toLowerCase()));
-      let latest =
-        (await query<{ code: string | null }>(
-          `SELECT code FROM suppliers WHERE code LIKE 'VND-%' ORDER BY code DESC LIMIT 1`
-        )).rows[0]?.code ?? null;
+      let latest = await latestVendorCode(outsideTransaction);
 
       let added = 0;
       let auto = 0;

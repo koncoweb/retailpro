@@ -4,8 +4,8 @@
 |---|---|
 | Aplikasi | RetailPro — ERP/POS multi-tenant, multi-cabang (pasar Indonesia, IDR) |
 | Dokumen | `docs/arsitektur.md` |
-| Terakhir diperbarui | **2026-11-18** |
-| Versi skema tenant | `schema_version = 11` (`db/schema/tenant.sql` + `db/migrations/`) |
+| Terakhir diperbarui | **2026-11-19** |
+| Versi skema tenant | `schema_version = 12` (`db/schema/tenant.sql` + `db/migrations/`) |
 | Status | Berjalan di lokal **dan** di Vercel (back office + toko online) dengan Turso cloud; belum dipakai data produksi nyata |
 
 > Dokumen ini menjelaskan **bagaimana sistem disusun dan mengapa**. Untuk daftar fitur lihat
@@ -44,7 +44,7 @@ database, menandatangani token, dan menyimpan identitas pengguna.
               v
    +----------------------+       +----------------------+
    |  Turso DB tenant A   |       |  Turso DB tenant B   |
-   |  38 tabel, tanpa     |       |  isolasi fisik       |
+   |  39 tabel, tanpa     |       |  isolasi fisik       |
    |  kolom tenant_id     |       +----------------------+
    +----------------------+
 ```
@@ -178,7 +178,7 @@ gudang pusat (`branch_id` NULL, `type = 'central'`) menjadi pemasok pesanan dan 
 online tidak punya rak: pesanannya dikirim langsung keluar dari gudang pusat tanpa membuat dokumen
 transfer (tidak ada tujuan internal).
 
-### 4.6 Katalog marketplace (publik)
+### 4.6 Katalog marketplace (publik) & pesanan toko online
 
 ```
 tokoonline (browser / SSR)  ->  GET /api/storefront/marketplace
@@ -186,7 +186,7 @@ tokoonline (browser / SSR)  ->  GET /api/storefront/marketplace
    2. per tenant: mintTenantToken(db_name, 60m)  -> token hanya di server
    3. readTenantCatalog (server/storefront-catalog.ts, dibagi dengan /catalog):
       branches aktif type 'online' -> gudang pemenuh (bersama -> central -> default,
-      rak cabang itu sendiri dikecualikan) -> products + product_units + SUM(batches)
+      rakang cabang itu sendiri dikecualikan) -> products + product_units + SUM(batches)
    4. gabung semua tenant, product.id diberi prefiks "<slug>:" agar UUID tidak bentrok
    -> { shops[], categories[], products[], tenants:{total,live}, skipped[], syncedAt }
 
@@ -195,15 +195,40 @@ GET /api/storefront/catalog?slug=thalia  -> katalog satu tenant (bentuk yang sam
                                             yang memang hanya menampilkan satu toko
 ```
 
-Endpoint ini sengaja tanpa sesi dan tanpa cache: isinya sama dengan yang bisa dilihat pengunjung
+Endpoint katalog sengaja tanpa sesi dan tanpa cache: isinya sama dengan yang bisa dilihat pengunjung
 toko, dan setiap permintaan membaca database tenant sehingga perubahan harga/stok dari back office
 langsung terlihat. Satu tenant yang gagal (belum punya cabang/gudang, database tidak terbaca)
 tidak menggagalkan permintaan: ia masuk `skipped[]` dengan alasan kasar `"unavailable"` sedangkan
 pesan error aslinya hanya ke log server — endpoint ini publik, dan pesan libSQL menyebut nama tabel.
 
-Aplikasi toko **tidak** memegang kredensial database; pesanan pengunjung masih disimpan di perangkat
-(prototype). Pembaca katalog ada satu (`server/storefront-catalog.ts`), jadi kedua endpoint tidak
-bisa menampilkan produk yang berbeda untuk tenant yang sama.
+**Pesanan online kini masuk database tenant (skema v12):**
+
+```
+tokoonline checkout.tsx  ->  POST /api/storefront/orders (publik, CORS)
+   1. validasi items per seller: { tenant, productId, variantId?, unitName, qty }
+   2. hitung ulang harga server-side dari product_units / product_variants
+   3. split per seller -> INSERT storefront_orders (status = 'pending_payment')
+   4. respons: 201 { parentId, orders: [{tenant, orderId, shopName, total, status, payment}] }
+
+Back office (StorefrontOrders.tsx)  ->  POST /api/tenant/orders/confirm { orderId }
+   1. mintTenantToken(db_name) di server
+   2. runTransaction atomik:
+      a. cek stok gudang online (product_batches, warehouse fulfillment)
+      b. getStockIssueMethod() -> sortBatchesForIssue() (FIFO/LIFO/FEFO)
+      c. UPDATE product_batches SET quantity_current -= qty * conversion_factor
+      d. INSERT transactions (source='online', fee_amount, payment_method dari channel)
+      e. INSERT transaction_items
+      f. UPDATE storefront_orders SET status='confirmed', transaction_id
+      g. logAuditTx('checkout', { fee, source, ... })
+   3. gagal stok -> 409, tidak ada sebagian yang tertulis
+```
+
+Ongkir marketplace **tidak masuk** transaksi tenant — transaksi tenant hanya mencatat subtotal
+seller. Selisih ongkir menjadi pendapatan platform (di luar cakupan rilis ini).
+
+Aplikasi toko **tidak** memegang kredensial database; pesanan pengunjung disimpan di perangkat
++ dikirim ke server saat checkout. Status order di-poll dari server (`GET /api/storefront/orders?parent=`)
+setiap 15–30 detik; status server menang atas localStorage untuk order yang punya `parentId`.
 
 ### 4.7 Cetak struk & Z-report
 
@@ -275,9 +300,16 @@ AddProductModal · Vendors.tsx (?tambah-produk=1) · VendorDetail (tab Produk & 
        defaultVendorFor()           murni: vendor tercih -> vendor utama -> vendor tunggal yang aktif
   -> src/lib/vendor-catalog-sql.ts  pembangun statement-nya ({ sql, args }) agar UI, lib, runner migrasi,
                                      dan seeder tidak bisa punya versi SQL masing-masing
-  -> src/lib/vendor-import.ts       groupVendorProductRows() + planVendorProductImport() = niat impor
-                                     tanpa SQL; VendorProductImport.tsx mengeksekusi rencana,
-                                     satu runTransaction() per blok vendor
+  -> src/lib/vendor-import.ts       carryVendorForward() + expandProductCodes() + groupVendorProductRows()
+                                 + planVendorProductImport(rows, universe, { priceMode, mayCreateVariants })
+                                 = niat impor tanpa SQL; satu berkas = satu vendor (baris 1 hanya vendor,
+                                 baris 2+ produknya); boleh merencanakan varian/pecahan yang belum ada
+                                 VendorProductImport.tsx mengeksekusi rencananya,
+                                 satu runTransaction() per PRODUK (vendor lebih dulu di transaksinya sendiri)
+  -> src/lib/product-import.ts      groupProductRows() + planProductImport(seeds, universe, { priceMode }) —
+                                 perencana murni sheet produk kaya (satu baris = varian × pecahan);
+                                 Inventory.tsx mengeksekusi rencananya, satu runTransaction() per produk.
+                                 Produk existing menjadi 'extend' (hanya yang kurang ditulis), bukan dilewati
 PurchaseOrderModal.tsx: pilih produk -> applyVendor(defaultVendorFor(...)) -> vendor + lead time
                         + harga kesepakatan (vendor_price_list) terisi; ganti vendor dengan keranjang
                         berisi = AlertDialog konfirmasi, bukan drop diam-diam
@@ -368,7 +400,7 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 
 ## 6. Model data
 
-38 tabel di DB tenant, dikelompokkan:
+38 tabel di DB tenant (v11: 38; v12: 39 dengan `storefront_orders`), dikelompokkan:
 
 | Domain | Tabel |
 |---|---|
@@ -382,6 +414,7 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 | Jejak | `audit_logs` |
 | CRM | `customers` |
 | Kolaborasi | `chat_conversations`, `chat_participants`, `chat_messages`, `chat_mentions` (v11) — channel & DM per tenant, satu-satunya penulis `src/lib/chat.ts`; visibilitas adalah aturan UI, bukan batas keamanan (tanpa RLS) |
+| Toko online | `storefront_orders` (v12) — satu baris per seller per pesanan online; `status` `pending_payment` → `confirmed` → `packing` → `shipped` → `done` / `cancelled` / `void`. `items` JSON snapshot; `transaction_id` menunjuk baris `transactions` hasil konfirmasi |
 
 Detail kolom, indeks, dan konvensi: [backend.md](backend.md) §5.
 
@@ -399,7 +432,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | Runtime API | Node ≥ 20 (Vercel Functions, `node:crypto`) |
 | Database | Turso libSQL cloud, grup `ap-southeast-2`; control DB + satu DB per tenant |
 | Dev lokal | `npm run dev` (SPA :8080) + `npm run dev:api` (:3000, proxy `VITE_API_PROXY_TARGET`) + `cd tokoonline && npm run dev` (:8082) |
-| Verifikasi | `npm run typecheck`, `npm test` (Vitest 31 berkas/441 test), `npm run audit:sql`, `npm run docs:check` (bentuk tabel markdown + satu versi skema di tiga tempat + indeks dokumen + anchor `§` antar-dokumen; plus positive control di `scripts/__fixtures__/docs-check` yang wajib melaporkan 8 masalah), dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI. `npm run lint` 0 error atas berkas yang diubah rilis v10 dan v11; repo-wide masih 25 error `no-explicit-any` warisan di dashboard/laporan (`HEAD` sudah begitu) |
+| Verifikasi | `npm run typecheck`, `npm test` (Vitest 33 berkas/547 test, terukur 2026-11-19), `npm run audit:sql`, `npm run docs:check` (bentuk tabel markdown + satu versi skema di tiga tempat + indeks dokumen + anchor `§` antar-dokumen; plus positive control di `scripts/__fixtures__/docs-check` yang wajib melaporkan 8 masalah), dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI. Gerbang lint = `npx eslint <berkas yang disentuh>` (0 masalah); `eslint .` repo-wide masih 25 error `no-explicit-any` + 8 warning warisan di 18 berkas dashboard/laporan/POS (`HEAD` sudah begitu, jadi bukan regresi) |
 | Variabel | Lihat tabel env di [backend.md](backend.md) §2 (lokal) dan [deployment.md](deployment.md) §4 (produksi) |
 | Kontrak platform | Import relatif `.js` di `api/`+`server/`; route bracket lewat `rewrites` di `vercel.json`; `db/schema/**` ikut ke lambda |
 
@@ -443,11 +476,14 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
    batch ke rak dalam satu transaksi, sedangkan penerimaan hanya mencatat konfirmasi dan selisih.
    Konsekuensinya rak bisa menjual barang yang secara fisik masih di perjalanan beberapa jam.
 8. **Kanal online tidak punya rak.** Pesanannya keluar dari gudang pusat tanpa dokumen transfer,
-   sehingga `stock_requests.transfer_id` bernilai NULL untuk sumber `online`.
-9. **Pesanan toko online belum masuk ke database.** Keranjang dan pesanan `tokoonline/` disimpan di
-   `localStorage` pengunjung; yang live hanya katalog, harga, satuan, dan stok. Menulis pesanan ke
-   DB tenant menuntut jalur stok yang sama dengan `src/lib/stock-movement.ts`, jadi belum dikerjakan
-   setengah-setengah.
+   sehingga `stock_requests.transfer_id` bernilai NULL untuk sumber `online`. Sejak v12, pesanan
+   toko online masuk ke `storefront_orders` dan baru mengurangi stok saat owner mengonfirmasi
+   pembayaran (`POST /api/tenant/orders/confirm`, alur atomik dengan `getStockIssueMethod()`).
+9. **Pesanan toko online tersimpan di perangkat pengunjung sebagai cadangan.** Keranjang dan pesanan
+   `tokoonline/` tetap disimpan di `localStorage` pengunjung; namun saat checkout, pesanan dikirim
+   ke server (`POST /api/storefront/orders`) dan `parentId` disimpan lokal. Status order di-poll
+   dari server setiap 15–30 detik; status server menang atas localStorage untuk order yang punya
+   `parentId`.
 10. **Satu region Turso** (`ap-southeast-2`) untuk control DB maupun tenant; belum ada replika baca,
     dan latensi mengikuti jarak ke region itu.
 11. **Marketplace membaca tenant satu per satu, tanpa cache.** Setiap permintaan
@@ -455,11 +491,11 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
     latensinya naik linear terhadap jumlah penjual dan permintaan pertama pada instance Vercel yang
     baru bisa mendekati batas durasi fungsi. Cukup untuk satu tenant hari ini; bila penjual
     bertambah, urutannya diganti batching atau seluruh respons di-cache `s-maxage` pendek di edge.
-12. **Satu pesanan marketplace = satu tagihan untuk beberapa penjual.** Satu keranjang, satu ongkir,
-    satu rekening (platform sebagai merchant of record); tiap baris menyebut penjualnya dan
-    dikirim dari gudangnya sendiri, dan tampilan checkout/pesanan dikelompokkan per penjual.
-    Memecah keranjang menjadi satu pesanan per penjual (ongkir, pembayaran, dan settlement per
-    penjual) belum dikerjakan.
+12. **Satu pesanan marketplace = satu `parent_id` dengan beberapa baris `storefront_orders`.** Satu
+    keranjang, satu ongkir, satu pembayaran (platform sebagai merchant of record); tiap baris
+    menyebut penjualnya dan dikirim dari gudangnya sendiri. Ongkir marketplace **tidak masuk**
+    transaksi tenant — hanya subtotal seller yang dicatat. Konfirmasi pembayaran menulis
+    `transactions` + mengurangi stok dalam satu transaksi atomik (v12).
 13. **Cetak hanya diuji pada driver dan ESC/POS generik.** WebUSB/Web Bluetooth menuntut `requestDevice`
     sekali per sesi browser dan hanya jalan di secure context; printer Bluetooth murni di Windows desktop
     tidak punya API serial Bluetooth, jadi jalur resurnya unduh `.prn` lalu drag ke antrean printer.

@@ -14,10 +14,24 @@
  * the caller decides what is atomic (one product save, one vendor block of a
  * bulk sheet), and a half-written catalogue can never be committed by accident.
  *
- * Design notes: `docs/spec-vendor-produk-terintegrasi.md`.
+ * The module also renders a catalogue as the flat sheet the combined import
+ * reads (`vendorCatalogSheetRows`), so the file an owner exports is built from the
+ * same column contract as the writes it turns back into.
+ *
+ * Design notes: `docs/spec-vendor-produk-terintegrasi.md`,
+ * `docs/spec-sheet-vendor-satu-vendor.md`.
  */
 import { query as executeStatement } from "@/lib/db";
-import { VENDOR_CODE_PREFIX, nextVendorCode } from "@/lib/vendor";
+import { VENDOR_CODE_PREFIX, highestVendorCode, nextVendorCode } from "@/lib/vendor";
+import {
+  VENDOR_PRODUCT_COLUMNS,
+  VENDOR_SHEET_KEYS,
+  dateStamp,
+  downloadCsv,
+  downloadXlsx,
+  type BulkRow,
+} from "@/lib/bulk-io";
+import { formatAttributeCell, parseVariantAttributes } from "@/lib/variants";
 import {
   normalizeVendorName,
   preferredVendorStatement,
@@ -105,13 +119,19 @@ export async function findVendorByName(
   return res.rows[0] ?? null;
 }
 
-/** Highest `VND-` code in the database, so a new vendor continues the sequence. */
+/**
+ * Highest generated `VND-####` code in the database, so a new vendor continues
+ * the sequence. Codes are read raw and ranked numerically in `highestVendorCode`
+ * rather than with `ORDER BY code DESC`: a hand-written code like `VND-SURIYA`
+ * sorts above every digit lexically, and then the mint restarts at `VND-0001`,
+ * which already exists, and the insert dies on `idx_suppliers_code`.
+ */
 export async function latestVendorCode(exec: SqlExecutor): Promise<string | null> {
   const res = await exec.query<{ code: string | null }>(
-    `SELECT code FROM suppliers WHERE code LIKE $1 ORDER BY code DESC LIMIT 1`,
+    `SELECT code FROM suppliers WHERE code LIKE $1`,
     [`${VENDOR_CODE_PREFIX}-%`]
   );
-  return res.rows[0]?.code ?? null;
+  return highestVendorCode(res.rows.map((row) => row.code));
 }
 
 /**
@@ -163,38 +183,60 @@ export async function resolveOrCreateVendor(
   const existing = await findVendorByName(exec, name);
   if (existing) return existing.id;
 
-  const minted = code || nextVendorCode(await latestVendorCode(exec));
-  try {
-    const inserted = await exec.query<{ id: string }>(
-      `INSERT INTO suppliers
-         (code, name, legal_name, category, status, contact_person, phone, email,
-          payment_terms_days, lead_time_days)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       RETURNING id`,
-      [
-        minted,
-        name,
-        normalizeVendorName(input.legalName) || null,
-        normalizeVendorName(input.category).toLowerCase() || "supplier",
-        normalizeVendorName(input.status).toLowerCase() || "active",
-        normalizeVendorName(input.contactPerson) || null,
-        normalizeVendorName(input.phone) || null,
-        normalizeVendorName(input.email).toLowerCase() || null,
-        Number.isFinite(input.paymentTermsDays as number) ? Math.trunc(Number(input.paymentTermsDays)) : 30,
-        Number.isFinite(input.leadTimeDays as number) ? Math.trunc(Number(input.leadTimeDays)) : 0,
-      ]
-    );
-    return inserted.rows[0]?.id ?? null;
-  } catch (error) {
-    // Two sheets (or a product form and an import) naming the same vendor in the
-    // same instant collide on `idx_suppliers_name`. The other row is the answer.
-    const message = error instanceof Error ? error.message : String(error);
-    if (/idx_suppliers_name|suppliers\.name/i.test(message)) {
-      const raced = await findVendorByName(exec, name);
-      if (raced) return raced.id;
+  // A `Kode Vendor` in the sheet means that exact code; a blank one continues the
+  // sequence. Two writers can mint the same number in the same instant, and there
+  // the answer is the next free number, not the row that won: a code says nothing
+  // about the vendor's name, so adopting somebody else's vendor would misfile the
+  // whole sheet. An explicit code is different — the owner typed it, so the row
+  // carrying it is the one they meant.
+  const details = [
+    name,
+    normalizeVendorName(input.legalName) || null,
+    normalizeVendorName(input.category).toLowerCase() || "supplier",
+    normalizeVendorName(input.status).toLowerCase() || "active",
+    normalizeVendorName(input.contactPerson) || null,
+    normalizeVendorName(input.phone) || null,
+    normalizeVendorName(input.email).toLowerCase() || null,
+    Number.isFinite(input.paymentTermsDays as number) ? Math.trunc(Number(input.paymentTermsDays)) : 30,
+    Number.isFinite(input.leadTimeDays as number) ? Math.trunc(Number(input.leadTimeDays)) : 0,
+  ];
+  let minted = code || nextVendorCode(await latestVendorCode(exec));
+  let lastError: unknown = null;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const inserted = await exec.query<{ id: string }>(
+        `INSERT INTO suppliers
+           (code, name, legal_name, category, status, contact_person, phone, email,
+            payment_terms_days, lead_time_days)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id`,
+        [minted, ...details]
+      );
+      return inserted.rows[0]?.id ?? null;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      // Two sheets (or a product form and an import) naming the same vendor in the
+      // same instant collide on `idx_suppliers_name`. The other row is the answer.
+      if (/idx_suppliers_name|suppliers\.name/i.test(message)) {
+        const raced = await findVendorByName(exec, name);
+        if (raced) return raced.id;
+        break;
+      }
+      if (/idx_suppliers_code|suppliers\.code/i.test(message)) {
+        if (code) {
+          const raced = await findVendorByCode(exec, code);
+          if (raced) return raced.id;
+          break;
+        }
+        minted = nextVendorCode(await latestVendorCode(exec));
+        continue;
+      }
+      break;
     }
-    throw error;
   }
+  throw lastError instanceof Error ? lastError : new Error(`Gagal membuat vendor ${name}`);
 }
 
 /**
@@ -293,4 +335,170 @@ export function defaultVendorFor(
   const linked = (product.vendorIds ?? []).map(usable).filter((id): id is string => Boolean(id));
   const unique = Array.from(new Set(linked));
   return unique.length === 1 ? unique[0] : null;
+}
+
+/** ------------------------------------------------------------- catalogue → sheet */
+
+/** One joined row of the catalogue query, before it becomes sheet cells. */
+interface CatalogSheetRow {
+  vendor_code: string | null;
+  vendor_name: string;
+  vendor_category: string | null;
+  contact_person: string | null;
+  phone: string | null;
+  email: string | null;
+  payment_terms_days: number | null;
+  sku: string | null;
+  product_name: string | null;
+  product_category: string | null;
+  sell_price: number | null;
+  stock: number | null;
+  min_stock_level: number | null;
+  unit_name: string | null;
+  conversion_factor: number | null;
+  buy_price: number | null;
+  min_order_qty: number | null;
+  vendor_sku: string | null;
+  variant_id: string | null;
+  variant_sku: string | null;
+  variant_attributes: string | null;
+  variant_barcode: string | null;
+}
+
+/**
+ * The vendor catalogue as sheet rows, in the shape the combined vendor + product
+ * import reads, so a file can be exported, repriced in Excel and handed back
+ * without a column being retyped.
+ *
+ * Without `vendorId` that is every vendor's catalogue — one line per (vendor,
+ * product, variant, pack) with the vendor repeated on every line, which is what
+ * this export has always written. With a `vendorId` it is the one-vendor sheet the
+ * template asks for: row 1 carries the vendor and no product, rows 2+ carry that
+ * vendor's products, variants and packs with the vendor columns blank for
+ * `carryVendorForward()` to fill.
+ *
+ * Either shape re-imports as a no-op: every line names an existing `SKU`, an
+ * existing variant by its existing code, and an existing pack by its existing
+ * unit name. That is the guarantee the tests assert, and the reason the row
+ * builder lives next to the writers rather than inside one screen.
+ */
+export async function vendorCatalogSheetRows(vendorId?: string | null): Promise<BulkRow[]> {
+  /*
+   * One line per (vendor, product, variant, pack): the shape the dialog reads
+   * back. `vendor_price_list` is preferred, then the pack's own buy price, then
+   * the catalogue's last cost — the same precedence the PO screen uses, so an
+   * export shows what ordering would actually quote.
+   */
+  const res = await executeStatement<CatalogSheetRow>(
+    `SELECT
+       v.code AS vendor_code, v.name AS vendor_name, v.category AS vendor_category,
+       v.contact_person, v.phone, v.email, v.payment_terms_days,
+       p.sku, p.name AS product_name, p.category AS product_category,
+       p.min_stock_level, vp.vendor_sku, vp.min_order_qty,
+       pv.id AS variant_id, pv.sku AS variant_sku, pv.attributes AS variant_attributes,
+       pv.barcode AS variant_barcode,
+       COALESCE(u.name, 'Pcs') AS unit_name,
+       COALESCE(u.conversion_factor, 1) AS conversion_factor,
+       COALESCE(u.price, pv.price, 0) AS sell_price,
+       COALESCE(vpl.buy_price, u.cost, vp.last_cost, p.cost_price) AS buy_price,
+       (SELECT COALESCE(SUM(b.quantity_current), 0) FROM product_batches b
+         WHERE b.product_id = p.id) AS stock
+     FROM suppliers v
+     LEFT JOIN vendor_products vp ON vp.vendor_id = v.id
+     LEFT JOIN products p ON p.id = vp.product_id
+     LEFT JOIN product_variants pv ON pv.product_id = p.id
+     LEFT JOIN product_units u ON u.variant_id = pv.id
+     LEFT JOIN vendor_price_list vpl
+       ON vpl.vendor_id = v.id AND vpl.variant_id = pv.id AND vpl.unit_name = u.name
+     WHERE ($1 IS NULL OR v.id = $1)
+     ORDER BY v.name ASC, p.name ASC, pv.created_at ASC, conversion_factor ASC`,
+    [vendorId ?? null]
+  );
+
+  /*
+   * `Kode Varian` is only load-bearing when a product has several variants or the
+   * variant carries axes, so a catalogue of plain products exports exactly the
+   * columns it always did.
+   */
+  const variantIds = new Map<string, Set<string>>();
+  for (const row of res.rows) {
+    const key = row.sku ?? row.product_name ?? "";
+    if (!key || !row.variant_id) continue;
+    const seen = variantIds.get(key) ?? new Set<string>();
+    seen.add(row.variant_id);
+    variantIds.set(key, seen);
+  }
+
+  const rows: BulkRow[] = res.rows.map((row) => {
+    const key = row.sku ?? row.product_name ?? "";
+    const attributes = parseVariantAttributes(row.variant_attributes);
+    const named = Object.keys(attributes).length > 0 || (variantIds.get(key)?.size ?? 0) > 1;
+    return {
+      vendorCode: row.vendor_code ?? "",
+      vendorName: row.vendor_name ?? "",
+      vendorCategory: row.vendor_category ?? "",
+      contactPerson: row.contact_person ?? "",
+      phone: row.phone ?? "",
+      email: row.email ?? "",
+      terms: String(row.payment_terms_days ?? ""),
+      sku: row.sku ?? "",
+      productName: row.product_name ?? "",
+      productCategory: row.product_category ?? "",
+      price: String(row.sell_price ?? ""),
+      stock: String(row.stock ?? ""),
+      minStock: String(row.min_stock_level ?? ""),
+      unit: row.unit_name ?? "",
+      factor: String(row.conversion_factor ?? 1),
+      buyPrice: String(row.buy_price ?? ""),
+      minOrder: String(row.min_order_qty ?? ""),
+      vendorSku: row.vendor_sku ?? "",
+      variantSku: named ? row.variant_sku ?? "" : "",
+      variantAttrs: named ? formatAttributeCell(attributes) : "",
+      barcode: named ? row.variant_barcode ?? "" : "",
+    };
+  });
+
+  if (!vendorId || rows.length === 0) return rows;
+
+  // The one-vendor shape: the vendor says itself once, on the first row, and the
+  // product rows below inherit it. Nothing about the products changes — only how
+  // often the file repeats the vendor's address block.
+  const vendorOnly: BulkRow = { ...rows[0] };
+  for (const key of Object.keys(vendorOnly)) {
+    if (!VENDOR_SHEET_KEYS.includes(key)) vendorOnly[key] = "";
+  }
+  return [
+    vendorOnly,
+    ...rows.map((row) => {
+      const inherited: BulkRow = { ...row };
+      for (const key of VENDOR_SHEET_KEYS) inherited[key] = "";
+      return inherited;
+    }),
+  ];
+}
+
+/** The file name a one-vendor sheet is known by, code first so it sorts per vendor. */
+export function vendorSheetName(
+  vendorCode: string | null | undefined,
+  format: "csv" | "xlsx"
+): string {
+  const slug = String(vendorCode ?? "").trim().replace(/[^\w.-]+/g, "-") || "vendor";
+  return `sheet_vendor_${slug}_${dateStamp()}.${format}`;
+}
+
+/**
+ * Hand one vendor's sheet to the operator: the same rows `vendorCatalogSheetRows`
+ * builds, in the same two formats the import accepts. Returns the line count so
+ * the caller can say what it wrote without asking the database again.
+ */
+export async function downloadVendorSheet(
+  vendorId: string,
+  vendorCode: string | null | undefined,
+  format: "csv" | "xlsx"
+): Promise<number> {
+  const rows = await vendorCatalogSheetRows(vendorId);
+  const name = vendorSheetName(vendorCode, format);
+  if (format === "csv") downloadCsv(name, rows, VENDOR_PRODUCT_COLUMNS);
+  else downloadXlsx(name, rows, VENDOR_PRODUCT_COLUMNS, "Vendor");
+  return rows.length;
 }

@@ -37,6 +37,8 @@ import {
   CreditCard,
   Banknote,
   Wallet,
+  Landmark,
+  QrCode,
   Printer,
   Loader2,
   Ban,
@@ -65,10 +67,30 @@ function formatCurrency(value: number) {
 
 const paymentIcons: Record<string, React.ElementType> = {
   cash: Banknote,
+  transfer: Landmark,
   card: CreditCard,
+  debit: CreditCard,
+  credit: CreditCard,
   "e-wallet": Wallet,
-  qris: Wallet,
+  ewallet: Wallet,
+  qris: QrCode,
 };
+
+/** Indonesian labels for `transactions.payment_method`, including legacy values. */
+const paymentLabels: Record<string, string> = {
+  cash: "Tunai",
+  transfer: "Transfer Bank",
+  card: "Kartu",
+  debit: "Kartu Debit",
+  credit: "Kartu Kredit",
+  ewallet: "E-Wallet",
+  "e-wallet": "E-Wallet",
+  qris: "QRIS",
+};
+
+function paymentLabel(method: string) {
+  return paymentLabels[method] ?? method;
+}
 
 const PAGE_SIZE = 50;
 
@@ -214,6 +236,7 @@ export default function POSTransactions() {
               SELECT 
                 t.id, t.branch_id, t.cashier_id, t.customer_id, 
                 t.invoice_number, t.total_amount, t.amount_paid, t.payment_method, t.status, t.created_at,
+                t.fee_amount, t.fee_label, t.source,
                 t.void_reason, t.voided_by, t.voided_at,
                 u.name as cashier_name,
                 c.name as customer_name,
@@ -305,6 +328,9 @@ export default function POSTransactions() {
 
   const totalSales = totals.sales;
   const totalTransactions = totals.count;
+  // The "Biaya" column is a merchant cost most tills never incur (cash), so it
+  // only earns screen space when the current page actually has a fee to show.
+  const hasFee = transactions.some((trx) => Number(trx.fee_amount) > 0);
 
   const handleExport = () => {
     if (transactions.length === 0) {
@@ -323,6 +349,8 @@ export default function POSTransactions() {
       "Pembayaran": trx.payment_method,
       "Total Items": trx.items.reduce((sum, item) => sum + item.quantity, 0),
       "Total Amount": trx.total_amount,
+      "Biaya Merchant": Number(trx.fee_amount ?? 0),
+      "Kanal": trx.source ?? "pos",
     }));
 
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -459,6 +487,7 @@ export default function POSTransactions() {
             <SelectContent>
               <SelectItem value="all">Semua</SelectItem>
               <SelectItem value="cash">Tunai</SelectItem>
+              <SelectItem value="transfer">Transfer Bank</SelectItem>
               <SelectItem value="card">Kartu</SelectItem>
               <SelectItem value="ewallet">E-Wallet</SelectItem>
               <SelectItem value="qris">QRIS</SelectItem>
@@ -504,6 +533,7 @@ export default function POSTransactions() {
                 <TableHead>Customer</TableHead>
                 <TableHead className="text-center">Items</TableHead>
                 <TableHead>Pembayaran</TableHead>
+                {hasFee && <TableHead className="text-right">Biaya</TableHead>}
                 <TableHead className="text-right">Total</TableHead>
                 <TableHead className="text-center">Status</TableHead>
                 <TableHead className="w-20"></TableHead>
@@ -512,7 +542,7 @@ export default function POSTransactions() {
             <TableBody>
               {transactions.length === 0 ? (
                 <TableRow>
-                    <TableCell colSpan={8} className="text-center h-24 text-muted-foreground">
+                    <TableCell colSpan={hasFee ? 9 : 8} className="text-center h-24 text-muted-foreground">
                         Tidak ada transaksi ditemukan
                     </TableCell>
                 </TableRow>
@@ -557,9 +587,17 @@ export default function POSTransactions() {
                         <TableCell>
                         <div className="flex items-center gap-2">
                             <PaymentIcon className="w-4 h-4 text-muted-foreground" />
-                            <span className="capitalize">{trx.payment_method}</span>
+                            <span>{paymentLabel(trx.payment_method)}</span>
+                            {trx.source === "online" && (
+                              <Badge variant="secondary" className="text-[10px]">Online</Badge>
+                            )}
                         </div>
                         </TableCell>
+                        {hasFee && (
+                          <TableCell className="text-right text-sm text-muted-foreground">
+                            {Number(trx.fee_amount) > 0 ? formatCurrency(Number(trx.fee_amount)) : "—"}
+                          </TableCell>
+                        )}
                         <TableCell className="text-right">
                         <div>
                             <p className={cn("font-bold", trx.status === "void" && "line-through text-muted-foreground")}>{formatCurrency(trx.total_amount)}</p>
@@ -643,8 +681,8 @@ export default function POSTransactions() {
                     <div className="text-xs text-muted-foreground">
                       {date.toLocaleDateString('id-ID')} {date.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
                       {' · '}
-                      <span className="inline-flex items-center gap-1 capitalize">
-                        <PaymentIcon className="w-3.5 h-3.5" />{trx.payment_method}
+                      <span className="inline-flex items-center gap-1">
+                        <PaymentIcon className="w-3.5 h-3.5" />{paymentLabel(trx.payment_method)}
                       </span>
                       {' · '}{totalItems} item{voidedItems > 0 ? ` (${voidedItems} void)` : ""}
                     </div>
@@ -697,7 +735,7 @@ export default function POSTransactions() {
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Pembayaran</p>
-                  <p className="capitalize">{detailTx.payment_method}</p>
+                  <p>{paymentLabel(detailTx.payment_method)}{detailTx.source === "online" ? " · Online" : ""}</p>
                 </div>
                 <div>
                   <p className="text-xs text-muted-foreground">Status</p>
@@ -768,6 +806,12 @@ export default function POSTransactions() {
                   {formatCurrency(detailTx.total_amount)}
                 </span>
               </div>
+              {Number(detailTx.fee_amount) > 0 && (
+                <div className="flex justify-between text-sm text-muted-foreground -mt-2">
+                  <span>Biaya merchant{detailTx.fee_label ? ` (${detailTx.fee_label})` : ""}</span>
+                  <span>{formatCurrency(Number(detailTx.fee_amount))}</span>
+                </div>
+              )}
               <Button className="w-full gap-2" disabled={printingId === detailTx.id} onClick={() => handleReprint(detailTx)}>
                 {printingId === detailTx.id ? (
                   <Loader2 className="w-4 h-4 animate-spin" />

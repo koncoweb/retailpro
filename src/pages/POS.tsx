@@ -38,6 +38,12 @@ import { parseVariantAttributes, parseVariantGroups, variantLabel } from "@/lib/
 import { bestPackPriceFor, PRICING_SETTING_KEY, type PackInput } from "@/lib/pricing";
 import { unitLabel } from "@/lib/units";
 import {
+  PAYMENT_CHANNELS_SETTING_KEY,
+  normalizeChannels,
+  type PaymentChannel,
+} from "@/lib/payment-channels";
+import type { Bank } from "@/components/settings/BankSettings";
+import {
   loadPrintContext,
   printDocument,
   viaLabel,
@@ -47,7 +53,17 @@ import { buildSaleReceiptDoc, buildZReportDoc } from "@/lib/print/receipt-printe
 
 // Mock Session Data (In real app, this comes from Context/Auth)
 const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
-const banks = [{ id: "bca", name: "BCA", type: "Debit & Kredit" }, { id: "mandiri", name: "Mandiri", type: "Debit & Kredit" }, { id: "bni", name: "BNI", type: "Debit" }];
+
+/**
+ * Transfer accounts shown when a tenant has not configured the `bank` settings
+ * yet. Kept as a fallback only — the finance module (Settings → Perusahaan →
+ * Bank) is the source of truth once it has data.
+ */
+const FALLBACK_BANKS: Bank[] = [
+  { id: "bca", name: "BCA", type: "Debit & Kredit", accountNumber: "1234567890", accountName: "PT RetailPro", feePercentage: 0 },
+  { id: "mandiri", name: "Mandiri", type: "Debit & Kredit", accountNumber: "0987654321", accountName: "PT RetailPro", feePercentage: 0 },
+  { id: "bni", name: "BNI", type: "Debit", accountNumber: "5678901234", accountName: "PT RetailPro", feePercentage: 0 },
+];
 
 interface ShiftDataState {
   openTime: Date;
@@ -117,6 +133,16 @@ export default function POS() {
    * never asked for it keeps charging the verbatim pack price.
    */
   const [autoPackPrice, setAutoPackPrice] = useState(false);
+
+  /**
+   * Payment channels + transfer accounts + the static QRIS image, read once per
+   * mount from tenant settings. The till renders its payment tabs from `channels`
+   * so the owner's Settings → Pembayaran choices (which ways to pay, what fee we
+   * absorb) are exactly what the cashier sees.
+   */
+  const [channels, setChannels] = useState<PaymentChannel[]>([]);
+  const [bankList, setBankList] = useState<Bank[]>(FALLBACK_BANKS);
+  const [qrisDataUrl, setQrisDataUrl] = useState<string | null>(null);
 
   /**
    * Print preferences (auto-print flag, transport, paper). Loaded once per
@@ -333,6 +359,42 @@ export default function POS() {
       .catch(() => {
         if (!cancelled) setAutoPackPrice(false);
       });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Payment channels load once per mount, next to the pricing flag. A failed
+  // read falls back to the shipped defaults so the till always has a way to take
+  // money; the QRIS image is only fetched when that channel is actually enabled.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [bankRaw, channelRaw] = await Promise.all([
+          readTenantSetting<Bank[]>("bank", FALLBACK_BANKS),
+          readTenantSetting<unknown>(PAYMENT_CHANNELS_SETTING_KEY, null),
+        ]);
+        if (cancelled) return;
+        const nextBanks = Array.isArray(bankRaw) && bankRaw.length ? bankRaw : FALLBACK_BANKS;
+        const nextChannels = normalizeChannels(channelRaw);
+        setBankList(nextBanks);
+        setChannels(nextChannels);
+        if (nextChannels.some((channel) => channel.id === "qris" && channel.enabled)) {
+          const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
+          try {
+            const res = await fetch(`${apiBase}/api/tenant/qris-image`, { credentials: "include" });
+            const data = res.ok ? await res.json() : null;
+            if (!cancelled && data?.qrisAvailable) setQrisDataUrl(data.dataUrl ?? null);
+          } catch (error) {
+            console.error("Failed to load QRIS image:", error);
+          }
+        }
+      } catch (error) {
+        console.error("Failed to load payment channels:", error);
+        if (!cancelled) setChannels(normalizeChannels(null));
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -646,10 +708,11 @@ export default function POS() {
 
   const handlePaymentComplete = async (method: string, details: PaymentDetails): Promise<boolean> => {
     try {
-        let finalMethod = method;
-        if (method === 'card' && details.cardType) {
-            finalMethod = details.cardType;
-        }
+        // The modal already hands back a `transactions.payment_method` value
+        // (cash | transfer | qris); there is no card/e-wallet branch anymore.
+        const finalMethod = method;
+        const fee = Math.max(0, Math.round(details.fee ?? 0));
+        const feeLabelValue = fee > 0 ? (details.feeLabel ?? null) : null;
 
         const invoiceNumber = `INV/${Date.now()}`;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -720,10 +783,10 @@ export default function POS() {
             // 1. Create Transaction
             const trxRes = await client.query(`
                 INSERT INTO transactions 
-                (branch_id, cashier_id, invoice_number, total_amount, payment_method, status, created_at, amount_paid, shift_id)
-                VALUES ($1, $2, $3, $4, $5, 'completed', strftime('%Y-%m-%dT%H:%M:%fZ','now'), $6, $7)
+                (branch_id, cashier_id, invoice_number, total_amount, payment_method, status, created_at, amount_paid, shift_id, fee_amount, fee_label, source)
+                VALUES ($1, $2, $3, $4, $5, 'completed', strftime('%Y-%m-%dT%H:%M:%fZ','now'), $6, $7, $8, $9, 'pos')
                 RETURNING id
-            `, [currentBranchId, cashierId, invoiceNumber, total, finalMethod, amountPaid, currentShiftId]);
+            `, [currentBranchId, cashierId, invoiceNumber, total, finalMethod, amountPaid, currentShiftId, fee, feeLabelValue]);
             
             const transactionId = trxRes.rows[0].id;
             committedTransactionId = transactionId;
@@ -819,6 +882,10 @@ export default function POS() {
                     amount_paid: amountPaid,
                     change: amountPaid - total,
                     payment_method: finalMethod,
+                    // Merchant cost absorbed for this tender — not a customer surcharge.
+                    fee_amount: fee,
+                    fee_label: feeLabelValue,
+                    source: 'pos',
                     item_count: cart.length,
                     // Which batch policy produced these COGS figures.
                     stock_issue_method: issueMethod,
@@ -1243,7 +1310,7 @@ export default function POS() {
         </div>
       </div>
 
-      <PaymentModal open={isPaymentOpen} onOpenChange={setIsPaymentOpen} total={total} onPaymentComplete={handlePaymentComplete} banks={banks} />
+      <PaymentModal open={isPaymentOpen} onOpenChange={setIsPaymentOpen} total={total} onPaymentComplete={handlePaymentComplete} channels={channels} banks={bankList} qrisDataUrl={qrisDataUrl} />
       <ShiftModal open={isShiftOpen} onOpenChange={setIsShiftOpen} mode={shiftMode} shiftData={shiftData ? { ...shiftData, transactions } : undefined} onShiftAction={handleShiftAction} />
 
       {/* The full cart as a sheet on <lg screens: same rows, same totals,

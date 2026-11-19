@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/backend.md` |
-| Terakhir diperbarui | **2026-11-18** |
+| Terakhir diperbarui | **2026-11-19** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
-| Versi skema tenant | **11** (`db/schema/tenant.sql`, migrasi `db/migrations/`) |
+| Versi skema tenant | **12** (`db/schema/tenant.sql`, migrasi `db/migrations/`) — **impor varian kaya 2026-11-19 tidak menambah migrasi** |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
 
 > Dokumen ini menggantikan `Backend.md` lama (arsitektur Neon/Postgres dengan RLS) yang sudah
@@ -16,8 +16,8 @@
 ## 1. Peta kode
 
 ```
-db/schema/tenant.sql      Skema DB tenant (38 tabel + indeks + trigger), idempoten, schema_version = 11
-db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 011)
+db/schema/tenant.sql      Skema DB tenant (39 tabel + indeks + trigger), idempoten, schema_version = 12
+db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 012)
 db/schema/control.sql     Skema control DB (Better Auth 4 tabel + registry)
 db/schema/seed.sql        Seed provisioning dengan placeholder {{TOKEN}}
 db/__tests__/             Test skema, seed, dan tenant demo (DB sementara per run)
@@ -49,6 +49,14 @@ api/admin/users/[id].ts   PATCH / DELETE /api/admin/users/<id>  (satu-satunya pe
 api/admin/users/[id]/password.ts  POST reset password
 api/storefront/catalog.ts GET   /api/storefront/catalog  (publik, satu tenant; kontrak lama)
 api/storefront/marketplace.ts GET /api/storefront/marketplace  (publik, gabungan semua tenant — dipakai tokoonline/)
+api/storefront/channels.ts GET  /api/storefront/channels  (publik, channel pembayaran per tenant / agregat)
+api/storefront/qris.ts    GET   /api/storefront/qris  (publik, gambar QRIS statis biner webp)
+api/storefront/orders.ts  POST  /api/storefront/orders  (publik CORS, terima order dari tokoonline)
+                           GET  /api/storefront/orders?parent=  (publik, status order per split)
+api/tenant/qris-image.ts  POST  /api/tenant/qris-image  (terautentikasi, unggah gambar QRIS)
+                           DELETE /api/tenant/qris-image  (terautentikasi, hapus gambar QRIS)
+api/tenant/orders/confirm.ts POST /api/tenant/orders/confirm  (terautentikasi, konfirmasi pembayaran order online)
+api/tenant/orders/status.ts  POST /api/tenant/orders/status  (terautentikasi, transisi status order online)
 
 scripts/bootstrap-control.mjs   Membuat/menyiapkan control DB
 scripts/apply-schema-all.mjs    Terapkan migrasi tertunda + tenant.sql (cek schema_version)
@@ -208,8 +216,8 @@ dengan yang bisa dibaca pengunjung mana pun.
 
 | Tabel | Kolom |
 |---|---|
-| `schema_version` | `id` (selalu 1), `version` (**10**), `applied_at` |
-| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `user_permissions` (pengecualian izin per karyawan, `userId → {permKey: false}`, restrict-only), `payroll_config`, `receipt`, `printer` (`mode` driver/usb/bluetooth + `paperWidthMm`), `tax`, `bank`, `pricing` (`auto_pack_price`, `min_margin_pct`, `rounding`), `inventory` → `{stock_issue_method}`), `created_at` |
+| `schema_version` | `id` (selalu 1), `version` (**12**), `applied_at` |
+| `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `user_permissions` (pengecualian izin per karyawan, `userId → {permKey: false}`, restrict-only), `payroll_config`, `receipt`, `printer` (`mode` driver/usb/bluetooth + `paperWidthMm`), `tax`, `bank`, `pricing` (`auto_pack_price`, `min_margin_pct`, `rounding`), `inventory` → `{stock_issue_method}`, `payment_channels` → `{channels: PaymentChannel[], updated_at}`), `qris_image` (v12 — data URL gambar QRIS statis, terpisah dari `settings` agar tidak membengkak), `created_at` |
 | `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `latitude`, `longitude`, `geo_radius_m` (default 150), `require_geo`, `require_face` (v8 — titik & radius geofence tempat karyawan absen), `created_at` |
 | `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `latitude`, `longitude`, `geo_radius_m`, `require_geo`, `require_face` (v8), `created_at` |
 | `branch_warehouses` | `branch_id`, `warehouse_id`, `is_default`, `priority` — PK `(branch_id, warehouse_id)`; peta "gudang mana melayani cabang mana" |
@@ -240,7 +248,7 @@ Harga jual ada di `product_units.price` / `product_variants.price`, **tidak** di
 | Tabel | Kolom |
 |---|---|
 | `shifts` | `id`, `branch_id`, `user_id`, `start_time`, `end_time`, `initial_cash`, `final_cash`, `expected_cash`, `difference`, `notes`, `status` (`open`/`closed`), `created_at` |
-| `transactions` | `id`, `branch_id`, `cashier_id`, `customer_id`, `shift_id`, `invoice_number`, `total_amount`, `amount_paid`, `due_date`, `payment_method` (`cash`/`card`/`ewallet`/`credit`), `notes`, `status` (`completed`/`void`), `void_reason`, `voided_by`, `voided_at` (v9), `created_at` |
+| `transactions` | `id`, `branch_id`, `cashier_id`, `customer_id`, `shift_id`, `invoice_number`, `total_amount`, `amount_paid`, `due_date`, `payment_method` (`cash`/`card`/`ewallet`/`credit`/`transfer`/`qris`), `fee_amount` (v12 — biaya merchant internal, tidak mengubah total customer), `fee_label` (v12 — mis. "BCA · 0.7%"), `source` (v12 — `'pos'` atau `'online'`), `notes`, `status` (`completed`/`void`), `void_reason`, `voided_by`, `voided_at` (v9), `created_at` |
 | `transaction_items` | `id`, `transaction_id`, `product_id`, `variant_id`, `batch_id`, `quantity` (**satuan jual**), `unit_name`, `conversion_factor`, `unit_price`, `cost_price` (per satuan jual), `subtotal`, `voided` (0/1, default 0), `void_reason`, `voided_by`, `voided_at` (v9) |
 
 > **Void ≠ hapus (v9).** Pembatalan penjualan tidak pernah menghapus baris: `src/lib/void.ts`
@@ -365,6 +373,7 @@ tetapi belum dipakai UI mana pun.
 | `chat_participants` | PK `(conversation_id, user_id)`, `(user_id, conversation_id)`, `(conversation_id)` |
 | `chat_messages` | `(conversation_id, created_at, id)` |
 | `chat_mentions` | `(message_id)` |
+| `storefront_orders` | `(parent_id)`, `(status)`, `(created_at)` |
 
 ### 5.9 Cabang vs gudang (model stok)
 
@@ -470,9 +479,11 @@ menambah dua indeks untuk bentuk kueri yang baru menjadi panas.
 ```
 input vendor (form / sheet)  ──► resolveOrCreateVendor()  ──► suppliers (kode VND-#### di-mint di dalam tx)
 produk (form / sheet / tab Produk vendor)
-        ──► saveProductDraft() / insertImportedProduct()          [src/lib/product-write.ts]
+        ──► saveProductDraft() / insertImportedProduct() / appendImportedVariants()   [src/lib/product-write.ts]
                 ├─ vendor_products    : upsertVendorCatalogLink() + markPreferredVendor()
                 └─ vendor_price_list  : upsertVendorPrice(mode: 'overwrite' | 'gap-only')
+sheet produk (CSV/Excel)   ──► groupProductRows() + planProductImport()  [src/lib/product-import.ts, murni]
+sheet vendor+produk        ──► carryVendorForward() + expandProductCodes() + groupVendorProductRows() + planVendorProductImport()
 PO (Buat PO)               ──► defaultVendorFor(preferred → products.supplier_id → vendor tunggal aktif)
 ```
 
@@ -485,10 +496,14 @@ PO (Buat PO)               ──► defaultVendorFor(preferred → products.sup
 | Asal harga dicatat tanpa kolom baru | `vendor_price_list.notes` dipakai sebagai provenance: `import`, `form produk`, `katalog vendor`, `penerimaan barang`, `seed demo` |
 | Harga kesepakatan tidak boleh diinjak tanpa izin | `upsertVendorPrice(mode)`: `overwrite` hanya untuk pemegang `manage_vendor_prices`, selain itu `gap-only` (`ON CONFLICT DO NOTHING`); `buy_price` ≤ 0 tidak pernah ditulis. Alur gabungan menuntut `manage_variants` **DAN** `manage_vendor_prices`, dan penolaknya ada di `src/lib/product-write.ts`, bukan hanya di UI |
 | Katalog tidak boleh berisi produk tanpa harga | `db/__tests__/demo-tenant.test.ts` menolak baris `vendor_products` yang tidak punya `vendor_price_list` pecahan faktor 1 untuk vendor yang sama |
-| Satu transaksi per blok vendor saat impor | `src/components/vendors/VendorProductImport.tsx` — `runTransaction()` per vendor, bukan per file, supaya satu baris rusak tidak membatalkan 2.000 baris yang sudah benar |
+| Satu transaksi per **produk** saat impor vendor+produk | `src/components/vendors/VendorProductImport.tsx` — master vendor lebih dulu di `runTransaction()`-nya sendiri, lalu **satu transaksi per produk** dengan `try/catch` sendiri (`N produk gagal ditulis`). Bentuk sheet-nya kini satu vendor dengan produk tak terbatas, jadi blok vendor terlalu besar untuk dijadikan satu hal atomik; `try/catch` per vendor tetap ada di luarnya supaya berkas lama multi-vendor tetap terisolasi. Impor produk sama: **satu transaksi per produk** (`Inventory.handleImport`) |
+| Sheet vendor ditulis dan dibaca dari **satu** pembangun baris | `vendorCatalogSheetRows(vendorId?)` di `src/lib/vendor-catalog.ts` dipakai **Ekspor Katalog** (semua vendor, vendor diulang di setiap baris — keluarannya tidak berubah) dan **Ekspor Sheet** per vendor (`downloadVendorSheet()` → `sheet_vendor_<KODE>_<tanggal>.<csv\|xlsx>`, baris 1 hanya kolom vendor dan baris 2+ mengosongkannya). Kolom yang diwarisi adalah **satu daftar** (`VENDOR_SHEET_KEYS`, `src/lib/bulk-io.ts`) yang sama untuk ekspor dan untuk `carryVendorForward()`. Jaminannya: berkas per vendor hasil ekspor diimpor balik tanpa menambah satu baris pun — [spec-sheet-vendor-satu-vendor.md](spec-sheet-vendor-satu-vendor.md) §6 |
+| Impor tidak pernah merusak master | Perencana `src/lib/product-import.ts` menandai SKU existing sebagai `extend`, dan `product-write.ts` hanya menulis yang kurang: tidak ada `UPDATE products SET name`, tidak ada `DELETE`, tidak ada harga yang dinolkan. Untuk sheet vendor, harga beli hanya masuk ke varian yang **disebut baris** (`resolveTargetVariant()`); varian ambigu → `ambiguousVariants` + tidak ditulis (KS-55), dan varian yang belum ada **hanya** dibuat bila pemegangnya `manage_variants` (`mayCreateVariants`) — izin menambah tidak pernah berarti izin menebak. `products.variant_attributes` digabung **append-only** oleh `mergeGroups()` |
 
 Rencana dan keputusan desainnya dibekukan di
-[spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md).
+[spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md),
+[spec-impor-varian-kaya.md](spec-impor-varian-kaya.md), dan
+[spec-sheet-vendor-satu-vendor.md](spec-sheet-vendor-satu-vendor.md).
 
 ### 5.13 Chat internal (v11)
 
@@ -518,6 +533,26 @@ salinannya dihitung dua kali.
 | `chat_participants` | PK `(conversation_id, user_id)`, `member_role` | `member_role='owner'` untuk pembuat kanal |
 | `chat_messages` | `conversation_id`, `sender_id`, `body`, `deleted`, `system` | `body` teks natural (ter-search); penghapusan selalu soft (`deleted=1`) |
 | `chat_mentions` | `message_id`, `kind`, `entity_id`, `label` | `label` adalah snapshot substring saat ditulis, sehingga chip selamat dari rename/hapus entitas |
+
+### 5.14 Storefront orders (v12)
+
+Tabel baru `storefront_orders` untuk pesanan toko online yang dipecah per penjual. Satu pesanan
+dari `tokoonline/` (satu `parent_id`) menghasilkan beberapa baris — satu per tenant/seller.
+
+| Tabel | Kolom |
+|---|---|
+| `storefront_orders` | `id`, `parent_id` (grup order dari satu checkout), `invoice_number`, `shop_name`, `customer_name`, `customer_phone`, `customer_address`, `fulfillment` (`pickup`/`delivery`), `slot`, `notes`, `payment_channel`, `payment_bank_id`, `items` (JSON snapshot: `product_id`, `variant_id`, `unit_name`, `conversion_factor`, `qty`, `unit_price`), `subtotal`, `shipping`, `total`, `status` (`pending_payment`/`confirmed`/`packing`/`shipped`/`done`/`cancelled`/`void`), `cancel_reason`, `confirmed_at`, `confirmed_by`, `transaction_id` (nullable, menunjuk `transactions.id` hasil konfirmasi), `created_at` |
+
+Indeks: `idx_sf_orders_parent (parent_id)`, `idx_sf_orders_status (status)`, `idx_sf_orders_created (created_at)`.
+
+**Alur data:**
+1. `POST /api/storefront/orders` → validasi + hitung harga server-side → split per seller → INSERT `storefront_orders` dengan `status='pending_payment'` → respons `201 { parentId, orders[] }`
+2. `POST /api/tenant/orders/confirm { orderId }` → dalam satu transaksi atomik: cek stok → kurangi batch → INSERT `transactions` (`source='online'`, `fee_amount`) → UPDATE `storefront_orders` SET `status='confirmed'`, `transaction_id` → `logAuditTx`
+3. `POST /api/tenant/orders/status { orderId, status, reason? }` → transisi `packing|shipped|done|cancel`
+
+`items` JSON **tidak** boleh dipercaya untuk harga saat konfirmasi — server menghitung ulang dari `product_units`/`product_variants` untuk mencegah manipulasi dari browser.
+
+Desain lengkap: [spec-channel-pembayaran.md](spec-channel-pembayaran.md).
 
 ---
 
@@ -588,18 +623,20 @@ flight* sebelum kedaluwarsa, dan **tidak pernah** menulis token ke storage.
 ### 8.1 Modul penulis domain (`src/lib/`)
 
 Karena tidak ada server tenant, "logika backend" yang menegakkan invariant hidup di modul `src/lib/*`
-— dipanggil halaman, bukan dibalik endpoint. Empat modul yang menambah jalur tulis v10:
+— dipanggil halaman, bukan dibalik endpoint. Empat modul yang menambah jalur tulis v10, plus satu
+perencana sheet produk yang menyusul (2026-11-19, tanpa perubahan skema):
 
 | Modul | Baris | Tanggung jawab |
 |---|---|---|
-| `src/lib/vendor-catalog.ts` | 296 | Satu-satunya penulis relasi vendor⇄produk: resolve-or-create vendor (kode `VND-####` di-mint di dalam transaksi), tautan katalog, preferensi vendor, harga beli dua mode, resolver vendor untuk PO (`defaultVendorFor`) |
+| `src/lib/vendor-catalog.ts` | 324 | Satu-satunya penulis relasi vendor⇄produk: resolve-or-create vendor (kode `VND-####` di-mint di dalam transaksi, **diurutkan sebagai angka** lewat `highestVendorCode()` di `src/lib/vendor.ts` — `ORDER BY code DESC` membuat satu kode tulisan tangan seperti `VND-E2E-KOPI` mengambil alih urutan dan menabrak `idx_suppliers_code`, KS-56; tabrakan kode hasil minting di-*retry*, bukan mengadopsi baris orang lain), tautan katalog, preferensi vendor, harga beli dua mode, resolver vendor untuk PO (`defaultVendorFor`) |
 | `src/lib/vendor-catalog-sql.ts` | 201 | Statement builder murni (nol import) untuk keempat tulis di atas + `normalizeVendorName`. Dipakai `vendor-catalog.ts` **dan** `server/demo/ledger.ts`, sehingga seeder demo tidak bisa lagi membuat katalog tanpa baris harga |
-| `src/lib/product-write.ts` | 660 | Ekstraksi `handleSaveProduct` dan blok per-baris `handleImport` dari `Inventory.tsx`: `saveProductDraft()` dan `insertImportedProduct()`. Satu penulis produk untuk form, sheet impor, dan tab Produk di layar vendor |
-| `src/lib/vendor-import.ts` | 542 | Perencana sheet vendor+produk yang murni: `groupVendorProductRows()` + `planVendorProductImport()` (`PackAction` = `create`/`overwrite`/`fill`/`skip`) — dipisah dari eksekusi supaya bisa di-unit-test tanpa browser |
+| `src/lib/product-write.ts` | 1056 | Ekstraksi `handleSaveProduct` dan blok per-baris `handleImport` dari `Inventory.tsx`: `saveProductDraft()`, `insertImportedProduct()` (kini menulis banyak varian + pecahan + batch + harga vendor per varian), dan `appendImportedVariants()` untuk kasus **extend** pada produk yang sudah ada. Satu penulis produk untuk form, sheet impor, dan tab Produk di layar vendor; satu transaksi per produk |
+| `src/lib/vendor-import.ts` | 772 | Perencana sheet vendor+produk yang murni: `carryVendorForward()` + `expandProductCodes()` + `groupVendorProductRows()` + `planVendorProductImport()` (`PackAction` = `create`/`overwrite`/`fill`/`skip`) — dipisah dari eksekusi supaya bisa di-unit-test tanpa browser. Harga beli ditarget ke varian lewat `resolveTargetVariant()`; yang ambigu dilaporkan, tidak ditebak |
+| `src/lib/product-import.ts` | 711 | Perencana sheet produk kaya (murni, tanpa SQL/React): `groupProductRows()` (baris → produk → varian → pecahan + niat vendor) dan `planProductImport(seeds, universe, { priceMode })` yang mengembalikan rencana bertingkat (`create`/`extend`/`nochange`, `create`/`match`/`conflict`, `create`/`overwrite`/`fill`/`skip`) + ringkasan untuk pratinjau |
 
-Test: `src/lib/vendor-catalog.test.ts` (25), `src/lib/vendor-import.test.ts` (24), perluasan
-`src/lib/bulk-io.test.ts` (19) dan `db/__tests__/demo-tenant.test.ts` (15), spesifikasi browser
-`tests/vendor-catalog.e2e.ts` (4 kasus).
+Test: `src/lib/vendor-catalog.test.ts` (26), `src/lib/vendor-import.test.ts` (51), `src/lib/product-import.test.ts` (31), perluasan
+`src/lib/bulk-io.test.ts` (27) dan `db/__tests__/demo-tenant.test.ts` (15), spesifikasi browser
+`tests/vendor-catalog.e2e.ts` (4 kasus) dan `tests/bulk-import.e2e.ts` (11 kasus).
 
 ---
 
@@ -666,12 +703,12 @@ Test: `src/lib/vendor-catalog.test.ts` (25), `src/lib/vendor-import.test.ts` (24
 | `npm run bootstrap:control` | Buat/siapkan control DB dari `control.sql` |
 | `npm run dev:db` | Shim Hrana loopback `:8090` agar `CONTROL_DB_URL=file:…` bisa dipakai server |
 | `npm run schema:apply-all` | Bandingkan `schema_version` setiap tenant dengan versi di repo. Dry-run bawaan; `--apply` untuk eksekusi, `--only <slug\|db_name>` untuk satu tenant. Database lama menjalankan migrasi tertunda lebih dulu, lalu `tenant.sql`; database baru (v0) cukup `tenant.sql` |
-| `npm run audit:sql` | Kumpulkan literal SQL di `src/`, putar ulang terhadap `tenant.sql`. Keadaan pasca-v11: **576 literal dikumpulkan**, 512 diperiksa, 64 dilewati karena dinamik, 8 dibuang karena berada di dalam komentar, dan **2 kelas temuan yang tersisa keduanya contoh di `translate.test.ts`** (tabel `t`, kolom `a..f`) yang memang memakai skema sementara sendiri. Turun dari 577/65 karena jalur baca daftar chat memakai satu statement builder (`listConversationsSql()`) — salinan yang sama tidak dihitung dua kali lagi. Perbaikan v10: pengumpul sebelumnya ikut membaca literal di dalam komentar, jadi narasi seperti "layar ini dulu menjalankan `UPDATE users`" berubah menjadi temuan `SYNTAX \| incomplete input`; kini rentang komentar dipisahkan lebih dulu (`commentRanges()`) sehingga hanya kode yang diaudit. `npm run audit:sql -- --show-comments` mencetak **8 situs yang dibuang** beserta baris sumbernya — pembuangan tanpa daftar membuat klaim "itu cuma dokumentasi" tidak bisa diverifikasi |
+| `npm run audit:sql` | Kumpulkan literal SQL di `src/`, putar ulang terhadap `tenant.sql`. Keadaan terukur 2026-11-19 (kerja channel pembayaran + impor varian kaya + pemintingan kode vendor satu sumber): **603 literal dikumpulkan**, 532 diperiksa, 71 dilewati karena dinamik, 8 dibuang karena berada di dalam komentar, dan **3 kelas temuan yang tersisa** — dua di antaranya contoh di `translate.test.ts` (tabel `t`, kolom `a..f`) yang memang memakai skema sementara sendiri, dan satu bukan SQL sama sekali: string `"delete failed"` di `src/components/settings/PaymentChannelSettings.tsx` ikut ter-kumpul karena diawali kata `delete` (temuan dari pekerjaan channel pembayaran, belum ditindaklanjuti di dokumen ini). Dua dari penurunan 605 → 603 adalah salinan `SELECT code FROM suppliers WHERE code LIKE 'VND-%' ORDER BY code DESC` di `Vendors.tsx` dan `VendorFormModal.tsx` yang kini memanggil `latestVendorCode()` — query yang sama tidak dihitung tiga kali lagi. Turun dari 577/65 karena jalur baca daftar chat memakai satu statement builder (`listConversationsSql()`) — salinan yang sama tidak dihitung dua kali lagi. Perbaikan v10: pengumpul sebelumnya ikut membaca literal di dalam komentar, jadi narasi seperti "layar ini dulu menjalankan `UPDATE users`" berubah menjadi temuan `SYNTAX \| incomplete input`; kini rentang komentar dipisahkan lebih dulu (`commentRanges()`) sehingga hanya kode yang diaudit. `npm run audit:sql -- --show-comments` mencetak **8 situs yang dibuang** beserta baris sumbernya — pembuangan tanpa daftar membuat klaim "itu cuma dokumentasi" tidak bisa diverifikasi |
 | `npm run docs:check` | Gerbang dokumen (dev-only). Empat pemeriksaan: (1) jumlah sel setiap baris tabel markdown harus sama dengan header-nya — blok kode di-*skip*, `\|` dihitung sebagai teks; (2) versi skema harus satu angka di tiga tempat: baris stamp `tenant.sql`, `CURRENT_SCHEMA_VERSION` di `apply-schema-all.mjs`, dan prefiks tertinggi di `db/migrations`; (3) indeks dokumentasi di `README.md` harus menyebut setiap berkas `docs/*.md` dan setiap berkas yang disebut harus ada; (4) anchor `§N` yang ditulis tepat setelah tautan `[berkas.md](berkas.md)` harus menunjuk heading yang benar-benar ada di berkas target. Keluaran mencetak cakupannya sendiri (jumlah berkas markdown, baris tabel, dan anchor yang benar-benar dibaca — yang dua terakhir sengaja tidak dikutip sebagai angka di tempat lain karena keduanya berubah setiap kali sebuah tabel disunting), dan `scripts/__fixtures__/docs-check/` adalah positive control-nya: `node scripts/check-docs.mjs --root scripts/__fixtures__/docs-check` wajib keluar 1 dengan **tepat 8 masalah** — gerbang yang tidak bisa gagal sama dengan gerbang yang tidak berjalan |
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: **31 berkas, 441 test** (translate, skema, seed, demo tenant, roles, permission-matrix, date-range, inventory-utils, units, bulk-io, password, stock-issue, stock-movement, branch-orders, vendor, **vendor-catalog**, **vendor-import**, procurement, goods-receipt, pricing, variants, geolocation, face, pos-branch, shift-attendance, **void**, **chat-mentions**, **print**: escpos/receipt-doc/zreport-doc/html-render) |
+| `npm test` | Vitest: **33 berkas, 547 test** (terukur 2026-11-19; translate, skema, seed, demo tenant, roles, permission-matrix, date-range, inventory-utils, units, bulk-io, password, stock-issue, stock-movement, branch-orders, vendor, **vendor-catalog**, **vendor-import**, **product-import**, procurement, goods-receipt, pricing, variants, geolocation, face, pos-branch, shift-attendance, **void**, **chat-mentions**, **payment-channels**, **print**: escpos/receipt-doc/zreport-doc/html-render) |
 | `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---
@@ -697,6 +734,7 @@ Test: `src/lib/vendor-catalog.test.ts` (25), `src/lib/vendor-import.test.ts` (24
 | 2026-11-16 | **Skema v9** (`db/migrations/009_transaction_voids.sql`): `transaction_items` + `voided` (`INTEGER NOT NULL DEFAULT 0`)/`void_reason`/`voided_by`/`voided_at`; `transactions` + `void_reason`/`voided_by`/`voided_at` (`status` sudah ada, nilai `void` kini benar-benar dipakai). Menegakkan izin `void_transaction` yang selama ini dideklarasikan tapi belum diterapkan | Tenant v8: `ALTER TABLE ... ADD COLUMN` dengan default konstan (SQLite tidak punya `IF NOT EXISTS`, jadi digerbang versi oleh runner). Tidak ada backfill — baris lama otomatis `voided = 0` dan tetap `completed`. Jumlah tabel tidak berubah (34). Seluruh query uang ditambah `status = 'completed'`, query per item `ti.voided = 0` — lihat catatan §5.4 dan `src/lib/__tests__/void.test.ts` |
 | 2026-11-17 | **Skema v10** (`db/migrations/010_vendor_catalog_indexes.sql`): `idx_vendor_products_pref ON vendor_products(product_id, is_preferred)` dan `idx_suppliers_name_nc ON suppliers(name COLLATE NOCASE)`. **Tidak ada tabel atau kolom baru** — yang berubah adalah cara tabel lama dibaca dan siapa yang boleh menulisnya | Tenant v9: dua `CREATE INDEX IF NOT EXISTS` saja, tanpa backfill dan tanpa perubahan data; `tenant.sql` men-stamp `(1, 10)` dan runner menaikkan `CURRENT_SCHEMA_VERSION` 9 → 10. Jumlah tabel tetap 34. Invarian baru dijaga `db/__tests__/schema.test.ts` (indeks) dan `db/__tests__/demo-tenant.test.ts` (katalog⇄harga, `is_preferred` tunggal) — lihat §5.12 dan [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md) |
 | 2026-11-17 | **Skema v11** (`db/migrations/011_chat.sql`): empat tabel chat internal sepenuhnya aditif — `chat_conversations` (channel/DM, denormalized `last_message_at`/`last_message_sender_id`/`last_message_preview`), `chat_participants` (PK `(conversation_id, user_id)`, `member_role`), `chat_messages` (`body` teks natural, soft-delete `deleted`), `chat_mentions` (snapshot `label` per mention); tujuh indeks termasuk partial `UNIQUE(dm_key)` dan `UNIQUE(name) WHERE kind='channel'` | Tenant v10 → v11: hanya `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`, **tidak ada `ALTER` pada tabel lama** sehingga nol risiko ke baris live; `tenant.sql` men-stamp `(1, 11)`, runner menaikkan `CURRENT_SCHEMA_VERSION` 10 → 11, jumlah tabel 34 → 38. Kunci izin `use_chat`/`manage_channels` di `src/config/roles.ts` (chat = akses data sisi browser lewat `src/lib/chat.ts`, tanpa endpoint baru). Tidak ada row-level security — visibilitas channel/DM aturan UI, bukan batas keamanan. Lihat §5.13 dan [spec-chat-internal.md](spec-chat-internal.md) |
+| 2026-11-19 | **Skema v12** (`db/migrations/012_payment_channels.sql`): `transactions` + `fee_amount INTEGER NOT NULL DEFAULT 0` / `fee_label TEXT` / `source TEXT NOT NULL DEFAULT 'pos'`; `tenants` + `qris_image TEXT`; tabel baru `storefront_orders` (satu baris per seller per pesanan online, `parent_id`/`items` JSON/`status` `pending_payment`..`void`, `transaction_id` nullable) + tiga indeks (`parent_id`, `status`, `created_at`) | Tenant v11 → v12: `ALTER TABLE` dengan default konstan (nol risiko ke baris live) + `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`; `tenant.sql` men-stamp `(1, 12)`, runner menaikkan `CURRENT_SCHEMA_VERSION` 11 → 12, jumlah tabel 38 → 39. Channel pembayaran disimpan sebagai kunci JSON `payment_channels` di `tenants.settings` (pola yang sama dengan pengaturan lain); gambar QRIS di kolom `tenants.qris_image` terpisah agar dokumen settings tidak membengkak. Lihat §5.14 dan [spec-channel-pembayaran.md](spec-channel-pembayaran.md) |
 
 Cara mengubah skema ke depan:
 

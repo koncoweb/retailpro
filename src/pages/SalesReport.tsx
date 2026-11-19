@@ -27,6 +27,11 @@ import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import { id } from "date-fns/locale";
+import { paymentLabel } from "@/lib/print/receipt-doc";
+
+function formatIdr(value: number) {
+  return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR" }).format(value);
+}
 
 export default function SalesReport() {
   const navigate = useNavigate();
@@ -56,6 +61,8 @@ export default function SalesReport() {
           t.created_at,
           t.total_amount,
           t.payment_method,
+          t.fee_amount,
+          t.source,
           t.status,
           b.name as branch_name,
           u.name as cashier_name
@@ -85,6 +92,8 @@ export default function SalesReport() {
       return res.rows.map((row: any) => ({
         ...row,
         total_amount: Number(row.total_amount),
+        fee_amount: Number(row.fee_amount) || 0,
+        source: row.source ?? "pos",
       }));
     },
     enabled: !!dateRange?.from && !!dateRange?.to,
@@ -101,9 +110,11 @@ export default function SalesReport() {
       "Tanggal": format(new Date(item.created_at), "dd MMM yyyy HH:mm", { locale: id }),
       "Cabang": item.branch_name || "-",
       "Kasir": item.cashier_name || "-",
-      "Metode Pembayaran": item.payment_method,
+      "Metode Pembayaran": paymentLabel(item.payment_method),
+      "Kanal": item.source === "online" ? "Online" : "Kasir",
       "Status": item.status,
       "Total": item.total_amount,
+      "Biaya Merchant": Number(item.fee_amount) || 0,
     }));
 
     const ws = XLSX.utils.json_to_sheet(exportData);
@@ -117,8 +128,10 @@ export default function SalesReport() {
       { wch: 20 }, // Cabang
       { wch: 20 }, // Kasir
       { wch: 15 }, // Payment
+      { wch: 12 }, // Kanal
       { wch: 15 }, // Status
       { wch: 15 }, // Total
+      { wch: 15 }, // Biaya Merchant
     ];
     ws["!cols"] = wscols;
 
@@ -129,9 +142,12 @@ export default function SalesReport() {
   // The table lists every bon including voids, but revenue only adds up the
   // completed ones: a voided bon keeps its `total_amount` as the record of the
   // cancelled sale, so summing it here would double-count money already back.
-  const totalSales = salesData
-    .filter((item) => item.status === 'completed')
-    .reduce((acc, curr) => acc + curr.total_amount, 0);
+  const completedSales = salesData.filter((item) => item.status === "completed");
+  const totalSales = completedSales.reduce((acc, curr) => acc + curr.total_amount, 0);
+  // Net revenue is what the store keeps after the merchant fee it absorbs. The
+  // fee never changes what the customer paid, only what actually lands with us.
+  const totalFee = completedSales.reduce((acc, curr) => acc + (Number(curr.fee_amount) || 0), 0);
+  const netSales = totalSales - totalFee;
 
   return (
     <BackOfficeLayout>
@@ -193,10 +209,36 @@ export default function SalesReport() {
                 </CardHeader>
                 <CardContent>
                     <div className="text-2xl font-bold">
-                        {new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR" }).format(totalSales)}
+                        {formatIdr(totalSales)}
                     </div>
                     <p className="text-xs text-muted-foreground mt-1">
                         {salesData.length} Transaksi
+                    </p>
+                </CardContent>
+            </Card>
+            <Card>
+                <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Biaya Merchant</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="text-2xl font-bold text-warning">
+                        {formatIdr(totalFee)}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                        Biaya transfer &amp; QRIS yang ditanggung toko
+                    </p>
+                </CardContent>
+            </Card>
+            <Card>
+                <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-medium text-muted-foreground">Pendapatan Bersih</CardTitle>
+                </CardHeader>
+                <CardContent>
+                    <div className="text-2xl font-bold text-success">
+                        {formatIdr(netSales)}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                        Total penjualan dikurangi biaya merchant
                     </p>
                 </CardContent>
             </Card>
@@ -215,14 +257,16 @@ export default function SalesReport() {
                   <TableHead>Cabang</TableHead>
                   <TableHead>Kasir</TableHead>
                   <TableHead>Metode</TableHead>
+                  <TableHead>Kanal</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Biaya</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-24 text-center">
+                    <TableCell colSpan={9} className="h-24 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <Loader2 className="w-4 h-4 animate-spin" /> Loading...
                       </div>
@@ -230,7 +274,7 @@ export default function SalesReport() {
                   </TableRow>
                 ) : salesData.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                    <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
                       Tidak ada data transaksi pada periode ini
                     </TableCell>
                   </TableRow>
@@ -243,7 +287,10 @@ export default function SalesReport() {
                       </TableCell>
                       <TableCell>{item.branch_name || "-"}</TableCell>
                       <TableCell>{item.cashier_name || "-"}</TableCell>
-                      <TableCell className="capitalize">{item.payment_method}</TableCell>
+                      <TableCell>{paymentLabel(item.payment_method)}</TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {item.source === "online" ? "Online" : "Kasir"}
+                      </TableCell>
                       <TableCell>
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             item.status === 'completed' ? 'bg-green-100 text-green-800' : 
@@ -251,6 +298,9 @@ export default function SalesReport() {
                         }`}>
                             {item.status}
                         </span>
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {(Number(item.fee_amount) || 0) > 0 ? formatIdr(Number(item.fee_amount)) : "—"}
                       </TableCell>
                       <TableCell className="text-right">
                         {new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR" }).format(item.total_amount)}

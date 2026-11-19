@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   alignToGroups,
   expandCombinations,
+  formatAttributeCell,
+  mergeGroups,
   orderedValues,
+  parseAttributeCell,
   parseVariantAttributes,
   parseVariantGroups,
   sanitizeGroups,
@@ -129,5 +132,95 @@ describe('parsing stored JSON', () => {
   it('returns no groups for a legacy empty column', () => {
     expect(parseVariantGroups('[]')).toEqual([]);
     expect(parseVariantGroups(undefined)).toEqual([]);
+  });
+});
+
+describe('mergeGroups', () => {
+  it('appends a new value to the stored axis and keeps its order', () => {
+    expect(
+      mergeGroups(
+        [{ name: 'Rasa', values: ['Susu', 'Hitam'] }],
+        [{ name: 'Rasa', values: ['Susu', 'Matcha'] }]
+      )
+    ).toEqual([{ name: 'Rasa', values: ['Susu', 'Hitam', 'Matcha'] }]);
+  });
+
+  it('never removes a stored value, even when the sheet drops it', () => {
+    // A variant that still sells or holds stock references the value, and an
+    // import has no licence to break it.
+    expect(
+      mergeGroups([{ name: 'Rasa', values: ['Susu', 'Hitam'] }], [
+        { name: 'Rasa', values: ['Susu'] },
+      ])
+    ).toEqual([{ name: 'Rasa', values: ['Susu', 'Hitam'] }]);
+  });
+
+  it('adds a brand-new axis at the end and matches names case-insensitively', () => {
+    expect(
+      mergeGroups([{ name: 'Rasa', values: ['Susu'] }], [
+        { name: 'rasa', values: ['Hitam'] },
+        { name: 'Ukuran', values: ['250ml'] },
+      ])
+    ).toEqual([
+      { name: 'Rasa', values: ['Susu', 'Hitam'] },
+      { name: 'Ukuran', values: ['250ml'] },
+    ]);
+  });
+
+  it('does not mutate the stored list it was handed', () => {
+    const stored = [{ name: 'Rasa', values: ['Susu'] }];
+    mergeGroups(stored, [{ name: 'Rasa', values: ['Hitam'] }]);
+    expect(stored).toEqual([{ name: 'Rasa', values: ['Susu'] }]);
+  });
+});
+
+describe('the sheet attribute cell', () => {
+  it('reads every separator an operator is likely to type', () => {
+    for (const cell of [
+      'Rasa=Susu;Ukuran=250ml',
+      'Rasa=Susu|Ukuran=250ml',
+      'Rasa=Susu\nUkuran=250ml',
+      'Rasa:Susu;Ukuran:250ml',
+      ' Rasa = Susu ; Ukuran = 250ml ',
+    ]) {
+      expect(parseAttributeCell(cell)).toEqual({ Rasa: 'Susu', Ukuran: '250ml' });
+    }
+  });
+
+  it('treats blank, dash and Default as "this product has no axes"', () => {
+    expect(parseAttributeCell('')).toEqual({});
+    expect(parseAttributeCell('Default')).toEqual({});
+    expect(parseAttributeCell('DEFAULT')).toEqual({});
+    expect(parseAttributeCell('-')).toEqual({});
+    expect(parseAttributeCell(null)).toEqual({});
+  });
+
+  it('keeps the order of first appearance as the axis order', () => {
+    expect(Object.keys(parseAttributeCell('Ukuran=250ml;Rasa=Susu'))).toEqual([
+      'Ukuran',
+      'Rasa',
+    ]);
+  });
+
+  it('writes what it can read back, in the authored axis order', () => {
+    const groups = [
+      { name: 'Rasa', values: ['Susu', 'Hitam'] },
+      { name: 'Ukuran', values: ['250ml'] },
+    ];
+    const cell = formatAttributeCell({ Ukuran: '250ml', Rasa: 'Hitam' }, groups);
+    expect(cell).toBe('Rasa=Hitam;Ukuran=250ml');
+    expect(parseAttributeCell(cell)).toEqual({ Rasa: 'Hitam', Ukuran: '250ml' });
+  });
+
+  it('still exports an axis the groups no longer mention', () => {
+    // Export has to write the variant a customer is holding, not the axes the
+    // product happens to advertise today, or the round trip loses a column.
+    expect(formatAttributeCell({ Rasa: 'Susu', Warna: 'Merah' }, [
+      { name: 'Rasa', values: ['Susu'] },
+    ])).toBe('Rasa=Susu;Warna=Merah');
+  });
+
+  it('renders a product without axes as an empty cell', () => {
+    expect(formatAttributeCell({})).toBe('');
   });
 });

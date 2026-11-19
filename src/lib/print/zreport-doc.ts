@@ -33,9 +33,11 @@ export interface ZReportInput {
   transactionCount: number;
   /** Sales per payment method, in rupiah; zero methods still print so the
    *  totals visibly add up on paper. `other` catches any method outside the
-   *  four named buckets so the breakdown always equals TOTAL PENJUALAN. */
-  byMethod: { cash: number; card: number; ewallet: number; qris: number; other?: number };
+   *  named buckets so the breakdown always equals TOTAL PENJUALAN. */
+  byMethod: { cash: number; transfer?: number; card: number; ewallet: number; qris: number; other?: number };
   totalSales: number;
+  /** Merchant fees absorbed on this shift's non-cash tenders (012). */
+  feeTotal?: number;
   /** Whole-bon voids in this shift, shown for reconciliation (009). */
   voidCount?: number;
   voidAmount?: number;
@@ -74,6 +76,7 @@ export function buildShiftZReport(input: ZReportInput, cfg: ReceiptConfig): Prin
     dividerLine(columns),
     { text: label3('penjualan per metode'), bold: true },
     { cols: ['Tunai', rupiah(input.byMethod.cash)] },
+    { cols: ['Transfer Bank', rupiah(input.byMethod.transfer ?? 0)] },
     { cols: ['Kartu', rupiah(input.byMethod.card)] },
     { cols: ['E-Wallet', rupiah(input.byMethod.ewallet)] },
     { cols: ['QRIS', rupiah(input.byMethod.qris)] },
@@ -81,6 +84,11 @@ export function buildShiftZReport(input: ZReportInput, cfg: ReceiptConfig): Prin
       ? [{ cols: ['Lainnya', rupiah(input.byMethod.other)] } as PrintDocLine]
       : []),
     { cols: ['TOTAL PENJUALAN', rupiah(input.totalSales)], bold: true },
+    ...(input.feeTotal && input.feeTotal > 0
+      ? ([
+          { cols: ['Biaya Merchant', rupiah(input.feeTotal)] },
+        ] as PrintDocLine[])
+      : []),
     ...(input.voidCount && input.voidCount > 0
       ? ([
           dividerLine(columns),

@@ -28,7 +28,11 @@ export const SHOP = {
   /** Where a shopper collects goods that another shop ships. */
   pickupNote:
     "Ambil di toko penjual. Alamat dan jam ambil dikonfirmasi lewat chat setelah pesanan dibuat.",
-  /** Placeholders until the finance module owns payment instructions. */
+  /**
+   * Fallback bank accounts shown only when the payment-config API is
+   * unreachable. The real accounts come from each tenant's settings via
+   * `GET /api/storefront/channels` (see `payment-config.ts`).
+   */
   banks: [
     { id: "bca" as const, name: "BCA", account: "123 456 7890", holder: "Toko Bahan Kue" },
     { id: "mandiri" as const, name: "Mandiri", account: "987 654 3210", holder: "Toko Bahan Kue" },
@@ -36,7 +40,12 @@ export const SHOP = {
 };
 
 export type BankId = (typeof SHOP.banks)[number]["id"];
-export type PaymentMethod = BankId | "qris" | "cash";
+/**
+ * Payment channel id — matches the server's channel ids (`cash`, `transfer`,
+ * `qris`). The specific bank for a transfer is stored separately in
+ * `Order.paymentBankId`.
+ */
+export type PaymentMethod = "cash" | "transfer" | "qris" | BankId;
 export type Fulfillment = "delivery" | "pickup";
 
 export function waLink(text?: string) {

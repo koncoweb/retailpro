@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-tenant.md` |
-| Terakhir diperbarui | **2026-11-18** |
+| Terakhir diperbarui | **2026-11-19** |
 | Cakupan | Semua fitur yang tersedia di dalam satu tenant (POS + back office) |
 
 ## Cara memakai log ini
@@ -17,6 +17,56 @@
 ---
 
 ## 1. Log perubahan fitur
+
+### 2026-11-19 — sheet vendor jadi satu vendor per berkas (baris pertama vendor, barisnya produk)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-19 | — (working tree) | Vendor | **Bentuk lembar vendor diubah: satu berkas untuk satu vendor.** Baris pertama hanya memuat kolom vendor (`Kode Vendor`, `Nama Vendor`, `Kategori Vendor`, `Kontak`, `Telepon`, `Email`, `Termin`) dengan seluruh kolom produk dibiarkan kosong; baris kedua dan seterusnya adalah produk vendor itu, kolom vendor diwarisi dari baris di atasnya. Template CSV/Excel ditulis ulang menjadi **6 baris** yang mengajari bentuk ini, termasuk kasus "tambah varian ke produk yang sudah jalan" | Ubah |
+| 2026-11-19 | — (working tree) | Vendor | **Bukan penolakan:** berkas lama yang mengulang vendor di setiap baris, dan berkas yang memuat beberapa vendor, tetap direncanakan dan tetap bisa diimpor — dialog hanya memberi catatan "Sheet ini memuat N vendor — format barunya satu vendor per file". Ekspor katalog semua vendor dan `tests/vendor-catalog.e2e.ts` berjalan **tanpa diubah** sebagai bukti kompatibilitas mundur | — |
+| 2026-11-19 | — (working tree) | Vendor | Kolom ke-21 di-append di ujung: **`Barcode Varian`** (alias `barcode`, `kode batang`, `barcode varian`). Duapuluh kolom pertama tidak berubah urutan maupun labelnya, jadi setiap berkas lama terbaca persis sama | Baru |
+| 2026-11-19 | — (working tree) | Vendor | **Baris produk sheet vendor kini sekaya baris produk layar produk**: sebuah baris boleh menyebut varian (atau pecahan) yang **belum ada** di produk yang sudah tersimpan, dan varian/pecahan itu dibuat lengkap dengan harga belinya — sebelumnya harga baris seperti itu dibuang sebagai "varian ambigu". Gate-nya `manage_variants`, flag yang sama dengan membuat produk; tidak ada kunci izin baru | Baru |
+| 2026-11-19 | — (working tree) | Vendor | **Izin menambah varian tidak pernah memberi izin menebak varian.** Baris yang tidak menyebut varian pada produk bervarian banyak tetap dilaporkan sebagai `varian ambigu` dan tidak ditulis, berapa pun izinnya (jaminan KS-55 tetap utuh, dikunci uji dengan memutar baris yang sama dua kali: dengan dan tanpa izin) | — |
+| 2026-11-19 | — (working tree) | Vendor | **Satu transaksi per produk**, bukan lagi per blok vendor. Satu berkas sekarang berarti satu vendor dengan produk tak terbatas, jadi blok vendor terlalu besar untuk dijadikan satu hal atomik: satu produk yang gagal hanya menunda produk itu (`N produk gagal ditulis` di laporan akhir), vendor tetap diselesaikan di transaksinya sendiri, dan pemintan SKU diangkat ke lingkup vendor agar dua baris tanpa kode tidak mencetak nomor yang sama | Ubah |
+| 2026-11-19 | — (working tree) | Vendor | **Ekspor Sheet per vendor**: tombol **Ekspor Sheet** di toolbar detail vendor dan **Sheet per Vendor (Excel/CSV)** di dialog impor menghasilkan `sheet_vendor_<KODE>_<tanggal>` dengan baris 1 vendor dan baris 2+ produk/varian/pecahan vendor itu. Jaminannya diuji sungguhan: berkas hasil unduh diimpor balik dan **tidak menambah satu baris pun** | Baru |
+| 2026-11-19 | — (working tree) | Vendor | Pratinjau menambah chip **varian baru** · **pecahan baru**, satu alasan untuk baris yang dikandaskan izin ("butuh izin kelola varian untuk menambah varian"), dan penjelasan bentuk satu-vendor di blok **Format kolom & contoh baris** yang tetap tidak digate izin | Ubah |
+| 2026-11-19 | — (working tree) | Vendor | **Pratinjau benar-benar menggambar baris rencananya (KS-60 — menyempurnakan baris chip di atas).** Sheet yang tugasnya hanya menambah varian/pecahan tidak membawa satu baris harga pun untuk pecahan yang sudah ada, sehingga cabang `catalogue saja (tanpa harga)` dulu menelan seluruh produk: ringkasan bilang `1 varian baru · 3 pecahan baru` sementara tabelnya hanya satu baris tanpa chip. Placeholder itu kini hanya dipakai kalau `newVariants`, `skippedPacks` **dan** `ambiguousVariants` ikut kosong. Ditemukan oleh verifikasi browser, bukan oleh suite, karena `toContainText('1 varian baru')` pada dialog selalu dipenuhi baris ringkasan — assertion sekarang mengikat baris tabel (`getByRole('row')`, `toHaveCount`) | Ubah |
+| 2026-11-19 | — (working tree) | Skema | **Tidak ada migrasi.** Bentuk baru hanya mengatur ulang kolom yang sudah ada; `schema_version` tetap 12 dan `apply-schema-all` tidak dijalankan | — |
+| 2026-11-19 | — (working tree) | Uji | Unit `vendor-import.test.ts` **40 → 51** (bentuk satu vendor, `mayCreateVariants` dua arah, KS-55 kedua sisi, barcode) dan `bulk-io.test.ts` **24 → 27**; fixture baru `tests/fixtures/fixture_vendor_produk_satu_vendor.csv` + `…_varian_baru.csv`; **4 kasus browser baru** di `tests/bulk-import.e2e.ts` (7 → 11) termasuk round-trip ekspor. Suite penuh **33 berkas / 547 test**. Desain dibekukan di [spec-sheet-vendor-satu-vendor.md](spec-sheet-vendor-satu-vendor.md) | — |
+
+### 2026-11-19 — impor varian kaya: CSV/Excel mengenali varian, pecahan, dan kode (tanpa migrasi)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-19 | — (working tree) | Inventori | **Sheet produk menjadi kaya**: `PRODUCT_COLUMNS` 8 → **16 kolom**, satu baris = satu (varian × pecahan). Delapan kolom lama tetap paling depan dan tetap urutan, jadi file lama terbaca persis sama. Jumlah varian yang bisa diimpor kini tidak terbatas — yang bertambah adalah baris, bukan kolom | Ubah |
+| 2026-11-19 | — (working tree) | Inventori | Kolom baru: **Kode Varian**, **Atribut Varian** (`Rasa=Susu;Ukuran=250ml`; pemisah `;` / `\|` / baris baru, `=` atau `:`), **Barcode Varian**, **Satuan**, **Faktor**, **Kode Vendor**, **Min Order**, **Vendor SKU**. `Kode` sengaja **tetap** SKU produk di sheet ini supaya file lama tidak berubah sasaran | Baru |
+| 2026-11-19 | — (working tree) | Inventori | **Impor produk tidak lagi melewati SKU yang sudah ada** — ia menjadi `extend`: varian baru ditambah, pecahan baru ditambah, harga yang bolong diisi. Produk tidak pernah ditamai ulang, dihapus, atau dinolkan harganya; harga beli hanya diganti dengan izin `manage_vendor_prices` **dan** centang "Timpa harga beli". Menggantikan baris 2026-11-06 "SKU existing/kembar dilewati" | Ubah |
+| 2026-11-19 | — (working tree) | Inventori | **Pratinjau impor dibangun ulang** mengikuti pola dialog vendor: chip *produk baru · varian baru · pecahan baru · harga diisi · harga ditimpa · dilewati · SKU otomatis · catatan file*, baris dikelompokkan per produk beserta variannya, satu alasan untuk setiap baris yang dilewati, pemilih gudang untuk stok awal, dan blok terurai **Format kolom & contoh baris** yang tidak digate izin | Ubah |
+| 2026-11-19 | — (working tree) | Inventori | **Ekspor produk keluar dalam bentuk kaya yang sama** (satu baris per varian × pecahan), sehingga **ekspor → ubah → impor** tidak menambah apa pun. Template CSV/Excel kini 4 baris yang menunjukkan produk biasa, dua sumbu atribut, pecahan `Karton` faktor 24, dan `Kode Vendor` | Ubah |
+| 2026-11-19 | — (working tree) | Inventori | Perencana murni baru `src/lib/product-import.ts` (`groupProductRows` + `planProductImport`) — tanpa SQL, tanpa React, seperti `vendor-import.ts`. `Inventory.handleImport` menyusut menjadi: bangun universe → rencanakan → jalankan rencana. Penulis `product-write.ts` menambah multi-varian di `insertImportedProduct` dan fungsi baru `appendImportedVariants` untuk kasus `extend`; tetap satu transaksi per produk | Baru |
+| 2026-11-19 | — (working tree) | Inventori / Vendor | **Satu pemint SKU otomatis bersama**: `mintSkuForCategory()` di `src/lib/inventory-utils.ts` dipakai tiga importer (form produk, impor produk, impor vendor+produk), jadi sheet tanpa kode tidak bisa membuat SKU bertabrakan antar layar | Perbaikan |
+| 2026-11-19 | — (working tree) | Vendor | **Pemintinan kode vendor ikut satu sumber dan memeringkat angka**: `latestVendorCode()` dulu mengurutkan `code` sebagai teks, sehingga satu kode tulisan tangan (`VND-E2E-KOPI`, muncul karena fixture uji varian) menang atas `VND-0777` dan vendor berikutnya diminta di `VND-0001` yang sudah ada → `UNIQUE constraint failed: suppliers.code` di setiap jalur yang membuat vendor otomatis. Kini `highestVendorCode()` + `vendorCodeSequence()` (`src/lib/vendor.ts`), dua salinan query di `Vendors.tsx`/`VendorFormModal.tsx` dihapus, dan tabrakan kode hasil minting di-*retry* dengan angka berikutnya. Lihat KS-56 | Perbaikan |
+| 2026-11-19 | — (working tree) | Vendor | Sheet vendor+produk bertambah **tepat dua kolom di ujung** (`Kode Varian`, `Atribut Varian`) → 18 → 20 kolom; ekspor katalog lama tetap sebaris dengan header-nya | Ubah |
+| 2026-11-19 | — (working tree) | Vendor | **Baris lanjutan**: kolom `Kode Vendor` + `Nama Vendor` kosong mewarisi vendor baris di atasnya (termasuk kontak) — katalog panjang cukup mengetik vendor sekali (`carryVendorForward`) | Baru |
+| 2026-11-19 | — (working tree) | Vendor | **Sel `SKU` multi-kode** (`A;B;C` dipecah per baris lewat `expandProductCodes`) untuk menautkan beberapa produk dalam satu baris. Hanya menautkan produk yang **sudah ada**; kode yang tidak dikenal menjadi baris error, tidak pernah membuat produk kembar massal | Baru |
+| 2026-11-19 | — (working tree) | Vendor | **Perbaikan cacat harga beli**: sebelumnya satu baris sheet untuk produk bervarian banyak menjatuhkan `buy_price` ke varian yang kebetulan kembali pertama oleh query, tanpa pesan. Sekarang harga ditarget ke varian yang disebut baris; produk multi-varian tanpa penyebut varian dilaporkan sebagai **varian ambigu** dan tidak ditulis. Lihat KS-55 | Perbaikan |
+| 2026-11-19 | — (working tree) | Inventori | **Impor tidak lagi berhenti total karena satu baris**: loop tulis lama (HEAD `a7cb9a4`) membungkus seluruh batch dengan satu `try/catch`, sehingga exception pada satu produk membatalkan 273 sisanya dan hanya meninggalkan toast "Gagal mengimport produk" tanpa nomor baris dan tanpa jumlah. Sekarang penangkapan terjadi **per produk**, laporan akhir menuliskan `N gagal ditulis`, dan `npm run analyze:import -- produk.xlsx` memetakan hasil tulis kembali ke **nomor baris berkas** (ditambah pemeriksaan tabrakan `products.sku` dan `product_variants.sku`) sehingga pertanyaan "kenapa cuma 8 yang masuk" terukur, bukan ditebak. Lihat KS-58 | Perbaikan |
+| 2026-11-19 | — (working tree) | Skema | **Tidak ada migrasi.** Semua yang dibutuhkan sheet sudah ada di skema v6–v10; `schema_version` tetap 12 dan `apply-schema-all` tidak dijalankan | — |
+
+### 2026-11-19 — channel pembayaran + integrasi toko online (skema v12)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-19 | — (working tree) | Skema | **Skema v12**: `transactions` menambah `fee_amount INTEGER NOT NULL DEFAULT 0`, `fee_label TEXT`, `source TEXT NOT NULL DEFAULT 'pos'`; `tenants` menambah `qris_image TEXT`; tabel baru `storefront_orders` (39 tabel, +1 dari v11) | Baru |
+| 2026-11-19 | — (working tree) | Pengaturan | Tab **Pembayaran** di Pengaturan (`PaymentChannelSettings.tsx`): konfigurasi channel (Tunai / Transfer Bank / QRIS), fee merchant per channel (flat / %), unggah gambar QRIS statis (resize 720px → webp, cap 400 KB) | Baru |
+| 2026-11-19 | — (working tree) | Kasir | `PaymentModal.tsx` merender tab dari channel yang dikonfigurasi saja (cash / transfer / qris — kartu & e-wallet lama dihapus dari UI); tab Transfer menampilkan rekening asli dari settings; tab QRIS menampilkan gambar yang diunggah owner + tombol "Perbesar" | Ubah |
+| 2026-11-19 | — (working tree) | Kasir | `POS.tsx` mencatat `fee_amount` dan `source='pos'` di setiap transaksi; Z-report bucket `transfer` eksplisit + bucket "Lainnya" menutup sisanya (rekonsiliasi KS-43 tetap berlaku) | Ubah |
+| 2026-11-19 | — (working tree) | Laporan | `SalesReport.tsx` / `Reports.tsx` menambah kolom "Biaya Merchant" (`fee_amount`) dan "Kanal" (`source`); agregasi pendapatan bersih `SUM(total_amount − fee_amount)` | Ubah |
+| 2026-11-19 | — (working tree) | Vendor | `VENDOR_PAYMENT_METHODS` ditambah `{ value: "qris", label: "QRIS" }`; dialog "Bayar" di `ApAr.tsx` & `VendorDetail.tsx` otomatis menampilkan opsi QRIS | Ubah |
+| 2026-11-19 | — (working tree) | API | Endpoint baru: `GET /api/storefront/channels`, `GET /api/storefront/qris`, `POST /api/storefront/orders`, `GET /api/storefront/orders?parent=`, `POST /api/tenant/qris-image`, `POST /api/tenant/orders/confirm`, `POST /api/tenant/orders/status` | Baru |
+| 2026-11-19 | — (working tree) | Toko online | Pesanan dari `tokoonline/` kini masuk ke `storefront_orders` di DB masing-masing tenant (split per seller); konfirmasi pembayaran di back office menulis `transactions` + mengurangi stok gudang dalam satu transaksi atomik | Ubah |
+| 2026-11-19 | — (working tree) | Back office | Halaman baru **Pesanan Online** (`/backoffice/storefront-orders`): daftar, filter status, detail, aksi Konfirmasi/Kirim/Selesai/Batalkan; entri sidebar baru "Toko Online" | Baru |
+| 2026-11-19 | — (working tree) | Dashboard | `RecentTransactions.tsx` menampilkan ikon `Landmark`/`QrCode` untuk `transfer`/`qris` + badge "Online" saat `source='online'` | Ubah |
 
 ### 2026-10-27 — migrasi Turso + tenant contoh Thalia (belum di-commit)
 
@@ -426,7 +476,7 @@ Prinsip retail yang dipakai: **penjualan adalah catatan keuangan, jadi tidak per
 | Transfer antar gudang | Ada | `pending → in_transit → completed`, per batch, simpan expiry & HPP; gudang asal/tujuan dipilih dari `warehouses`; menampilkan nomor pesanan asal bila tertaut |
 | Transfer bertahap (terima sebagian) | Sebagian | Pengiriman dan penerimaan sudah terpisah dan selisih dicatat; belum ada penerimaan bertahap dalam beberapa kedatangan |
 | Purchase order | Ada | draft/ordered/received, item + total; **vendor terpilih otomatis saat produk dipilih** (lihat §2.4) dan harga kesepakatan vendor mengisi `unit_cost` |
-| Import/Export produk (CSV & Excel) | Ada | `xlsx`; import **aditif** (SKU existing/kembar dilewati, SKU kosong dibuat otomatis), template CSV/Excel siap-impor (parser `src/lib/bulk-io.ts`). Vendor hasil impor juga menjadi master lengkap + tautan katalog `is_preferred` |
+| Import/Export produk (CSV & Excel) | Ada | `xlsx`; **sheet kaya 16 kolom** — satu baris per (varian × pecahan), atribut ditulis `Rasa=Susu;Ukuran=250ml`, identitas mengutamakan kode (`SKU`, `Kode Varian`, `Kode Vendor`). Impor **aditif dan bisa memperluas**: SKU baru dibuat (kosong → auto `KAT-YYYYMMDD-XXX`), SKU yang sudah di-**extend** (varian/pecahan/harga yang kurang ditambahkan, tidak pernah ditimpa/dihapus/dinolkan), pratinjau rencana dengan alasan per baris, template CSV/Excel siap-impor (parser `src/lib/bulk-io.ts`, perencana `src/lib/product-import.ts`). Ekspor memakai kolom yang sama sehingga hasil ekspor bisa diimpor balik. Vendor hasil impor juga menjadi master lengkap + tautan katalog `is_preferred` |
 | Hapus produk | Sebagian | Tetap menghapus permanen; transaksi lama kehilangan referensi produk |
 
 ### 2.4 Vendor
@@ -444,7 +494,8 @@ Prinsip retail yang dipakai: **penjualan adalah catatan keuangan, jadi tidak per
 | Statistik & export | Ada | Total vendor, aktif, total hutang, tagihan lewat jatuh tempo; export Excel (report) & CSV (siap-impor) |
 | Input produk dari layar vendor | Ada | Simpan vendor di daftar melempar ke detail vendor dengan form produk terbuka (vendor sudah terisi); tab Produk punya **Tambah Produk Baru**, dan dialog **Hubungkan Produk** punya switch **Jadikan vendor utama** |
 | Import massal vendor | Ada | CSV/Excel; aditif — `code`/`name` sudah ada atau kembar dilewati, `Kode` kosong auto `VND-####`; template CSV/Excel |
-| Import vendor **+ produk** satu sheet | Ada | **Import Vendor + Produk**: sheet flat 18 kolom (satu baris = vendor × produk × pecahan), pratinjau ringkasan + status per baris sebelum menulis, satu transaksi per blok vendor; master aditif tetapi `last_cost`/`buy_price` mengikuti sheet. **Ekspor Katalog** dan kedua template memakai header yang sama, jadi hasil ekspor bisa diimpor balik |
+| Import vendor **+ produk** satu sheet | Ada | **Import Vendor + Produk**: sheet flat **21 kolom** (satu baris = varian × pecahan; 18 kolom lama + `Kode Varian`/`Atribut Varian`/`Barcode Varian` di ujung), **satu berkas untuk satu vendor** — baris pertama hanya kolom vendor, baris berikutnya produk vendor itu dengan kolom vendor dibiarkan kosong dan diwarisi (`carryVendorForward`). Berkas lama multi-vendor **tetap diterima**, hanya diberi catatan. Baris produk boleh **membuat varian dan pecahan** yang belum ada (butuh izin `manage_variants`, flag yang sama dengan membuat produk); harga beli ditarget **ke varian yang disebut baris** — baris tanpa penyebut varian pada produk multi-varian tetap dilaporkan sebagai varian ambigu dan tidak ditulis, berapa pun izinnya. Pratinjau ringkasan + status per baris + chip *varian baru* / *pecahan baru* sebelum menulis, **satu transaksi per produk** (satu baris gagal hanya menunda satu produk); master aditif tetapi `last_cost`/`buy_price` mengikuti sheet (hanya dengan izin + centang timpa). **Ekspor Katalog** dan kedua template memakai header yang sama, jadi hasil ekspor bisa diimpor balik |
+| Ekspor sheet per vendor | Ada | Tombol **Ekspor Sheet** (CSV/Excel) di toolbar detail vendor dan **Sheet per Vendor** di dialog impor: satu berkas berisi baris vendor lalu produk/varian/pecahan milik vendor itu saja, bernama `sheet_vendor_<KODE>_<tanggal>`. Berkas itu sengaja dibuat untuk dikirim ke pemasok untuk diisi harganya — **diimpor kembali apa adanya tidak menambah satu baris pun** (dikunci uji e2e dengan menangkap hasil unduhnya) |
 | Hapus vendor | Sebagian | Ditolak bila masih dipakai produk/PO/tagihan; gunakan status nonaktif |
 | Penilaian otomatis (on-time delivery) | Belum | Rating diisi manual |
 
@@ -500,6 +551,7 @@ Prinsip retail yang dipakai: **penjualan adalah catatan keuangan, jadi tidak per
 | Matriks role & izin | Ada | Tersimpan di `settings.role_permissions`, dipakai penuh sebagai satu-satunya tempat **memberi** izin |
 | Izin khusus per karyawan | Ada | **Hanya mengurangi** (restrict-only): owner mencabut sebagian izin role seorang karyawan di `/backoffice/hr/employees`, disimpan di `settings.user_permissions`; tidak bisa menambah di luar role |
 | Metode pengeluaran stok | Ada | Tab **Inventori**; `settings.inventory.stock_issue_method` (`fifo`/`lifo`/`fefo`) |
+| Channel pembayaran | Ada | Tab **Pembayaran** (`PaymentChannelSettings.tsx`): konfigurasi channel (Tunai / Transfer Bank / QRIS), fee merchant per channel (flat / %), unggah gambar QRIS statis. Tersimpan di `settings.payment_channels` + `tenants.qris_image` |
 | Profil perusahaan | Sebagian | Nama/slug tenant; alamat ada di cabang |
 | Audit log | Sebagian | Tercatat, tetapi belum ada layar penjelajah audit |
 
@@ -515,10 +567,10 @@ Data berasal dari back office setiap tenant yang berstatus `active`.
 | Stok yang bisa dikirim | Ada | `SUM(product_batches)` di gudang pemenuh tiap tenant; dibaca setiap permintaan, tanpa cache |
 | Pencarian & filter kategori/penjual | Ada | Di `/katalog`, state di URL (`?q=&kategori=&toko=`) |
 | Keranjang, checkout, riwayat pesanan | Ada | Disimpan di perangkat pengunjung (kunci `thalia-storefront`), bukan di DB tenant. Satu pesanan boleh berisi beberapa penjual; ringkasan dikelompokkan per toko |
-| Pesanan masuk ke back office | Belum | Prototype; menulis ke DB tenant harus lewat `src/lib/stock-movement.ts` |
+| Pesanan masuk ke back office | Ada | `POST /api/storefront/orders` → split per seller → `storefront_orders` di DB tenant masing-masing (status `pending_payment`); konfirmasi pembayaran di back office menulis `transactions` + mengurangi stok gudang dalam satu transaksi atomik (v12) |
 | Akun pelanggan / login pembeli | Belum | Checkout tanpa akun; autentikasi toko dimatikan (`VITE_AUTH_ENABLED=false`) |
-| Pembayaran online | Belum | Metode bayar dipilih di checkout, belum ada integrasi gateway |
-| Chat CS | Sebagian | Menjawab dari katalog yang sama; bukan kanal pesan tersimpan |
+| Pembayaran online | Sebagian | Channel pembayaran (Tunai / Transfer Bank / QRIS) dikonfigurasi owner per tenant; gambar QRIS statis ditampilkan di checkout + halaman order; instruksi transfer memakai rekening asli dari settings tenant. Belum ada integrasi gateway (pembayaran dikonfirmasi manual oleh owner) |
+| Chat CS | Sebagian | Menjawab dari katalog yang sama; rekening bank dan ketersediaan QRIS dibaca dari `usePaymentConfigs()` — bukan hardcoded |
 
 ### 2.11 Kolaborasi internal (chat)
 

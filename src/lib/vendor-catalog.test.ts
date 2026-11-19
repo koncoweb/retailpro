@@ -27,6 +27,7 @@ import {
   upsertVendorCatalogLink,
   upsertVendorPrice,
 } from './vendor-catalog';
+import { nextVendorCode } from './vendor';
 
 const root = process.cwd();
 // A unique file per run: libSQL keeps a handle open, so a shared path would
@@ -249,6 +250,19 @@ describe('resolveOrCreateVendor', () => {
       resolveOrCreateVendor(tx, { name: 'PT Dalam Transaksi', category: 'trader' })
     );
     expect((await vendorRow(id as string)).category).toBe('trader');
+  });
+
+  it('keeps a hand-written code out of the generated sequence', async () => {
+    // `VND-SURIYA` is a legal code and sorts above `VND-9999` lexically. Ranking
+    // codes as text therefore made the next vendor `VND-0001` — a number that was
+    // already taken — and the import died on `idx_suppliers_code` instead of
+    // creating the vendor.
+    const before = await latestVendorCode(exec);
+    await resolveOrCreateVendor(exec, { name: 'PT Kode Tulisan Tangan', code: 'VND-SURIYA' });
+    expect(await latestVendorCode(exec)).toBe(before);
+
+    const next = await resolveOrCreateVendor(exec, { name: 'PT Setelah Kode Tangan' });
+    expect((await vendorRow(next as string)).code).toBe(nextVendorCode(before));
   });
 });
 

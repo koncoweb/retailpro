@@ -1,5 +1,5 @@
 import { test, describe } from '@e2e-dev/web';
-import { expect } from 'e2e';
+import { expect, type Screen } from 'e2e';
 import assert from 'node:assert/strict';
 import { tenantClient } from './support/db';
 import { APP_CONTEXT } from './support/context';
@@ -134,15 +134,15 @@ async function sweepMentionMessages(conversationId: string): Promise<void> {
   }
 }
 
-/** The composer textarea on the chat screen. */
-type ComposerLocator = {
-  fill: (value: string) => Promise<void>;
-  press: (key: string) => Promise<void>;
-  inputValue: () => Promise<string>;
-};
-function composer(screen: {
-  getByPlaceholder: (pattern: RegExp | string) => ComposerLocator;
-}) {
+/**
+ * The composer textarea on the chat screen.
+ *
+ * Typed through the harness `Screen` so the return value is a real `Locator`:
+ * `expect(…)` only offers the locator matchers (`toHaveValue` included) when the
+ * argument extends `Locator`, so a hand-written structural type here would make
+ * it fall back to the value-assertion form and lose them.
+ */
+function composer(screen: Screen) {
   return screen.getByPlaceholder(/^Tulis pesan/);
 }
 

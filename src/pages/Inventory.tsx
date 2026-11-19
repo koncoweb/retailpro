@@ -53,7 +53,7 @@ import { PurchaseOrderPanel } from "@/components/inventory/PurchaseOrderPanel";
 import type { VendorOption } from "@/components/inventory/PurchaseOrderModal";
 import { toast } from "sonner";
 import { query, parseJson, runTransaction, batchQuery } from "@/lib/db";
-import { generateNextSku, skuPrefixForCategory } from "@/lib/inventory-utils";
+import { mintSkuForCategory } from "@/lib/inventory-utils";
 import { logAudit, logAuditTx } from "@/lib/audit";
 import {
   WAREHOUSES_SQL,
@@ -64,7 +64,18 @@ import {
 } from "@/lib/warehouse";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
 import { sortBatchesForIssue } from "@/lib/stock-issue";
-import { insertImportedProduct, saveProductDraft } from "@/lib/product-write";
+import {
+  appendImportedVariants,
+  insertImportedProduct,
+  saveProductDraft,
+  type ImportedVariantRow,
+} from "@/lib/product-write";
+import type {
+  ImportedProductSeed,
+  ImportVariantPlan,
+  ProductImportPlan,
+} from "@/lib/product-import";
+import type { ProductImportContext } from "@/components/inventory/ProductImportExport";
 import { resolveOrCreateVendor } from "@/lib/vendor-catalog";
 import {
   createTransfer,
@@ -551,16 +562,45 @@ export default function Inventory() {
     navigate(TAB_PATHS[value as InventoryTab] ?? TAB_PATHS.products);
   };
 
-  const handleImport = async (importedProducts: Array<{
-    sku: string;
-    name: string;
-    category: string;
-    price: number;
-    cost: number;
-    stock: number;
-    minStock: number;
-    supplier: string;
-  }>) => {
+  /** One planned variant in the shape the writer wants. */
+  const variantRowOf = (
+    variant: ImportVariantPlan,
+    seed: ImportedProductSeed
+  ): ImportedVariantRow => {
+    const base =
+      variant.seed.packs.find((pack) => pack.conversionFactor === 1) ??
+      variant.seed.packs[0];
+    return {
+      attributes: variant.seed.attributes,
+      sku: variant.sku,
+      barcode: variant.seed.barcode,
+      unitName: base?.unitName,
+      cost: base?.buyPrice ?? 0,
+      price: base?.sellPrice ?? 0,
+      packs: variant.seed.packs
+        .filter((pack) => pack !== base)
+        .map((pack) => ({
+          unitName: pack.unitName,
+          conversionFactor: pack.conversionFactor,
+          cost: pack.buyPrice,
+          price: pack.sellPrice,
+        })),
+      stock: variant.seed.stock,
+      minOrderQty: base?.minOrderQty ?? seed.minOrderQty ?? null,
+      vendorSku: base?.vendorSku ?? seed.vendorSku ?? null,
+    };
+  };
+
+  /**
+   * Executes the plan the preview showed, one transaction per product.
+   *
+   * Nothing here decides what a sheet means — `planProductImport` already did,
+   * against the rows the dialog read. This loop only writes: a brand-new product
+   * through the same writer the vendor sheet uses, an existing one through
+   * `appendImportedVariants`, which adds and never rewrites. A product that
+   * fails costs its own transaction and is reported; the others still land.
+   */
+  const handleImport = async (plan: ProductImportPlan, context: ProductImportContext) => {
     // The product template (variants, packs, prices) is owner-managed; refuse
     // the bulk write without the key, mirroring handleSaveProduct.
     if (!can("manage_variants")) {
@@ -568,77 +608,132 @@ export default function Inventory() {
       return;
     }
     try {
-      // Initial stock has to land in a real warehouse. Prefer the one the
-      // signed-in user's branch sells from; an owner without a branch gets the
-      // company default warehouse. Stock is never keyed by branch any more.
-      const receivingWarehouseId =
-        (await resolveBranchWarehouse(user?.assigned_branch_id ?? null)) ?? warehouses[0]?.id ?? null;
+      // Initial stock has to land in a real warehouse. The dialog picked one;
+      // an operator without a branch gets the company default.
+      const warehouseId =
+        context.warehouseId ??
+        (await resolveBranchWarehouse(user?.assigned_branch_id ?? null)) ??
+        warehouses[0]?.id ??
+        null;
 
-      // Additive import: an existing SKU is never overwritten. Rows carrying a
-      // SKU already present (or repeated inside the file) are skipped; rows with
-      // a blank SKU get the next number the app mints for their category,
-      // continuing past what the database holds and advancing across the batch.
-      const existing = await query<{ sku: string }>(`SELECT sku FROM products`);
-      const existingSkus = new Set(existing.rows.map((r) => r.sku.toLowerCase()));
       const today = new Date();
-      const lastByPrefix = new Map<string, string | null>();
-      const planned = new Set<string>();
-      const toInsert: Array<{ p: (typeof importedProducts)[number]; sku: string; auto: boolean }> = [];
+      /** Numbers this run already minted, so two blank-SKU rows cannot collide. */
+      const minted: string[] = [];
+      let created = 0;
+      let extended = 0;
+      let addedVariants = 0;
+      let addedPacks = 0;
+      let skipped = 0;
+      let failed = 0;
+      let priceRows = 0;
 
-      for (const p of importedProducts) {
-        const given = (p.sku || "").trim();
-        if (given) {
-          const key = given.toLowerCase();
-          if (existingSkus.has(key) || planned.has(key)) continue;
-          planned.add(key);
-          toInsert.push({ p, sku: given, auto: false });
+      for (const product of plan.products) {
+        // A conflict is a code the file cannot claim; a `nochange` product adds
+        // nothing. Both are reported by the preview and skipped here.
+        const writable = product.variants.filter((variant) => variant.action !== "conflict");
+        if (product.action === "nochange" || writable.length === 0) {
+          skipped += 1;
           continue;
         }
-        const category = (p.category || "").trim() || "Umum";
-        const prefix = skuPrefixForCategory(category, today);
-        if (!lastByPrefix.has(prefix)) {
-          const same = existing.rows.map((r) => r.sku).filter((s) => s.startsWith(prefix)).sort();
-          lastByPrefix.set(prefix, same.length ? same[same.length - 1] : null);
+        if (!writable.some((variant) => variant.action === "create" || variant.packs.length > 0)) {
+          skipped += 1;
+          continue;
         }
-        const next = generateNextSku(category, today, lastByPrefix.get(prefix) ?? null);
-        lastByPrefix.set(prefix, next);
-        planned.add(next.toLowerCase());
-        toInsert.push({ p, sku: next, auto: true });
+
+        priceRows += writable
+          .flatMap((variant) => variant.packs)
+          .filter((pack) => pack.buyPrice > 0 && pack.action !== "skip").length;
+
+        try {
+          await runTransaction(async (tx) => {
+            // A vendor named in the sheet becomes a real master row — code,
+            // category, status — rather than a name-only stub. The planner
+            // already matched by code first, so this only creates what is new.
+            let vendorId = product.vendorId;
+            if (!vendorId && (product.seed.vendorName || product.seed.vendorCode)) {
+              vendorId = await resolveOrCreateVendor(tx, {
+                name: product.seed.vendorName ?? "",
+                code: product.seed.vendorCode,
+              });
+            }
+            const variants = writable.map((variant) => variantRowOf(variant, product.seed));
+
+            if (product.action === "create") {
+              const sku =
+                product.seed.sku || (await mintSkuForCategory(tx, product.seed.category, today, minted));
+              if (!product.seed.sku) minted.push(sku);
+              await insertImportedProduct(
+                tx,
+                {
+                  sku,
+                  name: product.seed.name,
+                  category: product.seed.category || "Umum",
+                  price: variants[0]?.price ?? 0,
+                  cost: variants[0]?.cost ?? 0,
+                  stock: 0,
+                  minStock: product.seed.minStock,
+                  variantGroups: product.seed.variantGroups,
+                  variants,
+                  minOrderQty: product.seed.minOrderQty,
+                  vendorSku: product.seed.vendorSku,
+                },
+                {
+                  warehouseId,
+                  vendorId,
+                  userId: user?.id ?? null,
+                  isPreferredVendor: product.claimPreference,
+                  priceMode: context.priceMode,
+                  priceSource: "import",
+                }
+              );
+              created += 1;
+              return;
+            }
+
+            // An existing product is only ever extended: same name, same packs,
+            // same prices, plus whatever variant the file actually brings.
+            if (!product.productId) return;
+            const result = await appendImportedVariants(
+              tx,
+              product.productId,
+              {
+                sku: product.seed.sku,
+                variantGroups: product.seed.variantGroups,
+                variants,
+              },
+              {
+                warehouseId,
+                vendorId,
+                userId: user?.id ?? null,
+                priceMode: context.priceMode,
+                priceSource: "import",
+                minOrderQty: product.seed.minOrderQty,
+                vendorSku: product.seed.vendorSku,
+                claimPreference: product.claimPreference,
+              }
+            );
+            extended += result.addedVariants + result.addedPacks > 0 ? 1 : 0;
+            addedVariants += result.addedVariants;
+            addedPacks += result.addedPacks;
+          });
+        } catch (error) {
+          // One bad product must not undo the fifty that were fine.
+          console.error(`Import of ${product.seed.sku || product.seed.name} failed:`, error);
+          failed += 1;
+        }
       }
 
-      for (const { p, sku } of toInsert) {
-        // A vendor named in the sheet becomes a real master row — code,
-        // category, status — rather than the name-only stub this import used to
-        // leave behind. Additive: this SKU is guaranteed new (conflicts were
-        // skipped above), so the writer always inserts. Product, variant, pack,
-        // vendor catalogue and opening batch commit together.
-        await runTransaction(async (tx) => {
-          const vendorId = await resolveOrCreateVendor(tx, p.supplier);
-          await insertImportedProduct(
-            tx,
-            {
-              sku,
-              name: p.name,
-              category: p.category,
-              price: p.price,
-              cost: p.cost,
-              stock: p.stock,
-              minStock: p.minStock,
-            },
-            {
-              warehouseId: receivingWarehouseId,
-              vendorId,
-              userId: user?.id ?? null,
-            }
-          );
-        });
-      }
-      const skipped = importedProducts.length - toInsert.length;
-      const autoCount = toInsert.filter((t) => t.auto).length;
-      const parts = [`${toInsert.length} produk ditambahkan`];
-      if (autoCount > 0) parts.push(`${autoCount} SKU dibuat otomatis`);
-      if (skipped > 0) parts.push(`${skipped} dilewati (SKU sudah ada/kembar)`);
-      toast.success(parts.join(" · "));
+      const parts: string[] = [];
+      if (created > 0) parts.push(`${created} produk baru`);
+      if (extended > 0) parts.push(`${extended} produk ditambah variannya`);
+      if (addedVariants > 0) parts.push(`${addedVariants} varian baru`);
+      if (addedPacks > 0) parts.push(`${addedPacks} pecahan baru`);
+      if (priceRows > 0) parts.push(`${priceRows} harga beli`);
+      if (minted.length > 0) parts.push(`${minted.length} SKU dibuat otomatis`);
+      if (skipped > 0) parts.push(`${skipped} dilewati (tidak ada yang baru)`);
+      if (failed > 0) parts.push(`${failed} gagal ditulis`);
+      if (failed > 0) toast.error(parts.join(" · "));
+      else toast.success(parts.length > 0 ? parts.join(" · ") : "Tidak ada yang berubah");
       fetchProducts();
     } catch (error) {
       console.error("Import failed:", error);
@@ -1007,18 +1102,14 @@ export default function Inventory() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <ProductImportExport 
-              products={products.map(p => ({
-                sku: p.sku,
-                name: p.name,
-                category: p.category,
-                price: p.price,
-                cost: p.cost,
-                stock: p.stock,
-                minStock: p.minStock,
-                supplier: p.supplier,
-              }))} 
-              onImport={handleImport} 
+            {/*
+             * The whole row goes to the dialog: the rich export writes the
+             * variant matrix and each variant's own packs, which a flat summary
+             * cannot carry.
+             */}
+            <ProductImportExport
+              products={products}
+              onImport={handleImport}
             />
             {can("manage_variants") && (
               <Button className="gap-2" onClick={() => setIsAddProductOpen(true)}>

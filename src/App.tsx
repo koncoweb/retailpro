@@ -39,6 +39,7 @@ import SalesReport from "./pages/SalesReport";
 import InventoryReport from "./pages/InventoryReport";
 import FinanceReports from "./pages/FinanceReports";
 import ProcurementReport from "./pages/ProcurementReport";
+import StorefrontOrders from "./pages/StorefrontOrders";
 
 const queryClient = new QueryClient();
 
@@ -175,6 +176,10 @@ const App = () => (
                 element={guarded(<ProcurementReport />, "view_reports")}
               />
               <Route path="/backoffice/settings" element={guarded(<Settings />, "view_settings")} />
+              <Route
+                path="/backoffice/storefront-orders"
+                element={guarded(<StorefrontOrders />, "view_finance")}
+              />
 
               <Route path="*" element={<NotFound />} />
             </Routes>

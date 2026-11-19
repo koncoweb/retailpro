@@ -1,0 +1,6 @@
+SKU,Nama Produk,Kategori,Harga Jual,Harga Modal,Stok,Stok Minimum,Supplier,Kode Varian,Atribut Varian,Barcode Varian,Satuan,Faktor,Kode Vendor,Min Order,Vendor SKU
+E2E-KPB-01,Kopi Tubruk E2E,Minuman,3500,2500,120,20,PT E2E Roda Kopi,,Rasa=Susu;Ukuran=250ml,8990000000011,Pcs,1,VND-E2E-KOPI,10,E2E-KP-SUSU250
+E2E-KPB-01,Kopi Tubruk E2E,,79000,58000,,,,,Rasa=Susu;Ukuran=250ml,,Karton,24,VND-E2E-KOPI,1,E2E-KP-SUSU250-KRT
+E2E-KPB-01,,,42000,30000,40,,,,Rasa=Susu;Ukuran=1kg,,Pcs,1,VND-E2E-KOPI,,
+E2E-KPB-01,,,1100,800,60,,,E2E-KPB-01-HITAM-250ML,Rasa=Hitam;Ukuran=250ml,,Pcs,1,VND-E2E-KOPI,10,E2E-KP-HITAM250
+E2E-KPB-01,,,1300,900,,,,,Rasa=Hitam;Ukuran=1kg,,Pcs,1,VND-E2E-KOPI,,

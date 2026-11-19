@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ShoppingCart, CreditCard, Wallet, Banknote } from "lucide-react";
+import { ShoppingCart, CreditCard, Wallet, Banknote, Landmark, QrCode } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { query } from "@/lib/db";
@@ -15,13 +15,16 @@ interface Transaction {
   items_count: number;
   /** A voided bon stays in the list — it must read as cancelled, not as a sale. */
   status: string;
+  /** Whether the transaction came from the online storefront. */
+  source?: string;
 }
 
 const paymentIcons = {
   cash: Banknote,
   card: CreditCard,
   ewallet: Wallet,
-  qris: Wallet,
+  qris: QrCode,
+  transfer: Landmark,
 };
 
 const paymentLabels = {
@@ -29,6 +32,7 @@ const paymentLabels = {
   card: "Kartu",
   ewallet: "E-Wallet",
   qris: "QRIS",
+  transfer: "Transfer Bank",
 };
 
 function formatCurrency(value: number) {
@@ -53,6 +57,7 @@ export function RecentTransactions() {
             t.payment_method, 
             t.created_at,
             t.status,
+            t.source,
             b.name as branch_name,
             c.name as customer_name,
             (SELECT COUNT(*) FROM transaction_items WHERE transaction_id = t.id AND voided = 0) as items_count
@@ -112,6 +117,9 @@ export function RecentTransactions() {
                 <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
                    {tx.status !== "completed" && (
                      <Badge variant="destructive" className="text-[10px] px-1 py-0">Void</Badge>
+                   )}
+                   {tx.source === "online" && (
+                     <Badge variant="outline" className="text-[10px] px-1 py-0">Online</Badge>
                    )}
                    <span>{new Date(tx.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}</span>
                    <span>•</span>

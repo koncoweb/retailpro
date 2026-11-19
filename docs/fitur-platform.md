@@ -85,6 +85,7 @@ baris = satu kemampuan operator yang berubah, dengan tanggal dan jam.
 | Menerbitkan akses sementara ke satu tenant | `createToken(dbName, ttl, 'full-access')` | `server/turso-platform.ts` |
 | Menerapkan perubahan skema ke semua tenant | `npm run schema:apply-all` (dry-run bawaan; `--apply`, opsional `--only <slug\|db_name>`; migrasi tertunda → `tenant.sql`, database baru cukup `tenant.sql`) | `scripts/apply-schema-all.mjs` |
 | Memverifikasi SQL aplikasi cocok dengan skema | `npm run audit:sql` | `scripts/audit-sql.mjs` |
+| Menganalisa berkas impor produk yang hasilnya " cuma masuk sedikit" | `npm run analyze:import -- produk.xlsx` (read-only; menampilkan isi file, apa yang dibuang aturan lama, apa yang dijanjikan perencana sekarang terhadap data tenant nyata, dan **baris berkas mana yang benar-benar tertulis** — termasuk baris penghenti run dan tabrakan datanya) | `scripts/analyze-import-file.ts` |
 | Mengisi tenant dengan data contoh | `npm run demo:tenant -- --tenant <slug> --reset` | `scripts/seed-demo-tenant.ts` |
 | Menyiapkan data plane cloud (control + tenant DB + seed) | `npm run demo:cloud`, tambahkan `-- --write-env` agar `.env` ikut ditulis | `scripts/setup-cloud-demo.ts` |
 | Melihat grup Turso yang tersedia sebelum provisioning | `GET /v1/organizations/{org}/groups` lewat `listGroups()` | `server/turso-platform.ts` |

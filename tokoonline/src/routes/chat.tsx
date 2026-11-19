@@ -5,6 +5,7 @@ import { QUICK, replyTo } from "@/lib/chat";
 import { useMarketplace } from "@/lib/catalog";
 import { SHOP, waLink } from "@/lib/shop";
 import { useShop } from "@/lib/store";
+import { usePaymentConfigs } from "@/lib/payment-config";
 import { LogoMark } from "@/components/logo";
 import { cn } from "@/lib/utils";
 
@@ -15,6 +16,9 @@ function ChatPage() {
   const pushChat = useShop((s) => s.pushChat);
   const { state } = useMarketplace();
   const products = state.status === "ready" ? state.marketplace.products : [];
+  const paymentConfigs = usePaymentConfigs();
+  const banks = paymentConfigs.status !== "loading" ? paymentConfigs.unionBanks() : undefined;
+  const qrisAvailable = paymentConfigs.status !== "loading" ? paymentConfigs.qrisAvailable() : undefined;
   const [text, setText] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
 
@@ -27,7 +31,7 @@ function ChatPage() {
     if (!t) return;
     pushChat("user", t);
     setText("");
-    window.setTimeout(() => pushChat("cs", replyTo(t, products)), 420);
+    window.setTimeout(() => pushChat("cs", replyTo(t, products, banks, qrisAvailable)), 420);
   }
 
   return (

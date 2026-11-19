@@ -8,7 +8,10 @@ interface LogEntry {
   data?: any;
 }
 
-const isDev = import.meta.env.DEV;
+// Vite injects `import.meta.env`; the same module also has to load in a plain
+// Node run (`scripts/`, tsx) where there is no env object at all, so read it
+// defensively instead of crashing at import time.
+const isDev = import.meta.env?.DEV === true;
 
 class Logger {
   private log(level: LogLevel, message: string, data?: unknown) {

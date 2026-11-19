@@ -352,7 +352,37 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       // Thalia sells by the piece but honours the case price automatically once
       // enough pieces fill a carton, so the demo shows the auto pack-price rule.
       pricing: { auto_pack_price: true },
+      // Payment channels (v12): cash always free, transfer with a small flat fee,
+      // QRIS with a percent fee — so the owner sees all three cards configured.
+      payment_channels: {
+        channels: [
+          { id: 'cash', label: 'Tunai', enabled: true },
+          {
+            id: 'transfer',
+            label: 'Transfer Bank',
+            enabled: true,
+            fee: { type: 'flat', value: 2500 },
+            bankIds: ['bank-bca'],
+          },
+          {
+            id: 'qris',
+            label: 'QRIS',
+            enabled: true,
+            fee: { type: 'percent', value: 0.7 },
+          },
+        ],
+        updated_at: stamp(new Date(now.getTime() - 2 * DAY_MS)),
+      },
     }),
+    identity.tenantId,
+  ]);
+
+  // QRIS image placeholder for Thalia (v12): a minimal 1x1 dark PNG data URL so
+  // the settings UI and kasir modal have something to render. The owner would
+  // replace this with a real QRIS screenshot via the upload button in
+  // PaymentChannelSettings; the client resizes to 720px webp before POSTing.
+  add(`UPDATE tenants SET qris_image = ? WHERE id = ?`, [
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoKAAAACAYAAAB9sxNQAAAASUlEQVR42mP8z8BQz0BAwMBAAGBhYPj/n4GBgYGJg+D0BjoChg8MDAwfGBgY/qPBDAwMDExoioiuAABX2An//59jXAAAAABJRU5ErkJggg==',
     identity.tenantId,
   ]);
 

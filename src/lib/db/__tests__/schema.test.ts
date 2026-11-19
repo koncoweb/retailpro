@@ -52,7 +52,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(11);
+    expect(rows[0].version).toBe(12);
   });
 
   it('exposes every table the application queries', async () => {
@@ -82,6 +82,7 @@ describe('tenant.sql', () => {
       'stock_request_items',
       'stock_requests',
       'stock_transfers',
+      'storefront_orders',
       'suppliers',
       'tenants',
       'transaction_items',
@@ -676,7 +677,7 @@ describe('seed state', () => {
     // what upgrades an existing (v7) tenant. The fleet runner discovers
     // migrations by numeric prefix and its target version must match.
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*11/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*12/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '008_attendance_geo_face.sql'),
       'utf8'
@@ -1081,5 +1082,102 @@ describe('seed state', () => {
     const rows = await run<{ created_at: string }>(`SELECT created_at FROM transactions WHERE id = 'tx-1'`);
     expect(rows[0].created_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     expect(Number.isNaN(new Date(rows[0].created_at).getTime())).toBe(false);
+  });
+});
+
+// Runs last: these insert rows into the shared file DB, so they are kept after
+// every aggregate test above to avoid leaking counts into them.
+describe('payment channels (012)', () => {
+  it('adds a NULL-able QRIS image column to tenants', async () => {
+    await run(
+      `INSERT INTO tenants (id, name, slug, qris_image) VALUES ('t-qris', 'T', 't-qris', 'data:image/webp;base64,AAA')`
+    );
+    const rows = await run<{ qris_image: string | null }>(
+      `SELECT qris_image FROM tenants WHERE id = 't-qris'`
+    );
+    expect(rows[0].qris_image).toMatch(/^data:image\/webp/);
+  });
+
+  it('defaults a POS transaction to source=pos, fee 0 and keeps the paid total', async () => {
+    await run(
+      `INSERT INTO transactions (id, branch_id, invoice_number, total_amount, amount_paid, payment_method)
+       VALUES ('tx-fee-1', 'b1', 'INV-FEE-1', 100000, 100000, 'qris')`
+    );
+    const rows = await run<{ source: string; fee_amount: number }>(
+      `SELECT source, fee_amount FROM transactions WHERE id = 'tx-fee-1'`
+    );
+    expect(rows[0].source).toBe('pos');
+    expect(rows[0].fee_amount).toBe(0);
+  });
+
+  it('stores an explicit merchant fee without touching the paid amount', async () => {
+    await run(
+      `INSERT INTO transactions (id, branch_id, invoice_number, total_amount, amount_paid, payment_method, fee_amount, fee_label, source)
+       VALUES ('tx-fee-2', 'b1', 'INV-FEE-2', 100000, 100000, 'qris', 700, 'QRIS 0.7%', 'online')`
+    );
+    const rows = await run<{ total_amount: number; fee_amount: number; source: string }>(
+      `SELECT total_amount, fee_amount, source FROM transactions WHERE id = 'tx-fee-2'`
+    );
+    expect(rows[0]).toEqual({ total_amount: 100000, fee_amount: 700, source: 'online' });
+  });
+
+  it('buckets transfer separately so the Z-report total still closes', async () => {
+    await run(
+      `INSERT INTO transactions (id, branch_id, invoice_number, total_amount, payment_method, status)
+       VALUES ('tx-m-cash', 'b1', 'INV-M-C', 5000, 'cash', 'completed'),
+              ('tx-m-trf', 'b1', 'INV-M-T', 8000, 'transfer', 'completed'),
+              ('tx-m-qris', 'b1', 'INV-M-Q', 2000, 'qris', 'completed')`
+    );
+    const row = (await run<{ cash: number; transfer: number; qris: number }>(
+      `SELECT
+         COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN total_amount ELSE 0 END), 0) AS cash,
+         COALESCE(SUM(CASE WHEN payment_method = 'transfer' THEN total_amount ELSE 0 END), 0) AS transfer,
+         COALESCE(SUM(CASE WHEN payment_method = 'qris' THEN total_amount ELSE 0 END), 0) AS qris
+       FROM transactions WHERE id LIKE 'tx-m-%' AND status = 'completed'`
+    ))[0];
+    expect(row).toEqual({ cash: 5000, transfer: 8000, qris: 2000 });
+  });
+
+  it('creates a storefront order pending_payment, invisible to completed revenue', async () => {
+    await run(
+      `INSERT INTO storefront_orders (id, parent_id, invoice_number, items, subtotal, total, payment_channel)
+       VALUES ('so-1', 'p-1', 'SO-1', $1, 30000, 30000, 'qris')`,
+      [JSON.stringify([{ product_id: 'prod-1', qty: 2, unit_price: 15000, conversion_factor: 1 }])]
+    );
+    const rows = await run<{ status: string; items: string; transaction_id: string | null }>(
+      `SELECT status, items, transaction_id FROM storefront_orders WHERE id = 'so-1'`
+    );
+    expect(rows[0].status).toBe('pending_payment');
+    expect(rows[0].transaction_id).toBeNull();
+    expect(parseJson<{ qty: number }[]>(rows[0].items, [])[0].qty).toBe(2);
+  });
+
+  it('exposes the storefront order indexes', async () => {
+    const rows = await run<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_sf_orders%'`
+    );
+    const names = rows.map((r) => r.name);
+    for (const index of [
+      'idx_sf_orders_invoice',
+      'idx_sf_orders_parent',
+      'idx_sf_orders_status',
+      'idx_sf_orders_created',
+    ]) {
+      expect(names).toContain(index);
+    }
+  });
+
+  it('ships the migration 012 file that upgrades a v11 tenant', async () => {
+    const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*12/);
+    const migration = readFileSync(
+      path.join(root, 'db', 'migrations', '012_payment_channels.sql'),
+      'utf8'
+    );
+    expect(migration).toMatch(/ALTER TABLE transactions ADD COLUMN fee_amount/i);
+    expect(migration).toMatch(/ALTER TABLE transactions ADD COLUMN source/i);
+    expect(migration).toMatch(/ALTER TABLE tenants ADD COLUMN qris_image/i);
+    expect(migration).toMatch(/CREATE TABLE IF NOT EXISTS storefront_orders/i);
+    expect(migration).toMatch(/SET version = 12 WHERE id = 1/i);
   });
 });

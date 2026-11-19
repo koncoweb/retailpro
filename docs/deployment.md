@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/deployment.md` |
-| Terakhir diperbarui | **2026-11-18** |
+| Terakhir diperbarui | **2026-11-19** |
 | Cakupan | Cara aplikasi berjalan di produksi: dua proyek Vercel, dua database Turso cloud, variabel lingkungan, langkah deploy & verifikasi, serta aturan platform yang tidak boleh dilanggar |
 | Rujukan | [arsitektur.md](arsitektur.md) §7 · [backend.md](backend.md) §2 & §12 · [kendala-solusi.md](kendala-solusi.md) KS-26…KS-54 |
 
@@ -33,7 +33,7 @@ Dua proyek Vercel, satu organisasi Turso.
                                     v
                     +-------------------------------+
                     | DB tenant Thalia (Turso)      |  <--- browser SPA: @libsql/client/web + JWT
-                    | 38 tabel, tanpa tenant_id     |
+                    | 39 tabel, tanpa tenant_id     |
                     +-------------------------------+
 ```
 
@@ -159,8 +159,11 @@ Project → Settings → Git.
 |---|---|---|
 | `framework` / `buildCommand` | `vite` / `npm run build` | SPA Vite, output `dist/` |
 | `rewrites[0]` | `/api/auth/(.*)` → `/api/auth/[...all]` | Fungsi standalone tidak mengenal nama berkas bracket |
-| `rewrites[1]` | `/api/admin/users/([^/]+)/password` → `/api/admin/users/[id]/password` | idem untuk route dinamis |
-| `rewrites[2]` | `/((?!api/).*)` → `/index.html` | SPA fallback, dengan negative lookahead agar `/api/*` tidak tertelan |
+| `rewrites[1]` | `/api/storefront/(.*)` → `/api/storefront/[...all]` | Catch-all channels/qris/orders (Hobby: maks 12 fungsi) |
+| `rewrites[2]` | `/api/tenant/(.*)` → `/api/tenant/[...all]` | Catch-all qris-image/orders (Hobby: maks 12 fungsi) |
+| `rewrites[3]` | `/api/admin/users/([^/]+)/password` → `/api/admin/users/[id]/password` | idem untuk route dinamis |
+| `rewrites[4]` | `/api/admin/users/([^/]+)` → `/api/admin/users/[id]` | idem |
+| `rewrites[5]` | `/((?!api/).*)` → `/index.html` | SPA fallback, dengan negative lookahead agar `/api/*` tidak tertelan |
 | `headers` | CSP + `X-Frame-Options` + `nosniff` + `Referrer-Policy` + `Permissions-Policy` | CSP mengizinkan `connect-src https://*.turso.io wss://*.turso.io` karena browser bicara langsung ke Turso, plus `https://tanggalmerah.upset.dev` untuk API hari libur dan `fonts.googleapis.com`/`fonts.gstatic.com` untuk font Plus Jakarta Sans. `Permissions-Policy: camera=(self), geolocation=(self)` — wajib untuk absensi v8 (getUserMedia + GPS); `microphone=()` tetap ditutup |
 | `functions["api/**/*.ts"].includeFiles` | `db/schema/**` | `server/provision.ts` membaca `tenant.sql` & `seed.sql` dari disk saat runtime |
 
@@ -352,8 +355,10 @@ CI (KS-21), jadi keempatnya dijalankan manual sebelum `vercel --prod`.
 
 ## 11. Batasan yang masih berlaku
 
-1. **Pesanan dari toko online belum masuk ke database tenant** — masih disimpan di perangkat
-   pengunjung (prototype); yang live adalah katalog, harga, satuan, dan stok.
+1. **Pesanan dari toko online masuk ke database tenant** lewat `POST /api/storefront/orders` →
+   `storefront_orders` (status awal `pending_payment`). Konfirmasi pembayaran di back office
+   (`POST /api/tenant/orders/confirm`) membuat transaksi dan mengurangi stok secara atomik.
+   Pembayaran online belum tersedia — hanya COD / transfer manual yang dikonfirmasi owner.
 2. **Belum ada CI** dan belum ada staging; setiap deploy langsung ke produksi, dan uji e2e dijalankan
    manual dari mesin operator.
 3. **Satu region** (`ap-southeast-2`) untuk semua database; tidak ada replika baca.

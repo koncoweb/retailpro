@@ -27,7 +27,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2, MapPin, Printer } from "lucide-react";
+import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2, MapPin, Printer, Landmark, QrCode } from "lucide-react";
 import { toast } from "sonner";
 import { query, runTransaction } from "@/lib/db";
 import { useAuth } from "@/hooks/use-auth";
@@ -72,10 +72,12 @@ export default function POSShifts() {
   const [notes, setNotes] = useState("");
   const [transactionsSummary, setTransactionsSummary] = useState({
     cash: 0,
+    transfer: 0,
     card: 0,
     ewallet: 0,
     qris: 0,
     total: 0,
+    fee: 0,
     voided: 0,
   });
 
@@ -180,22 +182,24 @@ export default function POSShifts() {
       // `total_amount` as the record of the cancelled sale, so the drawer math
       // would otherwise book money that went back to the customer (009).
       const res = await query(
-        `SELECT payment_method, total_amount, status FROM transactions 
+        `SELECT payment_method, total_amount, fee_amount, status FROM transactions 
          WHERE shift_id = $1`,
         [shiftId]
       );
 
-      const summary = { cash: 0, card: 0, ewallet: 0, qris: 0, total: 0, voided: 0 };
+      const summary = { cash: 0, transfer: 0, card: 0, ewallet: 0, qris: 0, total: 0, fee: 0, voided: 0 };
       
-      res.rows.forEach((t: { payment_method: string; total_amount: string | number; status: string }) => {
+      res.rows.forEach((t: { payment_method: string; total_amount: string | number; fee_amount?: string | number; status: string }) => {
         const amount = Number(t.total_amount);
         if (t.status !== 'completed') {
           summary.voided += 1;
           return;
         }
         summary.total += amount;
+        summary.fee += Number(t.fee_amount) || 0;
         switch (t.payment_method) {
           case 'cash': summary.cash += amount; break;
+          case 'transfer': summary.transfer += amount; break;
           case 'card': summary.card += amount; break;
           case 'ewallet': summary.ewallet += amount; break;
           case 'qris': summary.qris += amount; break;
@@ -467,14 +471,38 @@ export default function POSShifts() {
                         <TableCell>Tunai (Cash)</TableCell>
                         <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.cash)}</TableCell>
                       </TableRow>
-                      <TableRow>
-                        <TableCell>Non-Tunai (Kartu/QRIS)</TableCell>
-                        <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.total - transactionsSummary.cash)}</TableCell>
-                      </TableRow>
+                      {transactionsSummary.transfer > 0 && (
+                        <TableRow>
+                          <TableCell>
+                            <span className="inline-flex items-center gap-2"><Landmark className="w-4 h-4 text-muted-foreground" />Transfer Bank</span>
+                          </TableCell>
+                          <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.transfer)}</TableCell>
+                        </TableRow>
+                      )}
+                      {transactionsSummary.qris > 0 && (
+                        <TableRow>
+                          <TableCell>
+                            <span className="inline-flex items-center gap-2"><QrCode className="w-4 h-4 text-muted-foreground" />QRIS</span>
+                          </TableCell>
+                          <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.qris)}</TableCell>
+                        </TableRow>
+                      )}
+                      {transactionsSummary.total - transactionsSummary.cash - transactionsSummary.transfer - transactionsSummary.qris > 0 && (
+                        <TableRow>
+                          <TableCell>Non-Tunai Lainnya</TableCell>
+                          <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.total - transactionsSummary.cash - transactionsSummary.transfer - transactionsSummary.qris)}</TableCell>
+                        </TableRow>
+                      )}
                       <TableRow className="bg-muted/50 font-bold">
                         <TableCell>Total Penjualan</TableCell>
                         <TableCell className="text-right">{formatCurrency(transactionsSummary.total)}</TableCell>
                       </TableRow>
+                      {transactionsSummary.fee > 0 && (
+                        <TableRow>
+                          <TableCell className="text-muted-foreground">Biaya merchant (total)</TableCell>
+                          <TableCell className="text-right text-muted-foreground">{formatCurrency(transactionsSummary.fee)}</TableCell>
+                        </TableRow>
+                      )}
                       {transactionsSummary.voided > 0 && (
                         <TableRow>
                           <TableCell className="text-muted-foreground">

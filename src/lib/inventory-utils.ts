@@ -54,3 +54,53 @@ export function validateBarcode(barcode: string): boolean {
     // EAN-13 should be 13 digits, but we allow flexible lengths for now
     return /^[0-9A-Za-z-]+$/.test(barcode);
 }
+
+/**
+ * The smallest slice of the database the SKU minter needs. A `Transaction` and
+ * the standalone `query()` both satisfy it, so a caller can mint inside or
+ * outside a transaction without a second copy of the rule.
+ */
+export interface SkuSequenceReader {
+  query<T = { sku: string }>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+}
+
+/** The number a generated SKU ends with, 0 when it does not end with one. */
+function skuSequence(sku: string | null | undefined): number {
+  if (!sku) return 0;
+  const parts = String(sku).split('-');
+  const value = parseInt(parts[parts.length - 1] ?? '', 10);
+  return Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * The next SKU the app owns for a category, continuing the database sequence and
+ * skipping the numbers already handed out during this run.
+ *
+ * Every bulk importer used to re-type this loop, which let two lines of one file
+ * claim the same number and let two screens disagree about what is next. `seen`
+ * is the caller's memory of what it minted earlier — the database cannot answer
+ * for rows a planned batch has not written yet.
+ */
+export async function mintSkuForCategory(
+  reader: SkuSequenceReader,
+  category: string | null | undefined,
+  today: Date = new Date(),
+  seen: Iterable<string> = []
+): Promise<string> {
+  const name = (category || 'Umum').trim() || 'Umum';
+  const prefix = skuPrefixForCategory(name, today);
+  const res = await reader.query<{ sku: string }>(
+    `SELECT sku FROM products WHERE sku LIKE $1 ORDER BY sku DESC LIMIT 1`,
+    [`${prefix}%`]
+  );
+
+  let highest = skuSequence(res.rows[0]?.sku);
+  for (const sku of seen) {
+    if (!sku.toUpperCase().startsWith(prefix)) continue;
+    highest = Math.max(highest, skuSequence(sku));
+  }
+
+  const last = highest > 0 ? `${prefix}${String(highest).padStart(3, '0')}` : null;
+  return generateNextSku(name, today, last);
+}
+

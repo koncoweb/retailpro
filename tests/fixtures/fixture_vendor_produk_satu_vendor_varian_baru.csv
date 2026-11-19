@@ -1,0 +1,4 @@
+Kode Vendor,Nama Vendor,Kategori Vendor,Kontak,Telepon,Email,Termin (hari),SKU,Nama Produk,Kategori Produk,Harga Jual,Stok Awal,Stok Minimum,Satuan,Faktor,Harga Beli,Min Order,Vendor SKU,Kode Varian,Atribut Varian,Barcode Varian
+VND-E2E-SATU,PT E2E Satu Vendor,Bahan Kue,Sales E2E Empat,0812000004000,satu.e2e@tokobahankue.com,21,,,,,,,,,,,,,,
+,,,,,,,E2E-SV-002,,,14000,,,Pcs,1,9500,,E2E-TC-NAN,,Rasa=Nanas;Ukuran=25s,8990000000342
+,,,,,,,E2E-SV-002,,,,,,Karton,25,220000,,E2E-TC-NAN-KRT,,Rasa=Nanas;Ukuran=25s,

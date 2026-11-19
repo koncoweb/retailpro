@@ -23,15 +23,18 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 11);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 12);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
--- receipt/tax/bank settings as JSON text.
+-- receipt/tax/bank/payment_channels settings as JSON text. `qris_image` holds the
+-- merchant's STATIC QRIS as a data URL — a separate column, not inside `settings`,
+-- so reading the settings document for permissions never drags the image along.
 CREATE TABLE IF NOT EXISTS tenants (
   id         TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
   name       TEXT NOT NULL,
   slug       TEXT,
   settings   TEXT NOT NULL DEFAULT '{}',
+  qris_image TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -318,9 +321,18 @@ CREATE TABLE IF NOT EXISTS transactions (
   total_amount   INTEGER NOT NULL DEFAULT 0,
   amount_paid    INTEGER NOT NULL DEFAULT 0,
   due_date       TEXT,
+  -- 'cash' | 'debit' | 'credit' | 'ewallet' | 'qris' | 'transfer' (+ legacy).
   payment_method TEXT,
   notes          TEXT,
   status         TEXT NOT NULL DEFAULT 'completed',
+  -- Merchant cost of the payment channel at the time of sale (012). It is NOT
+  -- added to `total_amount`/`amount_paid` — the customer paid the total; this is
+  -- the fee the merchant absorbs, so net revenue reports subtract it.
+  fee_amount     INTEGER NOT NULL DEFAULT 0,
+  fee_label      TEXT,
+  -- 'pos' (till) | 'online' (a storefront order synced in). Default keeps every
+  -- pre-existing row a till sale.
+  source         TEXT NOT NULL DEFAULT 'pos',
   -- Void audit trail (009). A voided bon keeps its rows and its original
   -- amount; `status='void'` is what every revenue query filters out, and these
   -- columns carry who cancelled it, when, and why for the receipt + audit.
@@ -328,6 +340,43 @@ CREATE TABLE IF NOT EXISTS transactions (
   voided_by      TEXT,
   voided_at      TEXT,
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+-- A web order from the marketplace, split one row PER SELLER (012). It lives in
+-- the SELLER's own database and starts `pending_payment`, which is deliberately
+-- invisible to stock and reports. Confirming payment is what writes the
+-- `transactions` row its `transaction_id` points at and deducts gudang stock.
+CREATE TABLE IF NOT EXISTS storefront_orders (
+  id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  -- One basket at the marketplace splits into one row per seller; they share a
+  -- parent id so the shopper's order page can reassemble them.
+  parent_id       TEXT NOT NULL,
+  invoice_number  TEXT NOT NULL,
+  shop_name       TEXT,
+  customer_name   TEXT,
+  customer_phone  TEXT,
+  customer_address TEXT,
+  -- 'pickup' | 'delivery'
+  fulfillment     TEXT NOT NULL DEFAULT 'pickup',
+  slot            TEXT,
+  notes           TEXT,
+  -- channel id from the tenant's payment_channels ('cash'|'transfer'|'qris')
+  payment_channel TEXT,
+  payment_bank_id TEXT,
+  -- Snapshot of what was ordered, in the sold unit and price at order time:
+  -- [{"product_id","variant_id","unit_name","conversion_factor","qty","unit_price"}]
+  items           TEXT NOT NULL DEFAULT '[]',
+  subtotal        INTEGER NOT NULL DEFAULT 0,
+  shipping        INTEGER NOT NULL DEFAULT 0,
+  total           INTEGER NOT NULL DEFAULT 0,
+  -- pending_payment | confirmed | packing | shipped | done | cancelled | void
+  status          TEXT NOT NULL DEFAULT 'pending_payment',
+  cancel_reason   TEXT,
+  confirmed_at    TEXT,
+  confirmed_by    TEXT,
+  -- The `transactions` row written when this order's payment was confirmed.
+  transaction_id  TEXT,
+  created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS transaction_items (
@@ -561,7 +610,7 @@ CREATE TABLE IF NOT EXISTS vendor_payments (
   purchase_order_id TEXT,
   amount            INTEGER NOT NULL DEFAULT 0,
   payment_date      TEXT NOT NULL DEFAULT (date('now')),
-  -- 'cash' | 'transfer' | 'check' | 'other'
+  -- 'cash' | 'transfer' | 'qris' | 'check' | 'other'
   method            TEXT NOT NULL DEFAULT 'transfer',
   reference_number  TEXT,
   notes             TEXT,
@@ -797,6 +846,13 @@ CREATE INDEX        IF NOT EXISTS idx_tx_cashier           ON transactions(cashi
 CREATE INDEX        IF NOT EXISTS idx_tx_shift             ON transactions(shift_id);
 CREATE INDEX        IF NOT EXISTS idx_items_tx             ON transaction_items(transaction_id);
 CREATE INDEX        IF NOT EXISTS idx_items_product        ON transaction_items(product_id);
+
+-- Storefront orders: the shopper reassembles a basket by parent; the seller's
+-- order screen lists newest-first by status.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sf_orders_invoice    ON storefront_orders(invoice_number);
+CREATE INDEX        IF NOT EXISTS idx_sf_orders_parent     ON storefront_orders(parent_id);
+CREATE INDEX        IF NOT EXISTS idx_sf_orders_status     ON storefront_orders(status, created_at);
+CREATE INDEX        IF NOT EXISTS idx_sf_orders_created    ON storefront_orders(created_at);
 
 CREATE INDEX        IF NOT EXISTS idx_shifts_branch        ON shifts(branch_id, status);
 CREATE INDEX        IF NOT EXISTS idx_shifts_user          ON shifts(user_id, status);

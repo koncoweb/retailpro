@@ -5,6 +5,14 @@
       "destination": "/api/auth/[...all]"
     },
     {
+      "source": "/api/storefront/(.*)",
+      "destination": "/api/storefront/[...all]"
+    },
+    {
+      "source": "/api/tenant/(.*)",
+      "destination": "/api/tenant/[...all]"
+    },
+    {
       "source": "/api/admin/users/([^/]+)/password",
       "destination": "/api/admin/users/[id]/password"
     },

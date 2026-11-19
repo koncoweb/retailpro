@@ -33,6 +33,7 @@ import {
   ArrowLeft,
   Building2,
   CreditCard,
+  Download,
   Edit,
   History,
   Link2,
@@ -55,6 +56,7 @@ import { batchQuery, query, runTransaction } from "@/lib/db";
 import { parseJson } from "@/lib/db/json";
 import { logAudit, logAuditTx } from "@/lib/audit";
 import { formatCurrency } from "@/lib/formatters";
+import { QrisQuickView } from "@/components/settings/QrisQuickView";
 import { unitNameOptions } from "@/lib/units";
 import {
   VENDOR_PAYMENT_METHODS,
@@ -64,6 +66,7 @@ import {
   outstandingAmount,
   vendorCategoryLabel,
   vendorInitials,
+  vendorPaymentMethodLabel,
   vendorStatusBadgeClass,
   vendorStatusLabel,
 } from "@/lib/vendor";
@@ -80,6 +83,7 @@ import { Switch } from "@/components/ui/switch";
 import { WAREHOUSES_SQL, activeWarehouses, type WarehouseOption } from "@/lib/warehouse";
 import { saveProductDraft, type ProductFormPayload } from "@/lib/product-write";
 import {
+  downloadVendorSheet,
   markPreferredVendor,
   upsertVendorCatalogLink,
   upsertVendorPrice,
@@ -369,6 +373,8 @@ export default function VendorDetail() {
   const { can } = usePermissions();
   // Buy prices are the owner's negotiation, not something a clerk may edit.
   const canEditPrices = can("manage_vendor_prices");
+  // The one-vendor sheet is an export, so it follows the same key as the rest.
+  const canExportSheet = can("export_reports");
 
   const [vendor, setVendor] = useState<VendorRecord | null>(null);
   const [summary, setSummary] = useState<VendorSummary | null>(null);
@@ -796,6 +802,29 @@ export default function VendorDetail() {
     [variantOptions, priceForm.variantId]
   );
 
+  /**
+   * The one-vendor sheet for this vendor: row 1 carries the vendor and nothing
+   * else, the rows below carry its products, variants and packs with the vendor
+   * columns blank. Exactly the shape the combined import asks an owner to fill,
+   * and re-importing it writes nothing new — which is what makes it safe to hand
+   * to the supplier as "isi harga ini lalu kirim balik".
+   */
+  const [sheetExporting, setSheetExporting] = useState<"csv" | "xlsx" | null>(null);
+
+  const handleExportSheet = async (format: "csv" | "xlsx") => {
+    if (!id || !vendor) return;
+    setSheetExporting(format);
+    try {
+      const count = await downloadVendorSheet(id, vendor.code, format);
+      toast.success(`${count} baris sheet vendor diekspor`);
+    } catch (error) {
+      console.error("Vendor sheet export failed:", error);
+      toast.error("Gagal mengekspor sheet vendor");
+    } finally {
+      setSheetExporting(null);
+    }
+  };
+
   const openPriceDialog = (row?: VendorPriceRow) => {
     if (row) {
       setPriceForm({
@@ -1139,6 +1168,21 @@ export default function VendorDetail() {
             </div>
           </div>
           <div className="flex gap-2">
+            {canExportSheet && (
+              <Button
+                variant="outline"
+                className="gap-2"
+                disabled={sheetExporting !== null}
+                onClick={() => void handleExportSheet("xlsx")}
+              >
+                {sheetExporting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                Ekspor Sheet
+              </Button>
+            )}
             <Button variant="outline" onClick={() => setDebtOpen(true)}>
               <Plus className="mr-2 h-4 w-4" /> Catat Tagihan
             </Button>
@@ -1729,7 +1773,7 @@ export default function VendorDetail() {
                         <TableCell className="text-sm">
                           {payment.expense_description || "-"}
                         </TableCell>
-                        <TableCell className="text-sm capitalize">{payment.method}</TableCell>
+                        <TableCell className="text-sm">{vendorPaymentMethodLabel(payment.method)}</TableCell>
                         <TableCell className="text-sm">{payment.reference_number || "-"}</TableCell>
                         <TableCell className="text-right text-sm font-medium">
                           {formatCurrency(payment.amount)}
@@ -2084,6 +2128,12 @@ export default function VendorDetail() {
                   />
                 </div>
               </div>
+              {paymentForm.method === "qris" && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span>Butuh gambar QRIS merchant?</span>
+                  <QrisQuickView />
+                </div>
+              )}
               <div className="grid gap-2">
                 <Label htmlFor="payment-notes">Catatan</Label>
                 <Textarea

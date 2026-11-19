@@ -10,12 +10,13 @@ import { ReceiptSettings } from "@/components/settings/ReceiptSettings";
 import { EmployeeRoleSettings } from "@/components/settings/EmployeeRoleSettings";
 import { TaxDiscountSettings } from "@/components/settings/TaxDiscountSettings";
 import { InventorySettings } from "@/components/settings/InventorySettings";
+import { PaymentChannelSettings } from "@/components/settings/PaymentChannelSettings";
 import { useTheme } from "@/hooks/use-theme";
 import { usePermissions } from "@/hooks/use-permissions";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertCircle } from "lucide-react";
 import type { ReactNode } from "react";
-import { Settings as SettingsIcon, Building2, Bell, Shield, Database, Globe, Palette, Users, Package } from "lucide-react";
+import { Settings as SettingsIcon, Building2, Bell, Shield, Database, Globe, Palette, Users, Package, QrCode } from "lucide-react";
 
 /**
  * Blocks a whole tab when the role may look but not write.
@@ -58,6 +59,7 @@ export default function Settings() {
           <TabsList className="bg-muted/50 p-1 flex-wrap h-auto">
             <TabsTrigger value="general" className="gap-2 text-xs md:text-sm"><SettingsIcon className="w-4 h-4" /><span className="hidden sm:inline">Umum</span></TabsTrigger>
             <TabsTrigger value="company" className="gap-2 text-xs md:text-sm"><Building2 className="w-4 h-4" /><span className="hidden sm:inline">Perusahaan</span></TabsTrigger>
+            <TabsTrigger value="payments" className="gap-2 text-xs md:text-sm"><QrCode className="w-4 h-4" /><span className="hidden sm:inline">Pembayaran</span></TabsTrigger>
             {can("manage_roles") && (
               <TabsTrigger value="employees" className="gap-2 text-xs md:text-sm"><Users className="w-4 h-4" /><span className="hidden sm:inline">Karyawan & Role</span></TabsTrigger>
             )}
@@ -101,6 +103,12 @@ export default function Settings() {
             <ReceiptSettings />
             <TaxDiscountSettings />
             <BankSettings />
+            </EditableSection>
+          </TabsContent>
+
+          <TabsContent value="payments" className="space-y-4 md:space-y-6">
+            <EditableSection editable={editable}>
+              <PaymentChannelSettings />
             </EditableSection>
           </TabsContent>
 

@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM"],
     "module": "ESNext",
     "skipLibCheck": true,
 
@@ -18,7 +18,10 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
 
-    "types": ["node"],
+    /* Scripts may import browser modules (`src/lib/bulk-io.ts` downloads,
+       `src/lib/logger.ts` reads `import.meta.env`), so this project typechecks
+       both worlds instead of pretending `scripts/` never touches `src/`. */
+    "types": ["node", "vite/client"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"]

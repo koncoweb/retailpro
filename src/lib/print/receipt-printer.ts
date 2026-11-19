@@ -159,12 +159,14 @@ export async function buildZReportDoc(
       sql: `
         SELECT
           COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN total_amount ELSE 0 END), 0) AS cash,
+          COALESCE(SUM(CASE WHEN payment_method = 'transfer' THEN total_amount ELSE 0 END), 0) AS transfer,
           COALESCE(SUM(CASE WHEN payment_method IN ('card','debit','credit')
                             THEN total_amount ELSE 0 END), 0) AS card,
           COALESCE(SUM(CASE WHEN payment_method IN ('ewallet','e-wallet','ovo','gopay','dana','shopeepay')
                             THEN total_amount ELSE 0 END), 0) AS ewallet,
           COALESCE(SUM(CASE WHEN payment_method = 'qris' THEN total_amount ELSE 0 END), 0) AS qris,
           COALESCE(SUM(total_amount), 0) AS total,
+          COALESCE(SUM(fee_amount), 0) AS fee_total,
           COUNT(*) AS txn_count
         FROM transactions
         WHERE shift_id = $1 AND status = 'completed'
@@ -206,15 +208,17 @@ export async function buildZReportDoc(
   const voidAmount = Number(voidRow.void_amount ?? 0);
   const byMethod = {
     cash: Number(methods.cash ?? 0),
+    transfer: Number(methods.transfer ?? 0),
     card: Number(methods.card ?? 0),
     ewallet: Number(methods.ewallet ?? 0),
     qris: Number(methods.qris ?? 0),
-    // Anything outside the four named buckets, so the printed breakdown always
+    // Anything outside the named buckets, so the printed breakdown always
     // sums to TOTAL PENJUALAN even if a new payment method is introduced.
     other: Math.max(
       0,
       Number(methods.total ?? 0) -
         (Number(methods.cash ?? 0) +
+          Number(methods.transfer ?? 0) +
           Number(methods.card ?? 0) +
           Number(methods.ewallet ?? 0) +
           Number(methods.qris ?? 0)),
@@ -235,6 +239,7 @@ export async function buildZReportDoc(
     transactionCount: Number(methods.txn_count ?? 0),
     byMethod,
     totalSales,
+    feeTotal: Number(methods.fee_total ?? 0),
     voidCount,
     voidAmount,
     initialCash,

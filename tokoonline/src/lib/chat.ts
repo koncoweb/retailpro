@@ -1,6 +1,7 @@
 import { SHOP } from "./shop";
 import { formatIDR } from "./format";
 import { fromPrice, isProductSoldOut, type Product } from "./products";
+import type { PaymentBank } from "./payment-config";
 
 export const QUICK = [
   "Jam buka",
@@ -17,9 +18,15 @@ function has(question: string, words: string[]) {
 /**
  * Canned replies for the chat panel. `products` is the live catalogue, so a
  * question about stock or price answers with what the gudang actually holds
- * instead of a hard-coded menu.
+ * instead of a hard-coded menu. `banks` and `qrisAvailable` come from the
+ * payment config so the reply names real accounts instead of placeholders.
  */
-export function replyTo(raw: string, products: Product[] = []): string {
+export function replyTo(
+  raw: string,
+  products: Product[] = [],
+  banks?: PaymentBank[],
+  qrisAvailable?: boolean,
+): string {
   const q = raw.toLowerCase();
 
   if (has(q, ["halo", "hai", "hi", "hello", "pagi", "siang", "sore", "malam"])) {
@@ -56,7 +63,7 @@ export function replyTo(raw: string, products: Product[] = []): string {
   }
 
   if (has(q, ["bayar", "transfer", "qris", "rekening", "payment", "va", "tunai"])) {
-    return `Sementara transfer BCA ${SHOP.banks[0].account} a.n. ${SHOP.banks[0].holder} atau Mandiri ${SHOP.banks[1].account}, atau tunai saat ambil di toko. QRIS dan pembayaran otomatis menyusul.`;
+    return buildPaymentReply(banks, qrisAvailable);
   }
 
   if (has(q, ["status", "pesanan", "order", "lacak", "tracking"])) {
@@ -82,4 +89,24 @@ export function replyTo(raw: string, products: Product[] = []): string {
   }
 
   return `Kami catat pesan Anda. Untuk jawaban lebih cepat, lanjutkan ke WhatsApp CS atau pilih salah satu topik di atas. Tim kami membalas pada ${SHOP.hours}.`;
+}
+
+/**
+ * Build the payment reply from the live config. Falls back to the old
+ * hardcoded text when no banks are supplied (API unreachable).
+ */
+function buildPaymentReply(
+  banks: PaymentBank[] | undefined,
+  qrisAvailable: boolean | undefined,
+): string {
+  if (!banks || banks.length === 0) {
+    // Fallback: the old hardcoded text.
+    return `Sementara transfer BCA ${SHOP.banks[0].account} a.n. ${SHOP.banks[0].holder} atau Mandiri ${SHOP.banks[1].account}, atau tunai saat ambil di toko. QRIS dan pembayaran otomatis menyusul.`;
+  }
+  const parts = banks.map((b) => `${b.name} ${b.accountNumber} a.n. ${b.accountName}`);
+  let text = `Transfer ke ${parts.join(" atau ")}, atau tunai saat ambil di toko.`;
+  if (qrisAvailable) {
+    text += " QRIS tersedia — pindai kode yang muncul di halaman pembayaran.";
+  }
+  return text;
 }

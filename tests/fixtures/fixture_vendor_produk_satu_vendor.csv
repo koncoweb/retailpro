@@ -1,0 +1,10 @@
+Kode Vendor,Nama Vendor,Kategori Vendor,Kontak,Telepon,Email,Termin (hari),SKU,Nama Produk,Kategori Produk,Harga Jual,Stok Awal,Stok Minimum,Satuan,Faktor,Harga Beli,Min Order,Vendor SKU,Kode Varian,Atribut Varian,Barcode Varian
+VND-E2E-SATU,PT E2E Satu Vendor,Bahan Kue,Sales E2E Empat,0812000004000,satu.e2e@tokobahankue.com,21,,,,,,,,,,,,,,
+,,,,,,,E2E-SV-001,Susu Krimer E2E,Bahan Kue,15000,40,5,Pcs,1,11000,10,E2E-SK-PCS,,,
+,,,,,,,E2E-SV-001,,,,,,Karton,24,250000,1,E2E-SK-KRT,,,
+,,,,,,,E2E-SV-002,Teh Celup E2E,Minuman,12000,60,6,Pcs,1,8000,12,E2E-TC-ORG,,Rasa=Original;Ukuran=25s,8990000000311
+,,,,,,,E2E-SV-002,,,,,,Karton,25,190000,2,E2E-TC-ORG-KRT,,Rasa=Original;Ukuran=25s,
+,,,,,,,E2E-SV-002,,,13000,30,,Pcs,1,8500,,E2E-TC-MEL,,Rasa=Melon;Ukuran=25s,8990000000328
+,,,,,,,E2E-SV-002,,,,,,Karton,25,200000,,E2E-TC-MEL-KRT,,Rasa=Melon;Ukuran=25s,
+,,,,,,,E2E-SV-002,,,13500,,,Pcs,1,9000,12,E2E-TC-LEM,E2E-SV-002-LEMON-25S,Rasa=Lemon;Ukuran=25s,8990000000335
+,,,,,,,E2E-SV-002,,,,,,Karton,25,210000,,E2E-TC-LEM-KRT,E2E-SV-002-LEMON-25S,Rasa=Lemon;Ukuran=25s,

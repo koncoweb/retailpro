@@ -30,7 +30,15 @@ export type CartItem = {
   unitPrice: number;
 };
 
-export type OrderStatus = "waiting_payment" | "confirmed" | "packing" | "shipped" | "done";
+export type OrderStatus =
+  | "pending_payment"
+  | "waiting_payment"
+  | "confirmed"
+  | "packing"
+  | "shipped"
+  | "done"
+  | "cancelled"
+  | "void";
 
 export type Order = {
   id: string;
@@ -45,11 +53,17 @@ export type Order = {
   date: string;
   slot: string;
   payment: PaymentMethod;
+  /** For `transfer`: the specific bank id the shopper chose. */
+  paymentBankId?: string;
   notes: string;
   status: OrderStatus;
   subtotal: number;
   deliveryFee: number;
   total: number;
+  /** Server-side parent id from `POST /api/storefront/orders`; absent for local-only orders. */
+  parentId?: string;
+  /** Seller slugs this order was sent to, for status polling. */
+  sellerSlugs?: string[];
 };
 
 export type ChatMsg = {
@@ -78,7 +92,10 @@ type State = {
     date: string;
     slot: string;
     payment: PaymentMethod;
+    paymentBankId?: string;
     notes: string;
+    parentId?: string;
+    sellerSlugs?: string[];
   }) => Order;
   pushChat: (from: ChatMsg["from"], text: string) => void;
 };
@@ -162,7 +179,7 @@ export const useShop = create<State>()(
           createdAt: new Date().toISOString(),
           items,
           ...input,
-          status: input.payment === "cash" ? "confirmed" : "waiting_payment",
+          status: input.payment === "cash" ? "confirmed" : "pending_payment",
           subtotal,
           deliveryFee,
           total: subtotal + deliveryFee,
@@ -182,17 +199,25 @@ export const useShop = create<State>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 3,
-      // v2 put the variant into the line key, v3 the seller. Baskets saved
-      // before that keep their goods, but their keys are rebuilt so the same
-      // product does not appear twice once the shopper adds it again.
+      version: 4,
+      // v2 put the variant into the line key, v3 the seller, v4 aligned
+      // OrderStatus with the server enum (waiting_payment → pending_payment).
+      // Baskets saved before that keep their goods, but their keys are rebuilt
+      // so the same product does not appear twice once the shopper adds it again.
       migrate: (persisted, version) => {
-        const state = persisted as { cart?: CartItem[] };
+        const state = persisted as { cart?: CartItem[]; orders?: Order[] };
         if (version < 3 && Array.isArray(state.cart)) {
           state.cart = state.cart.map((item) => ({
             ...item,
             tenant: item.tenant ?? "",
             key: lineKey({ ...item, tenant: item.tenant ?? "" }),
+          }));
+        }
+        // v3→v4: rename legacy waiting_payment to pending_payment.
+        if (version < 4 && Array.isArray(state.orders)) {
+          state.orders = state.orders.map((order) => ({
+            ...order,
+            status: order.status === "waiting_payment" ? "pending_payment" : order.status,
           }));
         }
         return state as unknown as State;
