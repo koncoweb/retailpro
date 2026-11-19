@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PermissionGate } from "@/components/auth/PermissionGate";
 import { useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
@@ -36,6 +35,7 @@ import {
   Download,
   Loader2,
   Plus,
+  Printer,
   RefreshCw,
   Search,
   Wallet,
@@ -46,6 +46,7 @@ import { batchQuery, query, runTransaction } from "@/lib/db";
 import { logAuditTx } from "@/lib/audit";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
+import { printPurchaseOrder, purchaseOrderPrintInput } from "@/lib/print/purchase-order";
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions, useWarehouseScope } from "@/hooks/use-permissions";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
@@ -235,6 +236,8 @@ export function PurchaseOrderPanel({
   const [orders, setOrders] = useState<PurchaseOrderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [printingId, setPrintingId] = useState<string | null>(null);
+  const printPendingRef = useRef(false);
 
   // Owners arrive here to read history, so the list opens on every status;
   // "Perlu tindakan" is one click away as the working queue.
@@ -998,6 +1001,24 @@ export function PurchaseOrderPanel({
 
   const openDetail = async (order: PurchaseOrderRow) => openDetailById(order.id);
 
+  const handlePrint = async (order: PurchaseOrderRow) => {
+    if (busy || printPendingRef.current) return;
+    printPendingRef.current = true;
+    setPrintingId(order.id);
+    try {
+      // Read the current header and lines so another user's changes appear in the printout.
+      const latest = await fetchDetail(order.id);
+      printPurchaseOrder(purchaseOrderPrintInput(latest, warehouseName(latest.warehouse_id)), {
+        onError: (error) => toast.error(error.message),
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Gagal membuka dokumen cetak");
+    } finally {
+      printPendingRef.current = false;
+      setPrintingId(null);
+    }
+  };
+
   useEffect(() => {
     if (focusId) void openDetailById(focusId);
     // Only the requested id matters; re-running on every render would fight
@@ -1252,6 +1273,20 @@ export function PurchaseOrderPanel({
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex flex-wrap justify-end gap-1">
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="outline"
+                        className="h-7 w-7"
+                        title="Cetak / Simpan PDF"
+                        aria-label={`Cetak ${order.po_number}`}
+                        disabled={busy || printingId !== null}
+                        onClick={() => void handlePrint(order)}
+                      >
+                        {printingId === order.id
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Printer className="h-4 w-4" />}
+                      </Button>
                       {actions.map((action) => (
                         <Button
                           key={action}
@@ -1272,11 +1307,6 @@ export function PurchaseOrderPanel({
                           {PO_ACTION_LABEL[action]}
                         </Button>
                       ))}
-                      {actions.length === 0 && (
-                        <Badge variant="outline" className="text-xs">
-                          -
-                        </Badge>
-                      )}
                     </div>
                   </TableCell>
                 </TableRow>

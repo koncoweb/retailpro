@@ -18,7 +18,7 @@ import { Loader2, Printer, ShoppingCart } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
-import { printPurchaseOrder } from "@/lib/print/purchase-order";
+import { printPurchaseOrder, purchaseOrderPrintInput } from "@/lib/print/purchase-order";
 import {
   PO_ACTION_LABEL,
   PO_STATUS_LABEL,
@@ -384,32 +384,10 @@ export function PurchaseOrderDetail({
           {order && (
             <Button
               variant="outline"
+              disabled={loading}
               onClick={() => {
                 try {
-                  printPurchaseOrder({
-                    poNumber: order.po_number,
-                    status: order.status,
-                    vendorName: order.supplier_name ?? "Tanpa vendor",
-                    warehouseName: warehouseName(order.warehouse_id),
-                    createdAt: order.created_at,
-                    expectedDate: order.expected_date,
-                    paymentTermsDays: order.payment_terms_days,
-                    notes: order.notes,
-                    subtotalAmount: order.subtotal_amount,
-                    discountType: order.discount_type, discountValue: Number(order.discount_value), discountAmount: Number(order.discount_amount),
-                    ppnRate: order.ppn_rate,
-                    ppnAmount: order.ppn_amount,
-                    totalAmount: order.total_amount,
-                    lines: order.lines.map((line) => ({
-                      productName: line.product_name,
-                      sku: line.sku,
-                      variantName: line.variant_name,
-                      quantity: line.quantity,
-                      unitName: line.unit_name,
-                      unitCost: line.unit_cost,
-                      subtotal: line.subtotal,
-                    })),
-                  }, {
+                  printPurchaseOrder(purchaseOrderPrintInput(order, warehouseName(order.warehouse_id)), {
                     onError: (error) => toast.error(error.message),
                   });
                 } catch (error) {

@@ -57,12 +57,17 @@ describe('A4 purchase-order document', () => {
     expect(html).toContain('PPN (Non-PPN)');
   });
 
-  it('labels draft and cancelled documents conspicuously', () => {
-    expect(renderPurchaseOrderHtml(document({ status: 'draft' }))).toContain(
-      '<div class="status">Draf</div>'
-    );
-    expect(renderPurchaseOrderHtml(document({ status: 'cancelled' }))).toContain(
-      '<div class="status">Dibatalkan</div>'
+  it.each([
+    ['draft', 'Draf'],
+    ['submitted', 'Menunggu Persetujuan'],
+    ['approved', 'Disetujui'],
+    ['partially_received', 'Diterima Sebagian'],
+    ['received', 'Diterima'],
+    ['rejected', 'Ditolak'],
+    ['cancelled', 'Dibatalkan'],
+  ] as const)('labels %s documents conspicuously', (status, label) => {
+    expect(renderPurchaseOrderHtml(document({ status }))).toContain(
+      `<div class="status">${label}</div>`
     );
   });
 

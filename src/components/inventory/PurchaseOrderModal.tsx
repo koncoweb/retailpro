@@ -179,6 +179,16 @@ interface PurchaseOrderModalProps {
   onSubmit: (draft: PurchaseOrderDraftValues, options: { submit: boolean }) => Promise<void>;
 }
 
+function mergeDraftLine(lines: PurchaseOrderDraftLine[], line: PurchaseOrderDraftLine): PurchaseOrderDraftLine[] {
+  const existing = lines.findIndex((item) => item.productId === line.productId &&
+    (item.variantId ?? null) === line.variantId && item.unitName === line.unitName);
+  if (existing < 0) return [...lines, line];
+  return lines.map((item, index) => index === existing ? {
+    ...item, quantity: item.quantity + line.quantity, unitCost: line.unitCost,
+    subtotal: Math.round((item.quantity + line.quantity) * line.unitCost),
+  } : item);
+}
+
 const BASE_UNIT_FALLBACK = "Pcs";
 
 /** The packs being ordered: the chosen variant's own, or the product's own. */
@@ -248,6 +258,7 @@ export function PurchaseOrderModal({
   /** An auto-fill that refused, with the reason the buyer has to act on. */
   const [splitNotice, setSplitNotice] = useState<string | null>(null);
   const vendorTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const editorSeedRef = useRef<{ draft: PurchaseOrderDraftValues | null | undefined } | null>(null);
 
   const lowStockProducts = products.filter((product) => product.stock <= product.minStock);
 
@@ -444,7 +455,9 @@ export function PurchaseOrderModal({
   // Re-seed on every open: a dialog that keeps the previous order's lines is how
   // duplicate purchase orders get created by accident.
   useEffect(() => {
-    if (!open) return;
+    if (!open) { editorSeedRef.current = null; return; }
+    if (editorSeedRef.current && editorSeedRef.current.draft === initialDraft) return;
+    editorSeedRef.current = { draft: initialDraft };
     if (initialDraft) {
       setSelectedVendor(initialDraft.supplierId);
       setDestinationWarehouse(initialDraft.destinationWarehouseId);
@@ -471,6 +484,13 @@ export function PurchaseOrderModal({
     setAutoVendor(false);
     setPendingVendor(null);
     setSplitNotice(null);
+  }, [open, initialDraft, defaultWarehouseId]);
+
+  // A delayed warehouse suggestion fills only an empty destination, never resets the draft.
+  useEffect(() => {
+    if (open && !initialDraft && defaultWarehouseId) {
+      setDestinationWarehouse((current) => current || defaultWarehouseId);
+    }
   }, [open, initialDraft, defaultWarehouseId]);
 
   const ppnRate = resolveDraftPpnRate({
@@ -534,20 +554,28 @@ export function PurchaseOrderModal({
     }
   };
 
-  const handleAddItem = () => {
+  const selectedLine = (): PurchaseOrderDraftLine | null => {
     if (!selectedProductObj) {
       toast.error("Pilih produk terlebih dahulu");
-      return;
+      return null;
+    }
+    if (selectedVendor && !belongsToVendor(selectedProductObj, selectedVendor)) {
+      toast.error("Produk ini tidak terhubung ke vendor yang dipilih");
+      return null;
+    }
+    if (variantOptions.length > 0 && !selectedVariantObj) {
+      toast.error("Pilih varian terlebih dahulu");
+      return null;
     }
 
     const qty = parseNumber(quantity);
     if (!Number.isFinite(qty) || qty <= 0) {
       toast.error("Jumlah harus lebih dari 0");
-      return;
+      return null;
     }
     if (hasTooManyDecimals(qty)) {
       toast.error("Jumlah maksimal 3 angka di belakang koma");
-      return;
+      return null;
     }
 
     const unitName = selectedUnit || baseUnitOf(packsOf(selectedProductObj, selectedVariantObj)).name;
@@ -560,49 +588,34 @@ export function PurchaseOrderModal({
       : unitCostOf(selectedProductObj, selectedVariantObj, unitName);
     if (!Number.isFinite(cost) || cost < 0) {
       toast.error("Harga satuan tidak valid");
-      return;
+      return null;
     }
 
-    const variantId = selectedVariantObj?.id ?? null;
-    const existing = items.findIndex(
-      (item) =>
-        item.productId === selectedProductObj.id &&
-        (item.variantId ?? null) === variantId &&
-        item.unitName === unitName
-    );
-    if (existing >= 0) {
-      const next = [...items];
-      const merged = next[existing].quantity + qty;
-      next[existing] = {
-        ...next[existing],
-        quantity: merged,
-        unitCost: cost,
-        subtotal: Math.round(merged * cost),
-      };
-      setItems(next);
-    } else {
-      setItems([
-        ...items,
-        {
-          productId: selectedProductObj.id,
-          productName: selectedProductObj.name,
-          sku: selectedVariantObj?.sku ?? selectedProductObj.sku,
-          variantId,
-          variantName: selectedVariantObj ? variantLabel(selectedVariantObj.attributes) : undefined,
-          quantity: qty,
-          unitName,
-          conversionFactor,
-          unitCost: cost,
-          subtotal: Math.round(qty * cost),
-        },
-      ]);
-    }
+    return {
+      productId: selectedProductObj.id,
+      productName: selectedProductObj.name,
+      sku: selectedVariantObj?.sku ?? selectedProductObj.sku,
+      variantId: selectedVariantObj?.id ?? null,
+      variantName: selectedVariantObj ? variantLabel(selectedVariantObj.attributes) : undefined,
+      quantity: qty, unitName, conversionFactor, unitCost: cost,
+      subtotal: Math.round(qty * cost),
+    };
+  };
 
+  const clearSelection = () => {
     setSelectedProduct("");
     setSelectedVariant("");
     setSelectedUnit("");
     setQuantity("");
     setCostPrice("");
+  };
+
+  const handleAddItem = () => {
+    if (saving) return;
+    const line = selectedLine();
+    if (!line) return;
+    setItems((current) => mergeDraftLine(current, line));
+    clearSelection();
   };
 
   const handleRemoveItem = (productId: string, variantId: string | null, unitName: string) => {
@@ -830,7 +843,14 @@ export function PurchaseOrderModal({
       return;
     }
 
-    if (discountError) { toast.error(discountError); return; }
+    // Include the final entry even when the buyer saves without pressing the plus button.
+    const pendingLine = selectedProduct ? selectedLine() : null;
+    if (selectedProduct && !pendingLine) return;
+    const draftItems = pendingLine ? mergeDraftLine(items, pendingLine) : items;
+    const draftRawAmounts = procurementAmounts(draftItems, ppnRate);
+    const draftDiscountError = validateProcurementDiscount(discount, draftRawAmounts.subtotal);
+    if (draftDiscountError) { toast.error(draftDiscountError); return; }
+    const draftAmounts = procurementAmounts(draftItems, ppnRate, discount);
     const draft: PurchaseOrderDraftValues = {
       supplierId: vendor.id,
       supplierName: vendor.name,
@@ -838,14 +858,14 @@ export function PurchaseOrderModal({
       destinationWarehouseId: destinationWarehouse,
       expectedDate,
       notes: notes.trim(),
-      items,
-      subtotalAmount: amounts.subtotal,
-      discountType: amounts.discountType,
-      discountValue: amounts.discountValue,
-      discountAmount: amounts.discountAmount,
-      ppnRate: amounts.ppnRate,
-      ppnAmount: amounts.ppnAmount,
-      totalAmount: amounts.total,
+      items: draftItems,
+      subtotalAmount: draftAmounts.subtotal,
+      discountType: draftAmounts.discountType,
+      discountValue: draftAmounts.discountValue,
+      discountAmount: draftAmounts.discountAmount,
+      ppnRate: draftAmounts.ppnRate,
+      ppnAmount: draftAmounts.ppnAmount,
+      totalAmount: draftAmounts.total,
     };
 
     // Same guards the write path applies, evaluated before anything is sent.
@@ -854,7 +874,7 @@ export function PurchaseOrderModal({
         supplierId: draft.supplierId,
         destinationWarehouseId: draft.destinationWarehouseId,
         expectedDate: draft.expectedDate || null,
-        items: items.map((item) => ({
+        items: draftItems.map((item) => ({
           productId: item.productId,
           quantity: item.quantity,
           unitName: item.unitName,
@@ -869,6 +889,10 @@ export function PurchaseOrderModal({
       return;
     }
 
+    if (pendingLine) {
+      setItems(draftItems);
+      clearSelection();
+    }
     setSaving(submit ? "submit" : "draft");
     try {
       await onSubmit(draft, { submit });
@@ -1107,10 +1131,15 @@ export function PurchaseOrderModal({
                 value={quantity}
                 onChange={(event) => setQuantity(event.target.value)}
               />
-              <Button onClick={handleAddItem} title="Tambahkan baris ke order" aria-label="Tambahkan baris ke order">
+              <Button type="button" disabled={Boolean(saving)} onClick={handleAddItem} title="Tambahkan baris ke order" aria-label="Tambahkan baris ke order">
                 <Plus className="w-4 h-4" />
               </Button>
             </div>
+            {selectedProduct && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                Produk yang sedang diisi ikut disimpan. Gunakan tombol + untuk menambah baris berikutnya.
+              </p>
+            )}
             {agreedForSelection && (
               <p className="mt-2 flex items-center gap-1 text-xs text-muted-foreground">
                 {costPrice.trim() &&

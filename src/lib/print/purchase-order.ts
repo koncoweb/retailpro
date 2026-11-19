@@ -1,3 +1,4 @@
+import type { PurchaseOrderDetailData } from "@/components/inventory/PurchaseOrderDetail";
 import { PO_STATUS_LABEL, type PurchaseOrderStatus } from "@/lib/procurement";
 import { escapeHtml, printHtml } from "@/lib/print/html";
 
@@ -28,6 +29,39 @@ export interface PurchaseOrderPrintInput {
   ppnAmount: number;
   totalAmount: number;
   lines: PurchaseOrderPrintLine[];
+}
+
+/** Shared projection for list and detail printing; preserves the saved financial snapshot. */
+export function purchaseOrderPrintInput(
+  order: PurchaseOrderDetailData,
+  warehouseName: string
+): PurchaseOrderPrintInput {
+  return {
+    poNumber: order.po_number,
+    status: order.status,
+    vendorName: order.supplier_name ?? "Tanpa vendor",
+    warehouseName,
+    createdAt: order.created_at,
+    expectedDate: order.expected_date,
+    paymentTermsDays: order.payment_terms_days,
+    notes: order.notes,
+    subtotalAmount: Number(order.subtotal_amount),
+    discountType: order.discount_type,
+    discountValue: Number(order.discount_value ?? 0),
+    discountAmount: Number(order.discount_amount ?? 0),
+    ppnRate: order.ppn_rate,
+    ppnAmount: Number(order.ppn_amount),
+    totalAmount: Number(order.total_amount),
+    lines: order.lines.map((line) => ({
+      productName: line.product_name,
+      sku: line.sku,
+      variantName: line.variant_name,
+      quantity: Number(line.quantity),
+      unitName: line.unit_name,
+      unitCost: Number(line.unit_cost),
+      subtotal: Number(line.subtotal),
+    })),
+  };
 }
 
 function money(value: number): string {
