@@ -21,6 +21,7 @@ import {
   type PrintDocLine,
 } from '@/lib/print/document';
 import type { ReceiptConfig } from '@/lib/print/receipt-doc';
+import type { ShiftExpense } from '@/lib/shift-cash';
 
 /** The closed shift row plus the display names joined at print time. */
 export interface ZReportInput {
@@ -41,6 +42,8 @@ export interface ZReportInput {
   /** Whole-bon voids in this shift, shown for reconciliation (009). */
   voidCount?: number;
   voidAmount?: number;
+  expenses?: ShiftExpense[];
+  expenseTotal?: number;
   initialCash: number;
   expectedCash: number;
   finalCash: number;
@@ -97,8 +100,21 @@ export function buildShiftZReport(input: ZReportInput, cfg: ReceiptConfig): Prin
         ] as PrintDocLine[])
       : []),
     dividerLine(columns),
+    ...((input.expenses?.length ?? 0) > 0
+      ? ([
+          { text: label3('pengeluaran non transaksi'), bold: true },
+          ...input.expenses!.flatMap((expense, index): PrintDocLine[] => [
+            { text: `${index + 1}. ${expense.description.replace(/\s+/g, ' ')}` },
+            { cols: ['Kas keluar', rupiah(expense.amount)] },
+          ]),
+          { cols: ['TOTAL PENGELUARAN', rupiah(input.expenseTotal ?? 0)], bold: true },
+          dividerLine(columns),
+        ] as PrintDocLine[])
+      : []),
     { text: label3('kas akhir'), bold: true },
     { cols: ['Modal Awal', rupiah(input.initialCash)] },
+    { cols: ['Penjualan Tunai', rupiah(input.byMethod.cash)] },
+    { cols: ['Pengeluaran Kas', rupiah(-(input.expenseTotal ?? 0))] },
     { cols: ['Saldo Seharusnya', rupiah(input.expectedCash)] },
     { cols: ['Kas Fisik', rupiah(input.finalCash)] },
     {

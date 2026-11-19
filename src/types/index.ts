@@ -199,6 +199,8 @@ export interface Shift {
   initial_cash: number;
   final_cash?: number;
   expected_cash?: number;
+  /** Derived from the immutable expenses linked to this shift. */
+  expense_total?: number;
   difference?: number;
   notes?: string;
   status: 'open' | 'closed';

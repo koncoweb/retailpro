@@ -70,6 +70,11 @@ export const PERMISSION_CATALOG = {
       hint: "Mengurangi harga pada keranjang saat transaksi. Kasir biasa tidak boleh.",
     },
     {
+      key: "record_pos_expense",
+      label: "Catat Pengeluaran POS",
+      hint: "Mencatat pengeluaran non transaksi dari kas laci pada shift sendiri, seperti sumbangan. Mengurangi saldo kas saat tutup shift.",
+    },
+    {
       key: "void_transaction",
       label: "Void Transaksi",
       hint: "Membatalkan transaksi yang sudah dibayar. Stok kembali dan jejaknya tercatat.",
@@ -265,6 +270,7 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     view_dashboard: true,
     view_analytics: true,
     access_pos: true,
+    record_pos_expense: true,
     apply_discount: true,
     view_inventory: true,
     add_stock: true,
@@ -290,12 +296,13 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<RoleValue, Record<string, boolean>
     // ...others false
   },
   cashier: {
-    // Transact, nothing else. `view_dashboard` used to be on here, which
+    // Operate the till and its cash drawer. `view_dashboard` used to be on here, which
     // handed cashiers the whole back-office reading list; the till's own
     // transaction book stays reachable through `access_pos` (App.tsx guards
     // /pos/transactions with anyOf). An owner can still switch dashboard
     // viewing back on per role in the matrix.
     access_pos: true,
+    record_pos_expense: true,
     apply_discount: false,
     // Chat is how a cashier reaches the owner and the rest of the team.
     use_chat: true,

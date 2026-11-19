@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import type { ShiftCashReport } from "@/lib/shift-cash";
+import { expectedShiftCash } from "@/lib/shift-cash";
+import { ShiftExpenseSummary } from "./ShiftExpenseSummary";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,26 +20,18 @@ export interface ShiftActionData {
   openTime?: Date;
   closeTime?: Date;
   actualCash?: number;
+  notes?: string;
 }
 
 /** What the closing window renders, all read from the shift's persisted rows. */
-export interface ShiftReport {
-  startTime: string;
-  initialCash: number;
-  cashSales: number;
-  totalSales: number;
-  txCount: number;
-  feeTotal: number;
-  voidCount: number;
-  voidAmount: number;
-}
+export type ShiftReport = ShiftCashReport;
 
 interface ShiftModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mode: "open" | "close";
   report?: ShiftReport;
-  onShiftAction: (data: ShiftActionData) => void;
+  onShiftAction: (data: ShiftActionData) => Promise<boolean>;
 }
 
 function formatCurrency(value: number) {
@@ -56,6 +51,26 @@ export function ShiftModal({
 }: ShiftModalProps) {
   const [pettyCash, setPettyCash] = useState("");
   const [actualCash, setActualCash] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const posting = useRef(false);
+
+  const submit = async (data: ShiftActionData) => {
+    if (posting.current) return;
+    posting.current = true;
+    setSaving(true);
+    try {
+      if (await onShiftAction(data)) {
+        onOpenChange(false);
+        setPettyCash("");
+        setActualCash("");
+        setNotes("");
+      }
+    } finally {
+      posting.current = false;
+      setSaving(false);
+    }
+  };
 
   const handleOpenShift = () => {
     // Blank and 0 are a legitimate choice — many mornings the drawer starts
@@ -71,11 +86,8 @@ export function ShiftModal({
       toast.error("Petty cash tidak boleh negatif.");
       return;
     }
-    // No premature victory lap: "berhasil" belongs to the caller, after the
-    // insert actually lands. This modal only hands the data over and closes.
-    onShiftAction({ pettyCash: amount, openTime: new Date() });
-    onOpenChange(false);
-    setPettyCash("");
+    // Keep the form open on failure; the caller reports the persisted result.
+    void submit({ pettyCash: amount, openTime: new Date() });
   };
 
   const handleCloseShift = () => {
@@ -84,18 +96,16 @@ export function ShiftModal({
       toast.error("Uang tunai aktual harus angka dan tidak boleh negatif. Masukkan 0 jika laci kosong.");
       return;
     }
-    onShiftAction({ closeTime: new Date(), actualCash: parseFloat(raw) || 0 });
-    onOpenChange(false);
-    setActualCash("");
+    if (!report) return;
+    void submit({ closeTime: new Date(), actualCash: Number(raw) || 0, notes });
   };
 
-  // Expected drawer = opening cash + what was actually taken in cash. Non-cash
-  // tenders never touch the drawer, so only cash sales reconcile against it.
-  const expectedCash = (report?.initialCash ?? 0) + (report?.cashSales ?? 0);
+  // Non-cash sales never touch the drawer; recorded cash expenses leave it.
+  const expectedCash = expectedShiftCash(report?.initialCash ?? 0, report?.cashSales ?? 0, report?.expenseTotal ?? 0);
 
   if (mode === "open") {
     return (
-      <Dialog open={open} onOpenChange={onOpenChange}>
+      <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>
         <DialogContent className="max-w-[95vw] sm:max-w-[400px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -154,10 +164,10 @@ export function ShiftModal({
           </div>
 
           <div className="flex gap-2">
-            <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+            <Button variant="outline" className="flex-1" disabled={saving} onClick={() => onOpenChange(false)}>
               Batal
             </Button>
-            <Button className="flex-1 gap-2" onClick={handleOpenShift}>
+            <Button className="flex-1 gap-2" disabled={saving} onClick={handleOpenShift}>
               <Clock className="w-4 h-4" />
               Buka Shift
             </Button>
@@ -168,9 +178,9 @@ export function ShiftModal({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-[520px]">
-        <DialogHeader>
+    <Dialog open={open} onOpenChange={(next) => { if (!saving) onOpenChange(next); }}>
+      <DialogContent className="flex max-h-[calc(100dvh-2rem)] max-w-[95vw] flex-col overflow-hidden p-4 sm:max-w-[520px]">
+        <DialogHeader className="shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <Clock className="w-5 h-5 text-primary" />
             Tutup Shift - Laporan Akhir
@@ -180,7 +190,7 @@ export function ShiftModal({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-2">
+        <div className="min-h-0 overflow-y-auto space-y-4 py-2">
           {/* Shift info */}
           <div className="grid grid-cols-2 gap-3">
             <div className="p-3 bg-muted/50 rounded-lg">
@@ -224,6 +234,8 @@ export function ShiftModal({
             )}
           </div>
 
+          <ShiftExpenseSummary expenses={report?.expenses ?? []} total={report?.expenseTotal ?? 0} />
+
           {/* Cash reconciliation */}
           <div className="p-4 bg-primary/10 rounded-lg space-y-3">
             <div className="flex items-center gap-2 text-sm font-semibold">
@@ -237,6 +249,10 @@ export function ShiftModal({
             <div className="flex justify-between text-sm">
               <span>Penjualan Tunai</span>
               <span>{formatCurrency(report?.cashSales ?? 0)}</span>
+            </div>
+            <div className="flex justify-between text-sm text-destructive">
+              <span>Pengeluaran kas</span>
+              <span>-{formatCurrency(report?.expenseTotal ?? 0)}</span>
             </div>
             <div className="flex justify-between text-sm font-medium pt-1 border-t">
               <span>Saldo Seharusnya</span>
@@ -264,16 +280,21 @@ export function ShiftModal({
             )}
           </div>
 
+          <div className="space-y-2">
+            <Label htmlFor="close-shift-notes">Catatan (Opsional)</Label>
+            <Input id="close-shift-notes" value={notes} onChange={(event) => setNotes(event.target.value)}
+              placeholder="Alasan selisih atau catatan lainnya..." disabled={saving} />
+          </div>
           <p className="text-xs text-muted-foreground">
             Laporan ini otomatis tercetak sebagai Z-report saat shift ditutup.
           </p>
         </div>
 
-        <div className="flex gap-2 pt-2">
-          <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+        <div className="flex shrink-0 gap-2 border-t pt-3">
+          <Button variant="outline" className="flex-1" disabled={saving} onClick={() => onOpenChange(false)}>
             Batal
           </Button>
-          <Button className="flex-1 gap-2" onClick={handleCloseShift}>
+          <Button className="flex-1 gap-2" disabled={saving || !report} onClick={handleCloseShift}>
             <Check className="w-4 h-4" />
             Tutup Shift
           </Button>

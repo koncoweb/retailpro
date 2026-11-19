@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/dialog";
 import { PaymentModal, PaymentDetails } from "@/components/pos/PaymentModal";
 import { ShiftModal, ShiftActionData, type ShiftReport } from "@/components/pos/ShiftModal";
+import { ShiftExpenseModal } from "@/components/pos/ShiftExpenseModal";
+import { closeCashShift, readShiftCashReport } from "@/lib/shift-cash";
 import {
   Select,
   SelectContent,
@@ -95,6 +97,8 @@ export default function POS() {
   const [selectedCategory, setSelectedCategory] = useState("Semua");
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isShiftOpen, setIsShiftOpen] = useState(false);
+  const [isExpenseOpen, setIsExpenseOpen] = useState(false);
+  const [shiftReportLoading, setShiftReportLoading] = useState(false);
   const [shiftMode, setShiftMode] = useState<"open" | "close">("open");
   const [isShiftActive, setIsShiftActive] = useState(false);
   const [shiftReport, setShiftReport] = useState<ShiftReport | null>(null);
@@ -1058,7 +1062,7 @@ export default function POS() {
    * state. Before this, a refreshed tab believed no shift was open, and a
    * closed shift left no cash-drawer record for the day's reconciliation.
    */
-  const handleShiftAction = async (data: ShiftActionData) => {
+  const handleShiftAction = async (data: ShiftActionData): Promise<boolean> => {
     const userId = user?.id;
     // The hook's answer already prefers the tenant session's branch, so there
     // is no second precedence to apply here — and there must not be, or the
@@ -1078,7 +1082,7 @@ export default function POS() {
           setIsShiftActive(true);
           setIsShiftOpen(false);
           toast.info("Shift Anda masih terbuka.");
-          return;
+          return true;
         }
 
         const res = await query<{ id: string }>(
@@ -1108,7 +1112,7 @@ export default function POS() {
         } else {
           toast.success(cashNote);
         }
-        return;
+        return true;
       }
 
       // Closing: expected cash is recomputed from the ledger, not from the
@@ -1117,30 +1121,13 @@ export default function POS() {
       // `total_amount`, and an item void already lowered its bon's total, so
       // the drawer never books money that went back to the customer (009).
       const actualCash = data.actualCash ?? 0;
-      const shiftRes = await query<{ initial_cash: number; cash_total: number }>(
-        `SELECT COALESCE(s.initial_cash, 0) AS initial_cash,
-                COALESCE((SELECT SUM(t.total_amount)
-                            FROM transactions t
-                           WHERE t.shift_id = s.id AND t.status = 'completed'
-                             AND t.payment_method = 'cash'), 0) AS cash_total
-           FROM shifts s
-          WHERE s.id = $1`,
-        [currentShiftId]
-      );
-      const expectedCash =
-        Number(shiftRes.rows[0]?.initial_cash ?? 0) + Number(shiftRes.rows[0]?.cash_total ?? 0);
+      if (!currentShiftId || !userId) throw new Error("Shift aktif tidak ditemukan.");
+      const closedReport = await closeCashShift({
+        shiftId: currentShiftId, branchId: shiftBranchId, userId, actualCash, notes: data.notes,
+      });
+      const expectedCash = closedReport.expectedCash;
 
       if (currentShiftId) {
-        await query(
-          `UPDATE shifts
-              SET end_time = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                  final_cash = $1,
-                  expected_cash = $2,
-                  difference = $3,
-                  status = 'closed'
-            WHERE id = $4`,
-          [actualCash, expectedCash, actualCash - expectedCash, currentShiftId]
-        );
 
         // The drawer just closed; print the Z-report off the persisted shift so
         // the paper reconciles to exactly what the `shifts` row now holds.
@@ -1182,9 +1169,11 @@ export default function POS() {
           `Shift ditutup dengan selisih ${formatCurrency(difference)} (seharusnya ${formatCurrency(expectedCash)}).`
         );
       }
+      return true;
     } catch (error) {
       console.error("Shift action failed:", error);
       toast.error("Gagal memproses shift: " + (error instanceof Error ? error.message : "Unknown error"));
+      return false;
     }
   };
 
@@ -1195,52 +1184,21 @@ export default function POS() {
    * report showed zeros while the printed Z-report was correct. Now both sides
    * come from the same source: the persisted shift and its transactions.
    */
-  const fetchShiftReport = async (shiftId: string): Promise<ShiftReport | null> => {
-    try {
-      const [txRes, shiftRes] = await Promise.all([
-        query<{ payment_method: string; total_amount: string | number; fee_amount?: string | number; status: string }>(
-          `SELECT payment_method, total_amount, fee_amount, status FROM transactions WHERE shift_id = $1`,
-          [shiftId]
-        ),
-        query<{ initial_cash: string | number; start_time: string }>(
-          `SELECT initial_cash, start_time FROM shifts WHERE id = $1`,
-          [shiftId]
-        ),
-      ]);
-      const acc = { cashSales: 0, totalSales: 0, feeTotal: 0, txCount: 0, voidCount: 0, voidAmount: 0 };
-      for (const t of txRes.rows) {
-        const amount = Number(t.total_amount) || 0;
-        // A voided bon keeps its total as the record of the cancelled sale, so
-        // it is counted separately and never books into the takings.
-        if (t.status !== "completed") { acc.voidCount += 1; acc.voidAmount += amount; continue; }
-        acc.txCount += 1;
-        acc.totalSales += amount;
-        acc.feeTotal += Number(t.fee_amount) || 0;
-        if (t.payment_method === "cash") acc.cashSales += amount;
-      }
-      const row = shiftRes.rows[0];
-      return {
-        startTime: row?.start_time ?? "",
-        initialCash: Number(row?.initial_cash ?? 0) || 0,
-        cashSales: acc.cashSales,
-        totalSales: acc.totalSales,
-        txCount: acc.txCount,
-        feeTotal: acc.feeTotal,
-        voidCount: acc.voidCount,
-        voidAmount: acc.voidAmount,
-      };
-    } catch (error) {
-      console.error("Failed to build shift report:", error);
-      return null;
-    }
-  };
-
-  const openShiftModal = (mode: "open" | "close") => {
+  const openShiftModal = async (mode: "open" | "close") => {
+    if (shiftReportLoading) return;
     setShiftMode(mode);
-    if (mode === "close" && currentShiftId) {
-      void fetchShiftReport(currentShiftId).then(setShiftReport);
+    setShiftReportLoading(true);
+    try {
+      if (mode === "close") {
+        if (!currentShiftId) throw new Error("Shift aktif tidak ditemukan.");
+        setShiftReport(await readShiftCashReport(currentShiftId));
+      }
+      setIsShiftOpen(true);
+    } catch (error) {
+      toast.error("Gagal memuat laporan shift: " + (error instanceof Error ? error.message : "Coba lagi"));
+    } finally {
+      setShiftReportLoading(false);
     }
-    setIsShiftOpen(true);
   };
 
   // Multi-customer tabs sit above the rows in both shells, so a cashier can
@@ -1329,7 +1287,7 @@ export default function POS() {
         {/* Products */}
         <div className="flex-1 min-w-0 flex flex-col bg-card rounded-xl border overflow-hidden min-h-0">
           <div className="shrink-0 p-3 md:p-4 border-b space-y-3">
-            <div className="flex justify-between items-center">
+            <div className="flex flex-wrap justify-between items-center gap-2">
                 {/* Owners and admins can ring up any branch; everyone else stays
                     pinned to the branch resolved from their tenant session. A
                     sale cannot post to "all branches", so no aggregate option
@@ -1354,11 +1312,17 @@ export default function POS() {
                       <span>{branchName ?? "Memuat…"}</span>
                   </div>
                 )}
+                {can("record_pos_expense") && (
+                  <Button variant="outline" size="sm" disabled={!isShiftActive || !currentShiftId || shiftReportLoading}
+                    onClick={() => setIsExpenseOpen(true)}>
+                    Pengeluaran non transaksi
+                  </Button>
+                )}
             </div>
             <div className="flex gap-2">
               <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input ref={searchInputRef} placeholder="Cari / scan barcode..." className="pl-10 text-base" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
               <Button variant="outline" size="icon" title="Scan barcode" aria-label="Scan barcode" onClick={() => searchInputRef.current?.focus()}><Barcode className="w-5 h-5" /></Button>
-              {!isShiftActive ? <Button onClick={() => openShiftModal("open")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Buka Shift</span></Button> : <Button variant="destructive" onClick={() => openShiftModal("close")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Tutup Shift</span></Button>}
+              {!isShiftActive ? <Button onClick={() => openShiftModal("open")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Buka Shift</span></Button> : <Button variant="destructive" aria-label="Tutup Shift" disabled={shiftReportLoading} onClick={() => openShiftModal("close")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Tutup Shift</span></Button>}
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">{categories.map((category) => (<Button key={category} variant={selectedCategory === category ? "default" : "outline"} size="sm" onClick={() => setSelectedCategory(category)} className="whitespace-nowrap text-xs md:text-sm">{category}</Button>))}</div>
           </div>
@@ -1507,6 +1471,8 @@ export default function POS() {
 
       <PaymentModal open={isPaymentOpen} onOpenChange={setIsPaymentOpen} total={total} onPaymentComplete={handlePaymentComplete} channels={channels} banks={bankList} qrisDataUrl={qrisDataUrl} />
       <ShiftModal open={isShiftOpen} onOpenChange={setIsShiftOpen} mode={shiftMode} report={shiftReport ?? undefined} onShiftAction={handleShiftAction} />
+      {currentShiftId && <ShiftExpenseModal key={currentShiftId} open={isExpenseOpen} onOpenChange={setIsExpenseOpen}
+        shiftId={currentShiftId} branchId={currentBranchId} />}
 
       {/* The full cart as a sheet on <lg screens: same rows, same totals,
           one tap away from the summary bar. */}

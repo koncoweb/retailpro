@@ -52,7 +52,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(14);
+    expect(rows[0].version).toBe(15);
   });
 
   it('exposes every table the application queries', async () => {
@@ -677,7 +677,7 @@ describe('seed state', () => {
     // what upgrades an existing (v7) tenant. The fleet runner discovers
     // migrations by numeric prefix and its target version must match.
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*14/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*15/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '008_attendance_geo_face.sql'),
       'utf8'
@@ -1176,7 +1176,7 @@ describe('payment channels (012)', () => {
 
   it('ships the migration 012 file that upgrades a v11 tenant', async () => {
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*14/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*15/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '012_payment_channels.sql'),
       'utf8'

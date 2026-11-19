@@ -13,6 +13,7 @@ import { batchQuery } from '@/lib/db';
 import { buildSaleReceipt, type SaleReceiptInput, type SaleReceiptItem } from '@/lib/print/receipt-doc';
 import { buildShiftZReport, type ZReportInput } from '@/lib/print/zreport-doc';
 import { columnsForPaper, type PrintDoc } from '@/lib/print/document';
+import { expectedShiftCash, type ShiftExpense } from '@/lib/shift-cash';
 import { printDocument, type PrintContext, type PrintResult } from '@/lib/print/print-service';
 
 /** Build the struk document for one committed transaction. */
@@ -139,7 +140,7 @@ export async function buildZReportDoc(
   shiftId: string,
   ctx: PrintContext
 ): Promise<PrintDoc | null> {
-  const [shiftRes, methodRes, voidRes] = await batchQuery([
+  const [shiftRes, methodRes, voidRes, expenseRes] = await batchQuery([
     {
       sql: `
         SELECT
@@ -184,6 +185,10 @@ export async function buildZReportDoc(
       `,
       params: [shiftId],
     },
+    {
+      sql: `SELECT id, amount, description, created_at FROM expenses WHERE shift_id = $1 ORDER BY created_at, id`,
+      params: [shiftId],
+    },
   ]);
 
   const shift = shiftRes.rows[0] as
@@ -226,7 +231,9 @@ export async function buildZReportDoc(
   };
   const totalSales = Number(methods.total ?? 0);
   const initialCash = Number(shift.initial_cash ?? 0);
-  const expectedCash = Number(shift.expected_cash ?? initialCash + byMethod.cash);
+  const expenses = expenseRes.rows.map((row) => ({ ...row, amount: Number(row.amount) })) as unknown as ShiftExpense[];
+  const expenseTotal = expenses.reduce((sum, expense) => sum + expense.amount, 0);
+  const expectedCash = Number(shift.expected_cash ?? expectedShiftCash(initialCash, byMethod.cash, expenseTotal));
   const finalCash = Number(shift.final_cash ?? 0);
   const difference = Number(shift.difference ?? finalCash - expectedCash);
 
@@ -242,6 +249,8 @@ export async function buildZReportDoc(
     feeTotal: Number(methods.fee_total ?? 0),
     voidCount,
     voidAmount,
+    expenses,
+    expenseTotal,
     initialCash,
     expectedCash,
     finalCash,

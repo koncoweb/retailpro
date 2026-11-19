@@ -46,6 +46,8 @@ import {
   type PrintContext,
 } from "@/lib/print/print-service";
 import { buildZReportDoc } from "@/lib/print/receipt-printer";
+import { closeCashShift, readShiftCashReport, expectedShiftCash, type ShiftExpense } from "@/lib/shift-cash";
+import { ShiftExpenseSummary } from "@/components/pos/ShiftExpenseSummary";
 
 export default function POSShifts() {
   const { user } = useAuth();
@@ -71,15 +73,11 @@ export default function POSShifts() {
   const [finalCash, setFinalCash] = useState("");
   const [notes, setNotes] = useState("");
   const [transactionsSummary, setTransactionsSummary] = useState({
-    cash: 0,
-    transfer: 0,
-    card: 0,
-    ewallet: 0,
-    qris: 0,
-    total: 0,
-    fee: 0,
-    voided: 0,
+    cash: 0, total: 0, fee: 0, voided: 0, expenseTotal: 0, expenses: [] as ShiftExpense[],
   });
+  const [summaryError, setSummaryError] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const expectedCash = expectedShiftCash(Number(activeShift?.initial_cash ?? 0), transactionsSummary.cash, transactionsSummary.expenseTotal);
 
   // Print context + which history row is printing. The context is read once;
   // a null simply means the desk falls back to no auto-print, not a failure.
@@ -154,19 +152,21 @@ export default function POSShifts() {
       if (activeRes.rows.length > 0) {
         const shift = activeRes.rows[0];
         setActiveShift(shift);
-        calculateSummary(shift.id, shift.initial_cash);
+        await calculateSummary(shift.id);
       } else {
         setActiveShift(null);
       }
 
       // Shift history for this branch, newest first
       const historyRes = await query(
-        `SELECT * FROM shifts WHERE user_id = $1 AND branch_id = $2 ORDER BY created_at DESC LIMIT 10`,
+        `SELECT s.*, COALESCE((SELECT SUM(e.amount) FROM expenses e WHERE e.shift_id = s.id), 0) AS expense_total
+           FROM shifts s WHERE s.user_id = $1 AND s.branch_id = $2 ORDER BY s.created_at DESC LIMIT 10`,
         [userId, branchId]
       );
       setShiftHistory(historyRes.rows);
 
     } catch (error) {
+      setSummaryError(true);
       console.error("Error fetching shift data:", error);
       toast.error("Gagal memuat data shift");
     } finally {
@@ -174,43 +174,14 @@ export default function POSShifts() {
     }
   };
 
-  const calculateSummary = async (shiftId: string, startCash: string | number) => {
-    try {
-      // Shift takings are everything posted against this shift — the POS stamps
-      // `shift_id` on each transaction, so no time-range guessing is needed.
-      // Only `completed` bons count as takings: a voided bon keeps its
-      // `total_amount` as the record of the cancelled sale, so the drawer math
-      // would otherwise book money that went back to the customer (009).
-      const res = await query(
-        `SELECT payment_method, total_amount, fee_amount, status FROM transactions 
-         WHERE shift_id = $1`,
-        [shiftId]
-      );
-
-      const summary = { cash: 0, transfer: 0, card: 0, ewallet: 0, qris: 0, total: 0, fee: 0, voided: 0 };
-      
-      res.rows.forEach((t: { payment_method: string; total_amount: string | number; fee_amount?: string | number; status: string }) => {
-        const amount = Number(t.total_amount);
-        if (t.status !== 'completed') {
-          summary.voided += 1;
-          return;
-        }
-        summary.total += amount;
-        summary.fee += Number(t.fee_amount) || 0;
-        switch (t.payment_method) {
-          case 'cash': summary.cash += amount; break;
-          case 'transfer': summary.transfer += amount; break;
-          case 'card': summary.card += amount; break;
-          case 'ewallet': summary.ewallet += amount; break;
-          case 'qris': summary.qris += amount; break;
-          default: break;
-        }
-      });
-
-      setTransactionsSummary(summary);
-    } catch (err) {
-      console.error("Error calculating summary:", err);
-    }
+  const calculateSummary = async (shiftId: string) => {
+    setSummaryError(true);
+    const report = await readShiftCashReport(shiftId);
+    setTransactionsSummary({
+      cash: report.cashSales, total: report.totalSales, fee: report.feeTotal, voided: report.voidCount,
+      expenseTotal: report.expenseTotal, expenses: report.expenses,
+    });
+    setSummaryError(false);
   };
 
   const handleOpenShift = async () => {
@@ -271,8 +242,9 @@ export default function POSShifts() {
   };
 
   const handleCloseShift = async () => {
-    if (!activeShift) return;
+    if (!activeShift || closing || summaryError) return;
     const userId = user?.id;
+    if (!userId || !branchId) return;
     
     const actual = parseFloat(finalCash);
     if (isNaN(actual) || actual < 0) {
@@ -280,21 +252,9 @@ export default function POSShifts() {
       return;
     }
 
-    const expected = Number(activeShift.initial_cash) + transactionsSummary.cash;
-    const diff = actual - expected;
-
+    setClosing(true);
     try {
-      await query(
-        `UPDATE shifts 
-         SET end_time = strftime('%Y-%m-%dT%H:%M:%fZ','now'), 
-             final_cash = $1, 
-             expected_cash = $2, 
-             difference = $3, 
-             notes = $4,
-             status = 'closed'
-         WHERE id = $5`,
-        [actual, expected, diff, notes, activeShift.id]
-      );
+      await closeCashShift({ shiftId: activeShift.id, branchId, userId, actualCash: actual, notes });
 
       // Closing the drawer stamps the day's check-out — but only on rows
       // that still lack one, so an /absen check-out is never overwritten.
@@ -321,6 +281,8 @@ export default function POSShifts() {
     } catch (error) {
       console.error("Error closing shift:", error);
       toast.error("Gagal menutup shift: " + (error instanceof Error ? error.message : "Coba lagi"));
+    } finally {
+      setClosing(false);
     }
   };
 
@@ -477,6 +439,12 @@ export default function POSShifts() {
                   )}
                 </div>
 
+                {summaryError ? (
+                  <div role="alert" className="text-sm text-destructive">
+                    Laporan shift belum termuat. <Button variant="outline" size="sm" onClick={() => void fetchShiftData()}>Coba lagi</Button>
+                  </div>
+                ) : <ShiftExpenseSummary expenses={transactionsSummary.expenses} total={transactionsSummary.expenseTotal} />}
+
                 <div className="space-y-4 pt-4 border-t">
                   <div className="space-y-2">
                     <Label>Uang Tunai Fisik (Di Laci)</Label>
@@ -496,14 +464,14 @@ export default function POSShifts() {
                         <span>Selisih (Aktual - Harapan):</span>
                         <span className={cn(
                           "font-bold",
-                          Number(finalCash) - (Number(activeShift.initial_cash) + transactionsSummary.cash) === 0 ? "text-success" : "text-destructive"
+                          Number(finalCash) - expectedCash === 0 ? "text-success" : "text-destructive"
                         )}>
-                          {formatCurrency(Number(finalCash) - (Number(activeShift.initial_cash) + transactionsSummary.cash))}
+                          {formatCurrency(Number(finalCash) - expectedCash)}
                         </span>
                       </div>
                     )}
                     <p className="text-xs text-muted-foreground">
-                      *Harapan = Modal Awal ({formatCurrency(Number(activeShift.initial_cash))}) + Penjualan Tunai ({formatCurrency(transactionsSummary.cash)}) = {formatCurrency(Number(activeShift.initial_cash) + transactionsSummary.cash)}
+                      *Harapan = Modal Awal ({formatCurrency(Number(activeShift.initial_cash))}) + Penjualan Tunai ({formatCurrency(transactionsSummary.cash)}) - Pengeluaran kas ({formatCurrency(transactionsSummary.expenseTotal)}) = {formatCurrency(expectedCash)}
                     </p>
                   </div>
 
@@ -518,7 +486,7 @@ export default function POSShifts() {
                 </div>
               </CardContent>
               <CardFooter>
-                <Button variant="destructive" className="w-full" onClick={handleCloseShift}>
+                <Button variant="destructive" className="w-full" disabled={closing || summaryError} onClick={handleCloseShift}>
                   Konfirmasi Tutup Shift
                 </Button>
               </CardFooter>
@@ -539,6 +507,7 @@ export default function POSShifts() {
                   <TableHead>Waktu Mulai</TableHead>
                   <TableHead>Waktu Selesai</TableHead>
                   <TableHead className="text-right">Modal Awal</TableHead>
+                  <TableHead className="text-right">Pengeluaran</TableHead>
                   <TableHead className="text-right">Total Akhir</TableHead>
                   <TableHead className="text-right">Selisih</TableHead>
                   <TableHead className="text-center">Status</TableHead>
@@ -548,7 +517,7 @@ export default function POSShifts() {
               <TableBody>
                 {shiftHistory.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                       Belum ada riwayat shift.
                     </TableCell>
                   </TableRow>
@@ -565,9 +534,10 @@ export default function POSShifts() {
                         {shift.end_time ? new Date(shift.end_time).toLocaleString('id-ID') : '-'}
                       </TableCell>
                       <TableCell className="text-right">{formatCurrency(Number(shift.initial_cash))}</TableCell>
-                      <TableCell className="text-right">{shift.final_cash ? formatCurrency(Number(shift.final_cash)) : '-'}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(Number(shift.expense_total ?? 0))}</TableCell>
+                      <TableCell className="text-right">{shift.final_cash != null ? formatCurrency(Number(shift.final_cash)) : '-'}</TableCell>
                       <TableCell className={`text-right ${Number(shift.difference) !== 0 ? 'text-destructive font-medium' : 'text-success'}`}>
-                        {shift.difference ? formatCurrency(Number(shift.difference)) : '-'}
+                        {shift.difference != null ? formatCurrency(Number(shift.difference)) : '-'}
                       </TableCell>
                       <TableCell className="text-center">
                         <Badge variant={shift.status === 'open' ? 'default' : 'secondary'}>
@@ -630,19 +600,23 @@ export default function POSShifts() {
                     <p className="text-xs text-muted-foreground">
                       Selesai: {shift.end_time ? new Date(shift.end_time).toLocaleString('id-ID') : '-'}
                     </p>
-                    <div className="grid grid-cols-3 gap-2 text-sm">
+                    <div className="grid grid-cols-2 gap-2 text-sm">
                       <div>
                         <p className="text-xs text-muted-foreground">Modal Awal</p>
                         <p className="font-medium">{formatCurrency(Number(shift.initial_cash))}</p>
                       </div>
                       <div>
+                        <p className="text-xs text-muted-foreground">Pengeluaran</p>
+                        <p className="font-medium">{formatCurrency(Number(shift.expense_total ?? 0))}</p>
+                      </div>
+                      <div>
                         <p className="text-xs text-muted-foreground">Total Akhir</p>
-                        <p className="font-medium">{shift.final_cash ? formatCurrency(Number(shift.final_cash)) : '-'}</p>
+                        <p className="font-medium">{shift.final_cash != null ? formatCurrency(Number(shift.final_cash)) : '-'}</p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">Selisih</p>
                         <p className={cn("font-medium", Number(shift.difference) !== 0 ? 'text-destructive' : 'text-success')}>
-                          {shift.difference ? formatCurrency(Number(shift.difference)) : '-'}
+                          {shift.difference != null ? formatCurrency(Number(shift.difference)) : '-'}
                         </p>
                       </div>
                     </div>
