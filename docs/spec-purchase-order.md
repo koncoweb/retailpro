@@ -40,6 +40,14 @@
 > into separate orders rather than merged — multi-vendor orders remain out of scope, and this release
 > adds no table or column: migration `010` only added the two indexes the auto-fill reads through.
 
+> **Status note (2026-11-20).** The body remains frozen, including its original statement that PPN was
+> out of scope. Migration `013_vendor_ppn.sql` is a later extension: vendors now choose PPN 11% or
+> Non-PPN independently from NPWP/POS tax; prices remain tax-exclusive; PO and goods-receipt headers
+> snapshot subtotal/rate/tax/gross; each receipt books one gross `expenses` row while batch/pricelist
+> costs remain net; and `PurchaseOrderDetail` prints a separate escaped A4 order document through the
+> browser. Historical v12 rows retain their old totals with zero tax. Configurable rates, input-tax
+> accounting, discounts/freight tax rules, and e-Faktur remain outside this extension.
+
 ---
 
 ## 0. Summary

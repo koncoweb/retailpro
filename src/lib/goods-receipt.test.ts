@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { translate } from '@/lib/db/translate';
 import type { Transaction } from '@/lib/db';
 import { GoodsReceiptError, receivePurchaseOrder } from './goods-receipt';
+import { procurementAmounts, type ProcurementPpnRate, type ProcurementDiscount } from './procurement';
 
 const root = process.cwd();
 // A unique file per run: libSQL keeps a handle open, so a shared path would
@@ -83,17 +84,36 @@ async function makeOrder(options: {
   status: string;
   termsDays: number;
   lines: OrderLine[];
+  ppnRate?: ProcurementPpnRate;
+  discount?: ProcurementDiscount;
 }): Promise<string> {
   orderSeq += 1;
   const orderId = `po-${orderSeq}`;
-  const total = options.lines.reduce((sum, line) => sum + line.quantity * line.cost, 0);
+  const amounts = procurementAmounts(
+    options.lines.map((line) => ({ quantity: line.quantity, unitCost: line.cost })),
+    options.ppnRate ?? 0, options.discount
+  );
 
   await run(
     `INSERT INTO purchase_orders
        (id, po_number, supplier_id, supplier_name, branch_id, warehouse_id, status,
-        total_amount, payment_terms_days)
-     VALUES ($1, $2, $3, 'PT Sumber Makmur', $4, $5, $6, $7, $8)`,
-    [orderId, `PO-TEST-${orderSeq}`, VENDOR, BRANCH, WAREHOUSE, options.status, total, options.termsDays]
+        subtotal_amount, ppn_rate, ppn_amount, total_amount, payment_terms_days,
+        discount_type, discount_value, discount_amount)
+     VALUES ($1, $2, $3, 'PT Sumber Makmur', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+    [
+      orderId,
+      `PO-TEST-${orderSeq}`,
+      VENDOR,
+      BRANCH,
+      WAREHOUSE,
+      options.status,
+      amounts.subtotal,
+      amounts.ppnRate,
+      amounts.ppnAmount,
+      amounts.total,
+      options.termsDays,
+      amounts.discountType, amounts.discountValue, amounts.discountAmount,
+    ]
   );
 
   for (const line of options.lines) {
@@ -124,7 +144,7 @@ beforeAll(async () => {
   const schema = readFileSync(path.join(root, 'db', 'schema', 'tenant.sql'), 'utf8');
   await client.executeMultiple(schema);
 
-  await run(`INSERT INTO branches (id, name, code, status) VALUES ($1, 'Cabang Pusat', 'PST', 'active')`, [
+  await run(`INSERT INTO branches (id, name, code, status) VALUES ($1, 'Outlet Pusat', 'PST', 'active')`, [
     BRANCH,
   ]);
   await run(
@@ -140,7 +160,7 @@ beforeAll(async () => {
     `INSERT INTO products (id, sku, name, cost_price) VALUES ('prod-1', 'SKU-1', 'Kopi Susu', 5000)`
   );
   await run(
-    `INSERT INTO products (id, sku, name, cost_price) VALUES ('prod-lead', 'SKU-2', 'Teh Botol', 4000)`
+    `INSERT INTO products (id, sku, name, cost_price) VALUES ('prod-lead', 'SKU-2', 'Teh Botol', 4000), ('prod-discount', 'SKU-DISC', 'Discount fixture', 100000)`
   );
   await run(`INSERT INTO users (id, email, name, role, is_active) VALUES ('user-1', 'gudang@contoh.id', 'Gudang', 'warehouse', 1)`);
 });
@@ -319,6 +339,158 @@ describe('receivePurchaseOrder', () => {
     );
     expect(bills.map((bill) => Number(bill.amount))).toEqual([16_000, 24_000]);
     expect(bills.map((bill) => bill.due_date)).toEqual(['2026-11-29', '2026-12-02']);
+  });
+
+  it('snapshots PO PPN on each partial receipt and books gross bills from actual prices', async () => {
+    const orderId = await makeOrder({
+      status: 'approved',
+      termsDays: 0,
+      ppnRate: 11,
+      lines: [{ id: 'ppn-split-1', productId: 'prod-1', quantity: 3, unit: 'Pcs', factor: 1, cost: 1_000 }],
+    });
+
+    const first = await inTransaction((tx) =>
+      receivePurchaseOrder(tx, {
+        purchaseOrderId: orderId,
+        lines: [{ purchaseOrderItemId: 'ppn-split-1', quantity: 1, unitCost: 1_005 }],
+        receivedOn: '2026-10-30',
+        requireExpiry: false,
+      })
+    );
+    const second = await inTransaction((tx) =>
+      receivePurchaseOrder(tx, {
+        purchaseOrderId: orderId,
+        lines: [{ purchaseOrderItemId: 'ppn-split-1', quantity: 2, unitCost: 999 }],
+        receivedOn: '2026-10-31',
+        requireExpiry: false,
+      })
+    );
+
+    expect(first).toMatchObject({
+      subtotalAmount: 1_005,
+      ppnRate: 11,
+      ppnAmount: 111,
+      totalAmount: 1_116,
+      status: 'partially_received',
+    });
+    expect(second).toMatchObject({
+      subtotalAmount: 1_998,
+      ppnRate: 11,
+      ppnAmount: 219,
+      totalAmount: 2_217,
+      status: 'received',
+    });
+
+    const receipts = await run<{
+      subtotal_amount: number;
+      ppn_rate: number;
+      ppn_amount: number;
+      total_amount: number;
+    }>(
+      `SELECT subtotal_amount, ppn_rate, ppn_amount, total_amount
+         FROM goods_receipts WHERE purchase_order_id = $1 ORDER BY received_at`,
+      [orderId]
+    );
+    expect(receipts).toEqual([
+      { subtotal_amount: 1_005, ppn_rate: 11, ppn_amount: 111, total_amount: 1_116 },
+      { subtotal_amount: 1_998, ppn_rate: 11, ppn_amount: 219, total_amount: 2_217 }
+    ]);
+
+    const bills = await run<{ amount: number; amount_paid: number; status: string }>(
+      `SELECT amount, amount_paid, status FROM expenses
+        WHERE purchase_order_id = $1 ORDER BY date`,
+      [orderId]
+    );
+    expect(bills).toEqual([
+      { amount: 1_116, amount_paid: 1_116, status: 'paid' },
+      { amount: 2_217, amount_paid: 2_217, status: 'paid' }
+    ]);
+
+    const costs = await run<{ cost_price: number }>(
+      `SELECT cost_price FROM product_batches
+        WHERE purchase_order_id = $1 ORDER BY received_at`,
+      [orderId]
+    );
+    expect(costs.map((row) => Number(row.cost_price))).toEqual([1_005, 999]);
+  });
+
+  it('reconciles fractional receipts, discount and AP exactly to the PO snapshot', async () => {
+    const orderId = await makeOrder({ status: 'approved', termsDays: 14, ppnRate: 11,
+      discount: { type: 'amount', value: 1 },
+      lines: [{ id: 'disc-fraction', productId: 'prod-1', quantity: 1, unit: 'Kg', factor: 1, cost: 5 }],
+    });
+    const results = [];
+    for (const quantity of [0.333, 0.333, 0.334]) {
+      results.push(await inTransaction((tx) => receivePurchaseOrder(tx, {
+        purchaseOrderId: orderId, lines: [{ purchaseOrderItemId: 'disc-fraction', quantity }], requireExpiry: false,
+      })));
+    }
+    expect(results.map((row) => row.subtotalAmount)).toEqual([2, 1, 2]);
+    expect(results.map((row) => row.discountAmount)).toEqual([0, 1, 0]);
+    expect(results[results.length - 1]?.status).toBe('received');
+    expect(results.reduce((sum, row) => sum + row.totalAmount, 0)).toBe(4);
+    const totals = await run<{ gross: number; discount: number; tax: number; total: number }>(
+      `SELECT SUM(subtotal_amount) AS gross, SUM(discount_amount) AS discount,
+              SUM(ppn_amount) AS tax, SUM(total_amount) AS total FROM goods_receipts WHERE purchase_order_id = $1`, [orderId]);
+    expect(totals[0]).toEqual({ gross: 5, discount: 1, tax: 0, total: 4 });
+    const bills = await run<{ total: number; count: number }>(
+      `SELECT SUM(amount) AS total, COUNT(*) AS count FROM expenses WHERE purchase_order_id = $1`, [orderId]);
+    expect(bills[0]).toEqual({ total: 4, count: 3 });
+    const items = await run<{ subtotal: number }>(
+      `SELECT SUM(i.subtotal) AS subtotal FROM goods_receipt_items i
+       JOIN goods_receipts gr ON gr.id = i.goods_receipt_id WHERE gr.purchase_order_id = $1`, [orderId]);
+    expect(items[0].subtotal).toBe(5);
+  });
+
+  it('allocates document discount to net batch cost, without adding tax to stock cost', async () => {
+    const orderId = await makeOrder({ status: 'approved', termsDays: 14, ppnRate: 11,
+      discount: { type: 'percent', value: 10 },
+      lines: [
+        { id: 'disc-cost-a', productId: 'prod-1', quantity: 2, unit: 'Dus', factor: 10, cost: 100_000 },
+        { id: 'disc-cost-b', productId: 'prod-discount', quantity: 1, unit: 'Pcs', factor: 1, cost: 100_000 }
+      ],
+    });
+    const result = await inTransaction((tx) => receivePurchaseOrder(tx, { purchaseOrderId: orderId,
+      lines: [{ purchaseOrderItemId: 'disc-cost-a', quantity: 2 }, { purchaseOrderItemId: 'disc-cost-b', quantity: 1 }], requireExpiry: false,
+    }));
+    expect(result).toMatchObject({ subtotalAmount: 300_000, discountAmount: 30_000, ppnAmount: 29_700, totalAmount: 299_700 });
+    const batches = await run<{ product_id: string; cost_price: number }>(
+      `SELECT product_id, cost_price FROM product_batches WHERE purchase_order_id = $1 ORDER BY product_id`, [orderId]);
+    expect(batches).toEqual([{ product_id: 'prod-1', cost_price: 9_000 }, { product_id: 'prod-discount', cost_price: 90_000 }]);
+  });
+
+  it('uses quantity-weighted PO discount allocation when invoice prices change', async () => {
+    const orderId = await makeOrder({ status: 'approved', termsDays: 0, ppnRate: 11,
+      discount: { type: 'amount', value: 20 },
+      lines: [{ id: 'disc-override', productId: 'prod-1', quantity: 2, unit: 'Pcs', factor: 1, cost: 100 }],
+    });
+    const first = await inTransaction((tx) => receivePurchaseOrder(tx, { purchaseOrderId: orderId,
+      lines: [{ purchaseOrderItemId: 'disc-override', quantity: 1 }], requireExpiry: false,
+    }));
+    const second = await inTransaction((tx) => receivePurchaseOrder(tx, { purchaseOrderId: orderId,
+      lines: [{ purchaseOrderItemId: 'disc-override', quantity: 1, unitCost: 150 }], requireExpiry: false,
+    }));
+    expect([first.discountAmount, second.discountAmount]).toEqual([10, 10]);
+    expect(first.totalAmount + second.totalAmount).toBe(255);
+    const bills = await run<{ total: number; paid: number }>(
+      `SELECT SUM(amount) AS total, SUM(amount_paid) AS paid FROM expenses WHERE purchase_order_id = $1`, [orderId]);
+    expect(bills[0]).toEqual({ total: 255, paid: 255 });
+  });
+
+  it('rolls back a final receipt that cannot absorb its remaining discount', async () => {
+    const orderId = await makeOrder({ status: 'approved', termsDays: 14, ppnRate: 11,
+      discount: { type: 'amount', value: 90 },
+      lines: [{ id: 'disc-invalid', productId: 'prod-1', quantity: 1, unit: 'Pcs', factor: 1, cost: 100 }],
+    });
+    await expect(inTransaction((tx) => receivePurchaseOrder(tx, { purchaseOrderId: orderId,
+      lines: [{ purchaseOrderItemId: 'disc-invalid', quantity: 1, unitCost: 5 }], requireExpiry: false,
+    }))).rejects.toThrow(/Sisa diskon PO/);
+    const state = await run<{ status: string; received: number; bills: number; batches: number }>(
+      `SELECT po.status, (SELECT quantity_received FROM purchase_order_items WHERE id = 'disc-invalid') AS received,
+        (SELECT COUNT(*) FROM expenses WHERE purchase_order_id = $1) AS bills,
+        (SELECT COUNT(*) FROM product_batches WHERE purchase_order_id = $1) AS batches
+       FROM purchase_orders po WHERE po.id = $1`, [orderId]);
+    expect(state[0]).toEqual({ status: 'approved', received: 0, bills: 0, batches: 0 });
   });
 
   it('refuses an over-delivery and rolls the whole receipt back', async () => {

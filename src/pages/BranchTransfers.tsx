@@ -28,12 +28,12 @@ import {
   Download,
   Send,
 } from "lucide-react";
-import { StockTransferModal } from "@/components/inventory/StockTransferModal";
+import { StockTransferModal, type TransferProduct, type TransferVariant } from "@/components/inventory/StockTransferModal";
 import { toast } from "sonner";
 import * as XLSX from "xlsx";
 import { query, parseJson, runTransaction } from "@/lib/db";
 import { logAudit, logAuditTx } from "@/lib/audit";
-import { Product, ProductUnit } from "@/types";
+import type { BarcodeUnit } from "@/lib/barcode-match";
 import { Input } from "@/components/ui/input";
 import { WAREHOUSES_SQL, type WarehouseOption } from "@/lib/warehouse";
 import { getStockIssueMethod } from "@/lib/tenant-settings";
@@ -73,7 +73,7 @@ export default function BranchTransfers() {
   const { can } = usePermissions();
   const [isLoading, setIsLoading] = useState(false);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
+  const [products, setProducts] = useState<TransferProduct[]>([]);
   const [warehouses, setWarehouses] = useState<WarehouseOption[]>([]);
   const [isTransferOpen, setIsTransferOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -111,7 +111,7 @@ export default function BranchTransfers() {
       SELECT 
         p.id, p.sku, p.name, p.category, p.min_stock_level,
         COALESCE((SELECT json_group_array(json_object(
-           'id', id, 'name', name, 'conversion_factor', conversion_factor, 'price', price
+           'id', id, 'name', name, 'conversion_factor', conversion_factor, 'price', price, 'barcode', barcode
          )) FROM product_units WHERE product_id = p.id), '[]') as units,
         COALESCE((
           SELECT json_group_object(w.id, COALESCE(sum_qty, 0))
@@ -125,24 +125,26 @@ export default function BranchTransfers() {
         ), '{}') as warehouse_stock
       FROM products p
     `);
+    const variantRows = await query<{ product_id: string; id: string; sku: string; label: string; barcode: string | null; units: string; warehouses: string }>(`
+      SELECT v.product_id, v.id, v.sku, v.name AS label, v.barcode,
+             COALESCE((SELECT json_group_array(json_object('name', u.name, 'conversion_factor', u.conversion_factor, 'barcode', u.barcode))
+                         FROM product_units u WHERE u.variant_id = v.id), '[]') AS units,
+             COALESCE((SELECT json_group_object(warehouse_id, qty) FROM
+               (SELECT warehouse_id, SUM(quantity_current) AS qty FROM product_batches WHERE variant_id = v.id GROUP BY warehouse_id)), '{}') AS warehouses
+        FROM product_variants v ORDER BY v.id`);
+    const variantsByProduct = new Map<string, TransferVariant[]>();
+    for (const row of variantRows.rows) {
+      const list = variantsByProduct.get(row.product_id) ?? [];
+      list.push({ id: row.id, sku: row.sku, label: row.label, barcode: row.barcode,
+        units: parseJson<BarcodeUnit[]>(row.units, []), warehouses: parseJson<Record<string, number>>(row.warehouses, {}) });
+      variantsByProduct.set(row.product_id, list);
+    }
     
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const mappedProducts: Product[] = res.rows.map((row: any) => ({
-      id: row.id,
-      sku: row.sku,
-      name: row.name,
-      category: row.category,
-      price: 0, // Not needed for transfer logic strictly
-      cost: 0,
-      stock: 0,
-      min_stock_alert: row.min_stock_level,
-      unit_type: 'Pcs', // Default
-      // JSON columns arrive as TEXT — parse them before use.
+    const mappedProducts: TransferProduct[] = res.rows.map((row) => ({
+      id: String(row.id), sku: String(row.sku), name: String(row.name), unit_type: 'Pcs',
       stock_by_warehouse: parseJson<Record<string, number>>(row.warehouse_stock, {}),
-      units: parseJson<ProductUnit[]>(row.units, []),
-      // Other required fields for Product interface
-      tenant_id: '',
-      description: '',
+      units: parseJson<BarcodeUnit[]>(row.units, []),
+      variants: variantsByProduct.get(String(row.id)) ?? [],
     }));
     setProducts(mappedProducts);
   };
@@ -210,9 +212,7 @@ export default function BranchTransfers() {
       fetchTransfers();
     } catch (error) {
       console.error("Create transfer failed:", error);
-      toast.error(
-        "Gagal membuat transfer: " + (error instanceof Error ? error.message : "Unknown error")
-      );
+      throw error;
     }
   };
 
@@ -393,7 +393,7 @@ export default function BranchTransfers() {
             <div className="relative flex-1 max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
-                placeholder="Cari No. Referensi atau Cabang..."
+                placeholder="Cari No. Referensi atau Outlet..."
                 className="pl-10"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}

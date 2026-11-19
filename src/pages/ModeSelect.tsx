@@ -30,8 +30,8 @@ export default function ModeSelect() {
    */
   const backOfficePath = canSeeAnalytics ? "/backoffice" : "/backoffice/branches/orders";
   const backOfficePoints = canSeeAnalytics
-    ? ["Dashboard & Analytics", "Inventory & Cabang", "Keuangan & HR", "Laporan & Pengaturan"]
-    : ["Pesanan Cabang", "Transfer Stok", "Stok Opname"];
+    ? ["Dashboard & Analytics", "Inventory & Outlet", "Keuangan & HR", "Laporan & Pengaturan"]
+    : ["Pesanan Outlet", "Transfer Stok", "Stok Opname"];
 
   // A role key that resolves to no grant is a custom role that was deleted while
   // somebody was still using it. Saying so beats a blank grid.
@@ -171,7 +171,7 @@ export default function ModeSelect() {
                 <p className="text-muted-foreground text-sm mb-4">
                   {canSeeAnalytics
                     ? "Mode untuk manajemen, laporan, inventory, keuangan, dan pengaturan sistem."
-                    : "Mode untuk mengelola stok: pesanan cabang, transfer, dan opname."}
+                    : "Mode untuk mengelola stok: pesanan outlet, transfer, dan opname."}
                 </p>
                 <ul className="text-sm space-y-2 text-muted-foreground">
                   {backOfficePoints.map((point) => (

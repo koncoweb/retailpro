@@ -8,6 +8,14 @@
 | Skema | **Tidak ada migrasi.** `schema_version` tetap 12; tidak ada tabel/kolom baru, tidak ada `apply-schema-all` |
 | Rilis | `b14f89b` — lihat [CHANGELOG.md](../CHANGELOG.md) |
 
+> **Catatan status (2026-11-20).** Body di bawah tetap merekam kontrak 21 kolom saat spesifikasi ini
+> dibekukan. Ekstensi PPN vendor kemudian meng-append `PPN` sebagai **kolom ke-22**; 21 kolom lama,
+> termasuk `Barcode Varian` di posisi ke-21, tidak berubah. `PPN` ikut `VENDOR_SHEET_KEYS` sehingga
+> baris produk mewarisinya dari header vendor dan ekspor satu-vendor hanya menyatakannya pada baris
+> header. Parser menerima PPN/Ya/true/1 dan Non-PPN/Tidak/false/0, menolak nilai asing, sedangkan
+> vendor existing tetap mempertahankan setting database walau sheet mengirim nilai lain. Berkas lama
+> tanpa kolom ini tetap sah. Perubahan skema ada di `013_vendor_ppn.sql`, bukan dalam rilis beku ini.
+
 Dokumen ini meneruskan [spec-impor-varian-kaya.md](spec-impor-varian-kaya.md) §6: sheet vendor+produk datar,
 `carryVendorForward`, dan harga beli yang ditarget ke varian sudah ada di sana. Yang diubah di sini adalah **bentuk
 penulisan** sheet itu — satu berkas kini bercerita tentang **satu vendor** — plus haknya untuk **membuat varian dan

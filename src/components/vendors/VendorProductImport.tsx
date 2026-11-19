@@ -32,7 +32,7 @@ import { logAuditTx } from "@/lib/audit";
 import { usePermissions } from "@/hooks/use-permissions";
 import { WAREHOUSES_SQL, activeWarehouses, resolveBranchWarehouse, type WarehouseOption } from "@/lib/warehouse";
 import { mintSkuForCategory } from "@/lib/inventory-utils";
-import { VENDOR_CATEGORIES } from "@/lib/vendor";
+import { VENDOR_CATEGORIES, parseVendorPpn, vendorPpnLabel } from "@/lib/vendor";
 import {
   parseVariantAttributes,
   variantKey,
@@ -96,7 +96,7 @@ import {
 /** Flat preview line: one sheet (vendor, product, variant, pack) with its verdict. */
 interface PreviewLine {
   vendorName: string;
-  vendorState: "baru" | "sudah ada";
+  vendorState: string;
   productName: string;
   sku: string;
   productState: "produk baru" | "tautkan produk" | "vendor saja" | "kode tidak dikenal";
@@ -146,6 +146,11 @@ interface WriteContext {
 }
 
 const emptyResult = (): BlockResult => ({ created: 0, linked: 0, prices: 0, variants: 0, packs: 0 });
+
+function previewVendorState(vendor: VendorPlan): string {
+  if (vendor.isNew) return `baru · ${vendorPpnLabel(vendor.vendor.ppnEnabled)}`;
+  return `sudah ada · ${vendorPpnLabel(vendor.existingPpnEnabled)} tersimpan dipertahankan`;
+}
 
 /** Sheet cell → the canonical vendor category the master stores. */
 function mapVendorCategory(value: string | null | undefined): string {
@@ -222,7 +227,7 @@ export function VendorProductImport({
       if (vendor.products.length === 0) {
         rows.push({
           vendorName: vendor.vendor.name,
-          vendorState: vendor.isNew ? "baru" : "sudah ada",
+          vendorState: previewVendorState(vendor),
           productName: "—",
           sku: "",
           productState: "vendor saja",
@@ -238,7 +243,7 @@ export function VendorProductImport({
         if (product.action === "unknown-code") {
           rows.push({
             vendorName: vendor.vendor.name,
-            vendorState: vendor.isNew ? "baru" : "sudah ada",
+            vendorState: previewVendorState(vendor),
             productName: product.seed.name || `Kode ${product.seed.sku}`,
             sku: product.seed.sku ?? "",
             productState: "kode tidak dikenal",
@@ -264,7 +269,7 @@ export function VendorProductImport({
         ) {
           rows.push({
             vendorName: vendor.vendor.name,
-            vendorState: vendor.isNew ? "baru" : "sudah ada",
+            vendorState: previewVendorState(vendor),
             productName: product.seed.name,
             sku: product.seed.sku ?? "",
             productState: product.action === "create" ? "produk baru" : "tautkan produk",
@@ -290,7 +295,7 @@ export function VendorProductImport({
           );
           rows.push({
             vendorName: vendor.vendor.name,
-            vendorState: vendor.isNew ? "baru" : "sudah ada",
+            vendorState: previewVendorState(vendor),
             productName: product.seed.name,
             sku: product.seed.sku ?? "",
             productState: product.action === "create" ? "produk baru" : "tautkan produk",
@@ -333,7 +338,7 @@ export function VendorProductImport({
           for (const pack of seed.packs) {
             rows.push({
               vendorName: vendor.vendor.name,
-              vendorState: vendor.isNew ? "baru" : "sudah ada",
+              vendorState: previewVendorState(vendor),
               productName: product.seed.name,
               sku: product.seed.sku ?? "",
               productState: "tautkan produk",
@@ -354,7 +359,7 @@ export function VendorProductImport({
         for (const name of product.skippedPacks) {
           rows.push({
             vendorName: vendor.vendor.name,
-            vendorState: vendor.isNew ? "baru" : "sudah ada",
+            vendorState: previewVendorState(vendor),
             productName: product.seed.name,
             sku: product.seed.sku ?? "",
             productState: "tautkan produk",
@@ -370,7 +375,7 @@ export function VendorProductImport({
           const unitName = reason.split(" · ")[0] ?? reason;
           rows.push({
             vendorName: vendor.vendor.name,
-            vendorState: vendor.isNew ? "baru" : "sudah ada",
+            vendorState: previewVendorState(vendor),
             productName: product.seed.name,
             sku: product.seed.sku ?? "",
             productState: "tautkan produk",
@@ -400,8 +405,11 @@ export function VendorProductImport({
       // validation, so `groupVendorProductRows` still sees one vendor per line.
       const carried = carryVendorForward(normalized);
       const expanded = expandProductCodes(carried);
+      // Unknown PPN text is rejected, never silently treated as Non-PPN.
+      const invalidPpn = expanded.filter((row) => parseVendorPpn(row.ppn) === null);
+      const ppnValid = expanded.filter((row) => parseVendorPpn(row.ppn) !== null);
       // A line has to name a vendor; without it nothing can be found or created.
-      const { valid, invalid } = keepValid(expanded, ["vendorName"]);
+      const { valid, invalid } = keepValid(ppnValid, ["vendorName"]);
 
       const groups = groupVendorProductRows(valid);
 
@@ -409,8 +417,8 @@ export function VendorProductImport({
       // numbers instead of hoping the write matches.
       const [vendorRes, productRes, variantRes, unitRes, linkRes, priceRes, warehouseRes] =
         await Promise.all([
-          query<{ id: string; name: string; code: string | null }>(
-            `SELECT id, name, code FROM suppliers`
+          query<{ id: string; name: string; code: string | null; ppn_enabled: number }>(
+            `SELECT id, name, code, ppn_enabled FROM suppliers`
           ),
           query<{ id: string; sku: string | null; name: string }>(
             `SELECT id, sku, name FROM products`
@@ -468,7 +476,12 @@ export function VendorProductImport({
       const next = planVendorProductImport(
         groups,
         {
-          vendors: vendorRes.rows,
+          vendors: vendorRes.rows.map((row) => ({
+            id: row.id,
+            name: row.name,
+            code: row.code,
+            ppnEnabled: Number(row.ppn_enabled ?? 0) === 1,
+          })),
           products: productRes.rows.map((row) => ({
             ...row,
             packs: packsByProduct.get(row.id) ?? [],
@@ -499,7 +512,7 @@ export function VendorProductImport({
 
       setPlan(next);
       setLines(describe(next, variantNames));
-      setIgnoredRows(invalid.length);
+      setIgnoredRows(invalid.length + invalidPpn.length);
       setWarehouses(active);
       setWarehouseId(fallback);
       setOpen(true);
@@ -685,6 +698,9 @@ export function VendorProductImport({
         phone: vendor.vendor.phone,
         email: vendor.vendor.email,
         paymentTermsDays: vendor.vendor.paymentTermsDays,
+        // resolveOrCreateVendor returns an existing row without updating it, so
+        // this value is additive-only exactly like every other master field.
+        ppnEnabled: vendor.vendor.ppnEnabled,
       })
     );
     const wrote = emptyResult();
@@ -878,17 +894,18 @@ export function VendorProductImport({
         <PermissionGate permission="manage_variants">
           <Button
             variant="outline"
-            className="gap-2"
+            size="sm"
+            className="gap-1.5"
             onClick={() => fileInputRef.current?.click()}
           >
-            <Upload className="w-4 h-4" />
+            <Upload className="w-3.5 h-3.5" />
             Import Vendor + Produk
           </Button>
         </PermissionGate>
       </PermissionGate>
       <PermissionGate permission="export_reports">
-        <Button variant="outline" className="gap-2" onClick={() => handleExportCatalogue("xlsx")}>
-          <Download className="w-4 h-4" />
+        <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExportCatalogue("xlsx")}>
+          <Download className="w-3.5 h-3.5" />
           Ekspor Katalog
         </Button>
       </PermissionGate>

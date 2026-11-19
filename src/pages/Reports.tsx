@@ -71,7 +71,7 @@ interface ReportTypeCard {
 const reportTypes: ReportTypeCard[] = [
   {
     title: "Laporan Penjualan",
-    description: "Ringkasan penjualan per cabang dan periode",
+    description: "Ringkasan penjualan per outlet dan periode",
     icon: DollarSign,
     color: "primary",
     type: "sales",
@@ -103,7 +103,7 @@ const reportTypes: ReportTypeCard[] = [
   },
   {
     title: "Laporan Pengadaan",
-    description: "Purchase order vendor dan permintaan cabang ke pusat",
+    description: "Purchase order vendor dan permintaan outlet ke pusat",
     icon: Truck,
     color: "info",
     type: "procurement",
@@ -259,7 +259,7 @@ export default function Reports() {
             const salesData = [
                 ["Laporan Penjualan", `Periode: ${period}`],
                 [""],
-                ["Cabang", "Total Penjualan"],
+                ["Outlet", "Total Penjualan"],
                 ...salesByBranch.map(s => [s.name, s.value]),
                 [""],
                 ["Kategori", "Total Penjualan", "Persentase"],
@@ -294,7 +294,7 @@ export default function Reports() {
             const transData = transactionsRes.rows.map(t => ({
                 "Invoice": t.invoice_number,
                 "Tanggal": new Date(t.created_at).toLocaleString(),
-                "Cabang": t.branch,
+                "Outlet": t.branch,
                 "Total": Number(t.total_amount),
                 "Metode Pembayaran": t.payment_method,
                 "Kanal": t.source === "online" ? "Online" : "Kasir",
@@ -350,7 +350,7 @@ export default function Reports() {
                     "Nama": e.name,
                     "Role": e.role,
                     "Email": e.email,
-                    "Cabang": e.branch || "-",
+                    "Outlet": e.branch || "-",
                     "Status": e.status
                 }));
                 const wsEmp = XLSX.utils.json_to_sheet(empData);
@@ -425,10 +425,10 @@ export default function Reports() {
           <div className="flex gap-2">
             <Select value={branchFilter} onValueChange={setBranchFilter}>
               <SelectTrigger className="w-44">
-                <SelectValue placeholder="Cabang" />
+                <SelectValue placeholder="Outlet" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Semua Cabang</SelectItem>
+                <SelectItem value="all">Semua Outlet</SelectItem>
                 {branches.map((branch) => (
                   <SelectItem key={branch.id} value={branch.id}>
                     {branch.name}
@@ -448,8 +448,8 @@ export default function Reports() {
               </SelectContent>
             </Select>
             <PermissionGate permission="export_reports">
-              <Button variant="outline" className="gap-2" onClick={() => handleExport()}>
-                  <Download className="w-4 h-4" />
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExport()}>
+                  <Download className="w-3.5 h-3.5" />
                   Export Semua
               </Button>
             </PermissionGate>
@@ -618,12 +618,12 @@ export default function Reports() {
                 <Card className="animate-fade-in">
                 <CardHeader className="flex flex-row items-center justify-between">
                     <div>
-                    <CardTitle>Penjualan per Cabang</CardTitle>
-                    <CardDescription>Perbandingan penjualan semua cabang</CardDescription>
+                    <CardTitle>Penjualan per Outlet</CardTitle>
+                    <CardDescription>Perbandingan penjualan semua outlet</CardDescription>
                     </div>
                     <PermissionGate permission="export_reports">
-                      <Button variant="outline" className="gap-2" onClick={() => handleExport('sales')}>
-                      <Download className="w-4 h-4" />
+                      <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExport('sales')}>
+                      <Download className="w-3.5 h-3.5" />
                       Export
                       </Button>
                     </PermissionGate>

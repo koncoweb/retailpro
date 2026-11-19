@@ -773,9 +773,9 @@ export default function EmployeeReports() {
             <Input placeholder="Cari karyawan..." className="pl-10" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
           </div>
           <Select value={selectedBranch} onValueChange={setSelectedBranch}>
-            <SelectTrigger className="w-40"><SelectValue placeholder="Cabang" /></SelectTrigger>
+            <SelectTrigger className="w-40"><SelectValue placeholder="Outlet" /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">Semua Cabang</SelectItem>
+              <SelectItem value="all">Semua Outlet</SelectItem>
               {Array.from(new Set(employees.map(e => e.branch_name).filter(Boolean))).map(b => (
                  <SelectItem key={b} value={b as string}>{b}</SelectItem>
               ))}
@@ -1171,7 +1171,7 @@ export default function EmployeeReports() {
                             <SelectContent>
                                 {workplaceLocations.map((l) => (
                                     <SelectItem key={locationKey(l.type, l.id)} value={locationKey(l.type, l.id)}>
-                                        {l.name ?? l.id} ({l.type === "branch" ? "Cabang" : "Gudang"})
+                                        {l.name ?? l.id} ({l.type === "branch" ? "Outlet" : "Gudang"})
                                     </SelectItem>
                                 ))}
                             </SelectContent>

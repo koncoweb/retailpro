@@ -58,13 +58,13 @@ export const navItems: NavItem[] = [
   { title: "Dashboard", icon: LayoutDashboard, path: "/backoffice", permission: "view_analytics" },
   { title: "Chat", icon: MessagesSquare, path: "/backoffice/chat", permission: "use_chat" },
   {
-    title: "Cabang",
+    title: "Outlet",
     icon: Building2,
     children: [
-      { title: "Daftar Cabang", path: "/backoffice/branches", icon: Store, permission: "manage_branches" },
+      { title: "Daftar Outlet", path: "/backoffice/branches", icon: Store, permission: "manage_branches" },
       { title: "Gudang", path: "/backoffice/warehouses", icon: Warehouse, permission: "view_inventory" },
       {
-        title: "Pesanan Cabang",
+        title: "Pesanan Outlet",
         path: "/backoffice/branches/orders",
         icon: ClipboardList,
         permission: "view_inventory",

@@ -69,6 +69,7 @@ import {
   vendorPaymentMethodLabel,
   vendorStatusBadgeClass,
   vendorStatusLabel,
+  vendorPpnLabel,
 } from "@/lib/vendor";
 import {
   effectiveReceivedAmount,
@@ -1151,6 +1152,9 @@ export default function VendorDetail() {
                     {vendorStatusLabel(vendor.status)}
                   </Badge>
                   <Badge variant="secondary">{vendorCategoryLabel(vendor.category)}</Badge>
+                  <Badge variant={Number(vendor.ppn_enabled) === 1 ? "default" : "outline"}>
+                    {vendorPpnLabel(vendor.ppn_enabled)}
+                  </Badge>
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {vendor.code || "Tanpa kode"}
@@ -1240,6 +1244,9 @@ export default function VendorDetail() {
               </span>
             </p>
             {vendor.tax_id && <p className="text-sm text-muted-foreground">NPWP: {vendor.tax_id}</p>}
+            <p className="text-sm text-muted-foreground">
+              Status pajak pembelian: {vendorPpnLabel(vendor.ppn_enabled)}
+            </p>
           </div>
 
           <div className="bg-card rounded-xl border p-4 space-y-2">

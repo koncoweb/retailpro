@@ -146,7 +146,7 @@ export function EmployeeDetailModal({ open, onOpenChange }: EmployeeDetailModalP
                 <TableRow>
                   <TableHead>Karyawan</TableHead>
                   <TableHead>Role</TableHead>
-                  <TableHead>Cabang</TableHead>
+                  <TableHead>Outlet</TableHead>
                   <TableHead className="text-center">Status</TableHead>
                 </TableRow>
               </TableHeader>

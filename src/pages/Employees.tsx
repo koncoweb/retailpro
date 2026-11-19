@@ -588,8 +588,8 @@ export default function Employees() {
     if (!branchIds) return null;
     const names = branches.filter((b) => branchIds.includes(b.id)).map((b) => b.name);
     return names.length > 0
-      ? `Anda hanya melihat karyawan di cabang: ${names.join(", ")}.`
-      : "Cabang Anda tidak terdaftar, jadi tidak ada karyawan yang ditampilkan.";
+      ? `Anda hanya melihat karyawan di outlet: ${names.join(", ")}.`
+      : "Outlet Anda tidak terdaftar, jadi tidak ada karyawan yang ditampilkan.";
   }, [branchIds, branches]);
 
   const handleExport = () => {
@@ -602,7 +602,7 @@ export default function Employees() {
       "Nama": e.name,
       "Email": e.email,
       "Role": roleLabel(e.role),
-      "Cabang": e.branch_name || "-",
+      "Outlet": e.branch_name || "-",
       "Status": e.is_active ? "Aktif" : "Nonaktif",
       "Gaji Pokok": e.base_salary,
       "Tanggal Bergabung": new Date(e.created_at).toLocaleDateString('id-ID')
@@ -760,7 +760,7 @@ export default function Employees() {
           <div>
             <h1 className="text-2xl lg:text-3xl font-bold">Data Karyawan</h1>
             <p className="text-muted-foreground mt-1">
-              Kelola karyawan dan penempatan cabang
+              Kelola karyawan dan penempatan outlet
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -822,7 +822,7 @@ export default function Employees() {
                 <Building2 className="w-5 h-5 text-info" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Total Cabang</p>
+                <p className="text-sm text-muted-foreground">Total Outlet</p>
                 <p className="text-xl font-bold">{assignableBranches.length}</p>
               </div>
             </div>
@@ -855,10 +855,10 @@ export default function Employees() {
           </Select>
           <Select value={selectedBranchFilter} onValueChange={setSelectedBranchFilter}>
             <SelectTrigger className="h-11 w-full sm:w-44">
-              <SelectValue placeholder="Cabang" />
+              <SelectValue placeholder="Outlet" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="Semua">Semua Cabang</SelectItem>
+              <SelectItem value="Semua">Semua Outlet</SelectItem>
               <SelectItem value="Pusat">Pusat (No Branch)</SelectItem>
               {assignableBranches.map((branch) => (
                 <SelectItem key={branch.id} value={branch.name}>
@@ -884,7 +884,7 @@ export default function Employees() {
           <div className="rounded-xl border bg-card p-8 text-center">
             <p className="font-medium">Tidak ada karyawan yang cocok</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Ubah kata kunci atau filter role/cabang, atau tambahkan karyawan baru.
+              Ubah kata kunci atau filter role/outlet, atau tambahkan karyawan baru.
             </p>
           </div>
         ) : (
@@ -896,7 +896,7 @@ export default function Employees() {
                   <TableRow>
                     <TableHead>Karyawan</TableHead>
                     <TableHead>Role</TableHead>
-                    <TableHead>Cabang</TableHead>
+                    <TableHead>Outlet</TableHead>
                     <TableHead className="text-center">Status</TableHead>
                     <TableHead className="w-36 text-right">Aksi</TableHead>
                   </TableRow>
@@ -1038,16 +1038,16 @@ export default function Employees() {
                     </Select>
                 </div>
                 <div className="grid gap-2">
-                    <Label>Cabang</Label>
+                    <Label>Outlet</Label>
                     {/* The edit form has always offered "Tanpa Cabang"; leaving it
                         out here meant a head-office hire silently ended up with no
                         branch and no way to say so on purpose. */}
                     <Select value={newEmpBranch} onValueChange={setNewEmpBranch}>
                         <SelectTrigger className="h-11">
-                        <SelectValue placeholder="Pilih Cabang" />
+                        <SelectValue placeholder="Pilih Outlet" />
                         </SelectTrigger>
                         <SelectContent>
-                        <SelectItem value="no_branch">Tanpa Cabang (Pusat)</SelectItem>
+                        <SelectItem value="no_branch">Tanpa Outlet (Pusat)</SelectItem>
                         {assignableBranches.map((b) => (
                             <SelectItem key={b.id} value={b.id}>
                             {b.name}
@@ -1125,13 +1125,13 @@ export default function Employees() {
                         </Select>
                     </div>
                     <div className="grid gap-2">
-                        <Label>Cabang</Label>
+                        <Label>Outlet</Label>
                         <Select value={editBranch} onValueChange={setEditBranch}>
                             <SelectTrigger className="h-11">
-                            <SelectValue placeholder="Pilih Cabang" />
+                            <SelectValue placeholder="Pilih Outlet" />
                             </SelectTrigger>
                             <SelectContent>
-                                <SelectItem value="no_branch">Tanpa Cabang (Pusat)</SelectItem>
+                                <SelectItem value="no_branch">Tanpa Outlet (Pusat)</SelectItem>
                                 {assignableBranches.map((b) => (
                                     <SelectItem key={b.id} value={b.id}>
                                     {b.name}

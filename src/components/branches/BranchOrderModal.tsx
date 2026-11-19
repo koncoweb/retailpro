@@ -268,7 +268,7 @@ export function BranchOrderModal({
 
   const submitDraft = (submit: boolean) => {
     if (!branchId) {
-      toast.error("Pilih cabang pemesan");
+      toast.error("Pilih outlet pemesan");
       return;
     }
     if (rows.length === 0) {
@@ -297,7 +297,7 @@ export function BranchOrderModal({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ClipboardList className="w-5 h-5" />
-            Buat Pesanan Cabang
+            Buat Pesanan Outlet
           </DialogTitle>
           <DialogDescription>
             Pesanan dikirim ke gudang pusat; stok baru berpindah saat gudang mengirimnya.
@@ -307,14 +307,14 @@ export function BranchOrderModal({
         <div className="space-y-4 py-2">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
-              <Label>Cabang Pemesan *</Label>
+              <Label>Outlet Pemesan *</Label>
               <Select
                 value={branchId}
                 onValueChange={setBranchId}
                 disabled={Boolean(lockedBranchId)}
               >
                 <SelectTrigger className="mt-1">
-                  <SelectValue placeholder="Pilih cabang" />
+                  <SelectValue placeholder="Pilih outlet" />
                 </SelectTrigger>
                 <SelectContent>
                   {branches.map((branch) => (
@@ -326,7 +326,7 @@ export function BranchOrderModal({
               </Select>
               {lockedBranchId && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  Terkunci ke cabang Anda.
+                  Terkunci ke outlet Anda.
                 </p>
               )}
             </div>

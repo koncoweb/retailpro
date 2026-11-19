@@ -122,7 +122,7 @@ export default function Dashboard() {
     const names = branchIds
       .map((id) => branches.find((b) => b.id === id)?.name ?? id)
       .join(", ");
-    return `Anda hanya melihat cabang: ${names}`;
+    return `Anda hanya melihat outlet: ${names}`;
   }, [restricted, branchIds, branches]);
 
   useEffect(() => {
@@ -289,7 +289,7 @@ export default function Dashboard() {
               <SelectContent>
                 {/* A scoped role never gets the aggregate it is not allowed to see. */}
                 {!restricted && (
-                  <SelectItem value={ALL_BRANCHES}>Semua Cabang</SelectItem>
+                  <SelectItem value={ALL_BRANCHES}>Semua Outlet</SelectItem>
                 )}
                 {visibleBranches.map((branch) => (
                   <SelectItem key={branch.id} value={branch.id}>
@@ -319,8 +319,8 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
           {[
             { label: "PO menunggu persetujuan", value: pending.poApproval, to: "/backoffice/inventory/po", icon: ClipboardList },
-            { label: "Permintaan cabang menunggu", value: pending.requestApproval, to: "/backoffice/branches/orders", icon: ClipboardList },
-            { label: "Siap dikirim ke cabang", value: pending.requestToShip, to: "/backoffice/branches/orders", icon: Truck },
+            { label: "Permintaan outlet menunggu", value: pending.requestApproval, to: "/backoffice/branches/orders", icon: ClipboardList },
+            { label: "Siap dikirim ke outlet", value: pending.requestToShip, to: "/backoffice/branches/orders", icon: Truck },
           ].map((item) => (
             <button
               key={item.label}

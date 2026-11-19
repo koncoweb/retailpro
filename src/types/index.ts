@@ -76,6 +76,7 @@ export interface ProductUnit {
 export interface ProductVariant {
   id: string;
   sku: string;
+  barcode?: string | null;
   /** Ready to render, e.g. "Susu 250ml"; resolved from the product's groups. */
   label: string;
   /** Selling price of this variant's base unit. */

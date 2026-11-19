@@ -255,7 +255,7 @@ export default function ProcurementReport() {
       const requestSheet = XLSX.utils.json_to_sheet(
         requestRes.rows.map((item) => ({
           "No. Pesanan": item.request_number,
-          Cabang: item.branch,
+          Outlet: item.branch,
           Status: STOCK_REQUEST_STATUS_LABEL[String(item.status) as StockRequestStatus] ?? item.status,
           Sumber: item.source,
           Dibuat: item.created_at,
@@ -270,7 +270,7 @@ export default function ProcurementReport() {
         { wch: 22 },
         { wch: 22 },
       ];
-      XLSX.utils.book_append_sheet(book, requestSheet, "Pesanan Cabang");
+      XLSX.utils.book_append_sheet(book, requestSheet, "Pesanan Outlet");
 
       XLSX.writeFile(book, `Laporan_Pengadaan_${new Date().toISOString().split("T")[0]}.xlsx`);
       toast.success("Berhasil export laporan pengadaan");
@@ -291,7 +291,7 @@ export default function ProcurementReport() {
       hint: "disetujui sampai diterima",
     },
     {
-      label: "Permintaan cabang",
+      label: "Permintaan outlet",
       value: String(totals.requestCount),
       hint:
         totals.cycleDays === null
@@ -313,7 +313,7 @@ export default function ProcurementReport() {
             <div>
               <h1 className="text-xl md:text-2xl lg:text-3xl font-bold">Laporan Pengadaan</h1>
               <p className="text-muted-foreground text-sm md:text-base mt-1">
-                Purchase order ke vendor dan permintaan cabang ke gudang pusat.
+                Purchase order ke vendor dan permintaan outlet ke gudang pusat.
               </p>
             </div>
           </div>
@@ -335,7 +335,7 @@ export default function ProcurementReport() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Semua Cabang</SelectItem>
+                <SelectItem value="all">Semua Outlet</SelectItem>
                 {branches.map((branch) => (
                   <SelectItem key={branch.id} value={branch.id}>
                     {branch.name}
@@ -414,7 +414,7 @@ export default function ProcurementReport() {
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2 text-base">
                     <FileSpreadsheet className="w-4 h-4" />
-                    Permintaan cabang per cabang
+                    Permintaan outlet per outlet
                   </CardTitle>
                   <CardDescription>Alur terima dari gudang pusat pada periode ini</CardDescription>
                 </CardHeader>
@@ -423,7 +423,7 @@ export default function ProcurementReport() {
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Cabang</TableHead>
+                          <TableHead>Outlet</TableHead>
                           <TableHead className="text-right">Total</TableHead>
                           <TableHead className="text-right">Menunggu</TableHead>
                           <TableHead className="text-right">Dikirim</TableHead>

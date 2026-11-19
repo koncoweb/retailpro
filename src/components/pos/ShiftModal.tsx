@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,17 +9,8 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Clock, DollarSign, Banknote, CreditCard, Wallet, Check, QrCode } from "lucide-react";
+import { Clock, DollarSign, Banknote, Check, Receipt } from "lucide-react";
 import { toast } from "sonner";
-import { Transaction } from "@/types";
 
 export interface ShiftActionData {
   pettyCash?: number;
@@ -28,18 +19,24 @@ export interface ShiftActionData {
   actualCash?: number;
 }
 
+/** What the closing window renders, all read from the shift's persisted rows. */
+export interface ShiftReport {
+  startTime: string;
+  initialCash: number;
+  cashSales: number;
+  totalSales: number;
+  txCount: number;
+  feeTotal: number;
+  voidCount: number;
+  voidAmount: number;
+}
+
 interface ShiftModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   mode: "open" | "close";
-  shiftData?: ShiftData;
+  report?: ShiftReport;
   onShiftAction: (data: ShiftActionData) => void;
-}
-
-interface ShiftData {
-  openTime: Date;
-  pettyCash: number;
-  transactions: Transaction[];
 }
 
 function formatCurrency(value: number) {
@@ -54,7 +51,7 @@ export function ShiftModal({
   open,
   onOpenChange,
   mode,
-  shiftData,
+  report,
   onShiftAction,
 }: ShiftModalProps) {
   const [pettyCash, setPettyCash] = useState("");
@@ -92,26 +89,9 @@ export function ShiftModal({
     setActualCash("");
   };
 
-  // Calculate shift summary using useMemo for performance
-  const summary = useMemo(() => {
-    const defaultSummary = { cash: 0, card: 0, ewallet: 0, qris: 0, total: 0 };
-    if (!shiftData?.transactions) return defaultSummary;
-
-    return shiftData.transactions.reduce((acc, t) => {
-      const amount = t.total_amount;
-      acc.total += amount;
-      
-      switch (t.payment_method) {
-        case 'cash': acc.cash += amount; break;
-        case 'card': acc.card += amount; break;
-        case 'ewallet': acc.ewallet += amount; break;
-        case 'qris': acc.qris += amount; break;
-      }
-      return acc;
-    }, { ...defaultSummary });
-  }, [shiftData?.transactions]);
-
-  const expectedCash = (shiftData?.pettyCash || 0) + summary.cash;
+  // Expected drawer = opening cash + what was actually taken in cash. Non-cash
+  // tenders never touch the drawer, so only cash sales reconcile against it.
+  const expectedCash = (report?.initialCash ?? 0) + (report?.cashSales ?? 0);
 
   if (mode === "open") {
     return (
@@ -189,96 +169,81 @@ export function ShiftModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[95vw] sm:max-w-[600px]">
+      <DialogContent className="max-w-[95vw] sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Clock className="w-5 h-5 text-primary" />
-            Tutup Shift - Laporan Penjualan
+            Tutup Shift - Laporan Akhir
           </DialogTitle>
+          <DialogDescription>
+            Periksa laporan penjualan dan rekonsiliasi kas sebelum menutup shift.
+          </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-4">
-          {/* Shift Info */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="p-4 bg-muted/50 rounded-lg">
-              <p className="text-sm text-muted-foreground">Waktu Buka</p>
-              <p className="font-semibold">
-                {shiftData?.openTime.toLocaleString("id-ID", {
-                  timeStyle: "short",
-                  dateStyle: "short",
-                }) || "-"}
+        <div className="space-y-4 py-2">
+          {/* Shift info */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="p-3 bg-muted/50 rounded-lg">
+              <p className="text-xs text-muted-foreground">Waktu Buka</p>
+              <p className="font-semibold text-sm">
+                {report?.startTime
+                  ? new Date(report.startTime).toLocaleString("id-ID", {
+                      timeStyle: "short",
+                      dateStyle: "short",
+                    })
+                  : "-"}
               </p>
             </div>
-            <div className="p-4 bg-muted/50 rounded-lg">
-              <p className="text-sm text-muted-foreground">Petty Cash</p>
-              <p className="font-semibold">{formatCurrency(shiftData?.pettyCash || 0)}</p>
+            <div className="p-3 bg-muted/50 rounded-lg">
+              <p className="text-xs text-muted-foreground">Jumlah Transaksi</p>
+              <p className="font-semibold text-sm">{report?.txCount ?? 0} bon</p>
             </div>
           </div>
 
-          {/* Sales Summary */}
-          <div className="bg-card rounded-lg border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Metode Pembayaran</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                <TableRow>
-                  <TableCell className="flex items-center gap-2">
-                    <Banknote className="w-4 h-4 text-success" />
-                    Tunai
-                  </TableCell>
-                  <TableCell className="text-right font-medium">
-                    {formatCurrency(summary.cash)}
-                  </TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="flex items-center gap-2">
-                    <CreditCard className="w-4 h-4 text-info" />
-                    Kartu (Debit/Kredit)
-                  </TableCell>
-                  <TableCell className="text-right font-medium">
-                    {formatCurrency(summary.card)}
-                  </TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="flex items-center gap-2">
-                    <Wallet className="w-4 h-4 text-warning" />
-                    E-Wallet
-                  </TableCell>
-                  <TableCell className="text-right font-medium">
-                    {formatCurrency(summary.ewallet)}
-                  </TableCell>
-                </TableRow>
-                <TableRow>
-                  <TableCell className="flex items-center gap-2">
-                    <QrCode className="w-4 h-4 text-purple-500" />
-                    QRIS
-                  </TableCell>
-                  <TableCell className="text-right font-medium">
-                    {formatCurrency(summary.qris)}
-                  </TableCell>
-                </TableRow>
-                <TableRow className="font-bold bg-muted/50">
-                  <TableCell>Total Penjualan</TableCell>
-                  <TableCell className="text-right text-primary">
-                    {formatCurrency(summary.total)}
-                  </TableCell>
-                </TableRow>
-              </TableBody>
-            </Table>
+          {/* Sales report — one combined total, not split by payment method. */}
+          <div className="p-4 rounded-lg border space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Receipt className="w-4 h-4 text-primary" />
+              Laporan Penjualan
+            </div>
+            <div className="flex justify-between text-lg font-bold">
+              <span>Total Penjualan</span>
+              <span className="text-primary">{formatCurrency(report?.totalSales ?? 0)}</span>
+            </div>
+            {(report?.feeTotal ?? 0) > 0 && (
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>Biaya merchant</span>
+                <span>{formatCurrency(report?.feeTotal ?? 0)}</span>
+              </div>
+            )}
+            {(report?.voidCount ?? 0) > 0 && (
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>Bon di-void ({report?.voidCount} bon)</span>
+                <span>{formatCurrency(report?.voidAmount ?? 0)}</span>
+              </div>
+            )}
           </div>
 
-          {/* Cash Verification */}
+          {/* Cash reconciliation */}
           <div className="p-4 bg-primary/10 rounded-lg space-y-3">
-            <div className="flex justify-between">
-              <span>Uang Tunai yang Diharapkan</span>
-              <span className="font-bold">{formatCurrency(expectedCash)}</span>
+            <div className="flex items-center gap-2 text-sm font-semibold">
+              <Banknote className="w-4 h-4 text-success" />
+              Rekonsiliasi Kas
+            </div>
+            <div className="flex justify-between text-sm">
+              <span>Modal Awal</span>
+              <span>{formatCurrency(report?.initialCash ?? 0)}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span>Penjualan Tunai</span>
+              <span>{formatCurrency(report?.cashSales ?? 0)}</span>
+            </div>
+            <div className="flex justify-between text-sm font-medium pt-1 border-t">
+              <span>Saldo Seharusnya</span>
+              <span>{formatCurrency(expectedCash)}</span>
             </div>
             <div className="space-y-2">
-              <Label>Uang Tunai Aktual di Laci</Label>
+              <Label>Uang Tunai Fisik di Laci</Label>
               <Input
                 type="number"
                 inputMode="numeric"
@@ -287,29 +252,24 @@ export function ShiftModal({
                 onChange={(e) => setActualCash(e.target.value)}
               />
             </div>
-            {actualCash && (
+            {actualCash !== "" && (
               <div
-                className={`flex justify-between ${
-                  parseFloat(actualCash) === expectedCash
-                    ? "text-success"
-                    : "text-destructive"
+                className={`flex justify-between text-sm font-bold ${
+                  parseFloat(actualCash) === expectedCash ? "text-success" : "text-destructive"
                 }`}
               >
                 <span>Selisih</span>
-                <span className="font-bold">
-                  {formatCurrency((parseFloat(actualCash) || 0) - expectedCash)}
-                </span>
+                <span>{formatCurrency((parseFloat(actualCash) || 0) - expectedCash)}</span>
               </div>
             )}
           </div>
 
-          {/* Transaction Count */}
-          <div className="text-center text-muted-foreground">
-            Total {shiftData?.transactions.length || 0} transaksi hari ini
-          </div>
+          <p className="text-xs text-muted-foreground">
+            Laporan ini otomatis tercetak sebagai Z-report saat shift ditutup.
+          </p>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 pt-2">
           <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
             Batal
           </Button>

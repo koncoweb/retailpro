@@ -235,7 +235,7 @@ export default function FaceEnrollment() {
             <TableHeader>
               <TableRow>
                 <TableHead>Karyawan</TableHead>
-                <TableHead>Cabang</TableHead>
+                <TableHead>Outlet</TableHead>
                 <TableHead className="text-center">Status Wajah</TableHead>
                 <TableHead className="text-right">Aksi</TableHead>
               </TableRow>

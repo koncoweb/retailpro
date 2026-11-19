@@ -66,7 +66,7 @@ export function buildShiftZReport(input: ZReportInput, cfg: ReceiptConfig): Prin
   const body: PrintDocLine[] = [
     { text: `No Shift : ${input.shiftId.slice(0, 8)}` },
     { text: `Kasir    : ${input.cashierName ?? '-'}` },
-    { text: `Cabang   : ${input.branchName ?? '-'}` },
+    { text: `Outlet   : ${input.branchName ?? '-'}` },
     dividerLine(columns),
     { text: `Mulai    : ${stampDate(input.startTime)}` },
     {

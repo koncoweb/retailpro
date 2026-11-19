@@ -165,7 +165,7 @@ export default function Branches() {
       setBranches(mappedBranches);
     } catch (error) {
       console.error("Failed to fetch branches:", error);
-      toast.error("Gagal mengambil data cabang");
+      toast.error("Gagal mengambil data outlet");
     } finally {
       setIsLoading(false);
     }
@@ -198,20 +198,20 @@ export default function Branches() {
         return b;
       }));
       
-      toast.success(`Cabang ${branch.name} ${newStatus === "active" ? "diaktifkan" : "dinonaktifkan"}`);
+      toast.success(`Outlet ${branch.name} ${newStatus === "active" ? "diaktifkan" : "dinonaktifkan"}`);
     } catch (error) {
-      toast.error("Gagal mengubah status cabang");
+      toast.error("Gagal mengubah status outlet");
     }
   };
 
   const handleExport = () => {
     if (branches.length === 0) {
-      toast.error("Tidak ada data cabang untuk diexport");
+      toast.error("Tidak ada data outlet untuk diexport");
       return;
     }
 
     const exportData = branches.map(b => ({
-      "Nama Cabang": b.name,
+      "Nama Outlet": b.name,
       "Kode": b.code,
       "Alamat": b.address,
       "Telepon": b.phone,
@@ -226,7 +226,7 @@ export default function Branches() {
 
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Daftar Cabang");
+    XLSX.utils.book_append_sheet(wb, ws, "Daftar Outlet");
 
     const wscols = [
       { wch: 25 }, // Nama
@@ -243,13 +243,13 @@ export default function Branches() {
     ];
     ws['!cols'] = wscols;
 
-    XLSX.writeFile(wb, `Daftar_Cabang_${new Date().toISOString().split('T')[0]}.xlsx`);
-    toast.success("Berhasil export data cabang");
+    XLSX.writeFile(wb, `Daftar_Outlet_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data outlet");
   };
 
   const handleAddBranch = async () => {
     if (!formData.name || !formData.code) {
-      toast.error("Nama dan kode cabang wajib diisi");
+      toast.error("Nama dan kode outlet wajib diisi");
       return;
     }
 
@@ -355,11 +355,11 @@ export default function Branches() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } catch (authErr: any) {
            console.error("Manager creation failed:", authErr);
-           toast.error(`Cabang dibuat, tapi gagal membuat user manager: ${authErr.message}`);
+           toast.error(`Outlet dibuat, tapi gagal membuat user manager: ${authErr.message}`);
         }
       }
 
-      toast.success("Cabang baru berhasil ditambahkan");
+      toast.success("Outlet baru berhasil ditambahkan");
       setIsAddDialogOpen(false);
       setFormData({ 
         name: "", code: "", address: "", phone: "", email: "", 
@@ -374,7 +374,7 @@ export default function Branches() {
       if (error.message?.includes('UNIQUE constraint failed') || error.message?.includes('users_email_idx') || error.code === '23505') {
         toast.error(`Email ${formData.managerEmail} sudah terdaftar. Gunakan email lain.`);
       } else {
-        toast.error("Gagal menambahkan cabang: " + (error.message || "Unknown error"));
+        toast.error("Gagal menambahkan outlet: " + (error.message || "Unknown error"));
       }
     }
   };
@@ -502,7 +502,7 @@ export default function Branches() {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const patchPayload: any = await patch.json().catch(() => ({}));
             if (!patch.ok) {
-              throw new Error(patchPayload?.message || "Gagal menugaskan manager ke cabang ini");
+              throw new Error(patchPayload?.message || "Gagal menugaskan manager ke outlet ini");
             }
           }
 
@@ -514,11 +514,11 @@ export default function Branches() {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } catch (authErr: any) {
            console.error("Manager creation failed:", authErr);
-           toast.error(`Cabang diupdate, tapi gagal set user manager: ${authErr.message}`);
+           toast.error(`Outlet diupdate, tapi gagal set user manager: ${authErr.message}`);
         }
       }
 
-      toast.success("Cabang berhasil diupdate");
+      toast.success("Outlet berhasil diupdate");
       setEditingBranch(null);
       setFormData({ 
         name: "", code: "", address: "", phone: "", email: "", 
@@ -530,7 +530,7 @@ export default function Branches() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       console.error(error);
-      toast.error("Gagal update cabang: " + (error.message || "Unknown error"));
+      toast.error("Gagal update outlet: " + (error.message || "Unknown error"));
     }
   };
 
@@ -615,8 +615,8 @@ export default function Branches() {
       <div className="space-y-4 md:space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-xl md:text-2xl lg:text-3xl font-bold">Manajemen Cabang</h1>
-            <p className="text-muted-foreground text-sm md:text-base mt-1">Kelola semua cabang dan pantau performanya</p>
+            <h1 className="text-xl md:text-2xl lg:text-3xl font-bold">Manajemen Outlet</h1>
+            <p className="text-muted-foreground text-sm md:text-base mt-1">Kelola semua outlet dan pantau performanya</p>
           </div>
           <div className="flex gap-2">
             <PermissionGate permission="export_reports">
@@ -627,15 +627,15 @@ export default function Branches() {
             </PermissionGate>
             <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
               <DialogTrigger asChild>
-                <Button className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" />Tambah Cabang</Button>
+                <Button className="gap-2 w-full sm:w-auto"><Plus className="w-4 h-4" />Tambah Outlet</Button>
               </DialogTrigger>
               <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
-              <DialogHeader><DialogTitle>Tambah Cabang Baru</DialogTitle></DialogHeader>
+              <DialogHeader><DialogTitle>Tambah Outlet Baru</DialogTitle></DialogHeader>
               <div className="grid gap-4 py-4">
                 <div className="grid gap-2">
-                  <Label>Nama Cabang *</Label>
+                  <Label>Nama Outlet *</Label>
                   <Input 
-                    placeholder="Cabang Yogyakarta" 
+                    placeholder="Outlet Yogyakarta"
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   />
@@ -667,7 +667,7 @@ export default function Branches() {
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label>Email Cabang</Label>
+                  <Label>Email Outlet</Label>
                   <Input 
                     type="email" 
                     placeholder="yogyakarta@retailpro.id" 
@@ -687,7 +687,7 @@ export default function Branches() {
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid gap-2">
-                    <Label>Jenis Cabang</Label>
+                    <Label>Jenis Outlet</Label>
                     <Select
                       value={formData.type}
                       onValueChange={(value) => setFormData({ ...formData, type: value as BranchType })}
@@ -715,7 +715,7 @@ export default function Branches() {
                   </div>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Gudang cabang beserta pemetaannya dibuat otomatis dan bisa diubah di menu Gudang.
+                  Gudang outlet beserta pemetaannya dibuat otomatis dan bisa diubah di menu Gudang.
                 </p>
 
                 {geoSection}
@@ -727,7 +727,7 @@ export default function Branches() {
                       checked={formData.createManagerUser}
                       onCheckedChange={(checked) => setFormData({ ...formData, createManagerUser: checked as boolean })}
                     />
-                    <Label htmlFor="createManager" className="font-medium">Buat User untuk Manager Cabang?</Label>
+                    <Label htmlFor="createManager" className="font-medium">Buat User untuk Manager Outlet?</Label>
                   </div>
                   
                   {formData.createManagerUser && (
@@ -738,7 +738,7 @@ export default function Branches() {
                         value={formData.managerEmail}
                         onChange={(e) => setFormData({ ...formData, managerEmail: e.target.value })}
                       />
-                      <p className="text-xs text-muted-foreground">User akan dibuat dengan role 'store_manager' dan otomatis ditugaskan ke cabang ini.</p>
+                      <p className="text-xs text-muted-foreground">User akan dibuat dengan role 'store_manager' dan otomatis ditugaskan ke outlet ini.</p>
                     </div>
                   )}
                 </div>
@@ -755,12 +755,12 @@ export default function Branches() {
         {/* Edit Dialog */}
         <Dialog open={!!editingBranch} onOpenChange={(open) => !open && setEditingBranch(null)}>
           <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
-            <DialogHeader><DialogTitle>Edit Cabang</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>Edit Outlet</DialogTitle></DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
-                <Label>Nama Cabang *</Label>
+                <Label>Nama Outlet *</Label>
                 <Input 
-                  placeholder="Cabang Yogyakarta" 
+                  placeholder="Outlet Yogyakarta"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 />
@@ -792,7 +792,7 @@ export default function Branches() {
                 />
               </div>
               <div className="grid gap-2">
-                <Label>Email Cabang</Label>
+                <Label>Email Outlet</Label>
                 <Input 
                   type="email" 
                   placeholder="yogyakarta@retailpro.id" 
@@ -812,7 +812,7 @@ export default function Branches() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label>Jenis Cabang</Label>
+                  <Label>Jenis Outlet</Label>
                   <Select
                     value={formData.type}
                     onValueChange={(value) => setFormData({ ...formData, type: value as BranchType })}
@@ -881,7 +881,7 @@ export default function Branches() {
                 <Building2 className="w-4 h-4 md:w-5 md:h-5 text-primary" />
               </div>
               <div>
-                <p className="text-xs md:text-sm text-muted-foreground">Total Cabang</p>
+                <p className="text-xs md:text-sm text-muted-foreground">Total Outlet</p>
                 <p className="text-xl md:text-2xl font-bold">{branches.length}</p>
                 <p className="text-xs text-success">{activeBranches} aktif</p>
               </div>
@@ -926,7 +926,7 @@ export default function Branches() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Cabang</TableHead>
+                <TableHead>Outlet</TableHead>
                 <TableHead className="hidden md:table-cell">Manager</TableHead>
                 <TableHead className="text-center">Karyawan</TableHead>
                 <TableHead className="text-center hidden sm:table-cell">Produk</TableHead>
@@ -939,7 +939,7 @@ export default function Branches() {
               {branches.length === 0 && !isLoading && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                    Belum ada data cabang. Silakan tambah cabang baru.
+                    Belum ada data outlet. Silakan tambah outlet baru.
                   </TableCell>
                 </TableRow>
               )}

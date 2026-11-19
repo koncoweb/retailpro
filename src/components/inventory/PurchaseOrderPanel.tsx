@@ -62,6 +62,10 @@ import {
   isoToday,
   nextDocumentNumber,
   normalizePurchaseOrderStatus,
+  normalizePpnRate,
+  procurementAmounts,
+  vendorPpnRate,
+  lineSubtotal,
   OPEN_PO_STATUSES,
   PO_ACTION_LABEL,
   PO_STATUS_LABEL,
@@ -69,6 +73,7 @@ import {
   PURCHASE_ORDER_STATUSES,
   type PurchaseOrderAction,
   type PurchaseOrderStatus,
+  type ReceiptAmountContext,
 } from "@/lib/procurement";
 import { receivePurchaseOrder } from "@/lib/goods-receipt";
 import {
@@ -121,7 +126,8 @@ const PO_ACTOR_JOINS = `
 
 const PO_LIST_SQL = `
   SELECT po.id, po.po_number, po.status, po.supplier_id, po.supplier_name, po.branch_id,
-         po.warehouse_id, po.total_amount, po.expected_date, po.created_at, po.received_at,
+         po.warehouse_id, po.subtotal_amount, po.discount_type, po.discount_value, po.discount_amount, po.ppn_rate, po.ppn_amount, po.total_amount,
+         po.expected_date, po.created_at, po.received_at,
          po.notes, po.payment_terms_days, po.created_by, po.submitted_at, po.approved_at,
          po.rejection_reason, po.cancel_reason,${PO_ACTOR_COLUMNS}
          COALESCE((SELECT SUM(gr.total_amount) FROM goods_receipts gr
@@ -134,7 +140,8 @@ const PO_LIST_SQL = `
 /** The same projection for one order, used by the detail sheet. */
 const PO_HEADER_SQL = `
   SELECT po.id, po.po_number, po.status, po.supplier_id, po.supplier_name, po.branch_id,
-         po.warehouse_id, po.total_amount, po.expected_date, po.created_at, po.received_at,
+         po.warehouse_id, po.subtotal_amount, po.discount_type, po.discount_value, po.discount_amount, po.ppn_rate, po.ppn_amount, po.total_amount,
+         po.expected_date, po.created_at, po.received_at,
          po.notes, po.payment_terms_days, po.created_by, po.submitted_at, po.approved_at,
          po.rejection_reason, po.cancel_reason,${PO_ACTOR_COLUMNS}
          COALESCE((SELECT SUM(gr.total_amount) FROM goods_receipts gr
@@ -158,7 +165,8 @@ const PO_LINES_SQL = `
 `;
 
 const PO_RECEIPTS_SQL = `
-  SELECT gr.id, gr.grn_number, gr.received_at, gr.total_amount, gr.supplier_document,
+  SELECT gr.id, gr.grn_number, gr.received_at, gr.subtotal_amount, gr.ppn_rate,
+         gr.ppn_amount, gr.discount_amount, gr.total_amount, gr.supplier_document,
          ru.name AS received_by_name,
          (SELECT COUNT(*) FROM goods_receipt_items i WHERE i.goods_receipt_id = gr.id) AS line_count
     FROM goods_receipts gr
@@ -172,7 +180,11 @@ const RECEIPT_LINES_SQL = `
          COALESCE(p.name, poi.product_id) AS product_name, COALESCE(p.sku, '') AS sku,
          poi.quantity AS ordered, COALESCE(poi.quantity_received, 0) AS already_received,
          COALESCE(poi.unit_name, 'Pcs') AS unit_name, poi.conversion_factor,
-         poi.unit_cost
+         poi.unit_cost,
+         COALESCE((SELECT SUM(i.quantity * i.unit_cost) FROM goods_receipt_items i
+                    WHERE i.purchase_order_item_id = poi.id), 0) AS previous_value,
+         COALESCE((SELECT SUM(i.subtotal) FROM goods_receipt_items i
+                    WHERE i.purchase_order_item_id = poi.id), 0) AS previous_subtotal
     FROM purchase_order_items poi
     LEFT JOIN products p ON p.id = poi.product_id
    WHERE poi.purchase_order_id = $1
@@ -186,6 +198,8 @@ interface ReceiptLineRow {
   sku: string;
   ordered: number;
   already_received: number;
+  previous_value: number;
+  previous_subtotal: number;
   unit_name: string;
   conversion_factor: number;
   unit_cost: number;
@@ -246,6 +260,8 @@ export function PurchaseOrderPanel({
     lines: ReceiptLineSource[];
     /** FEFO makes an expiry date mandatory; read once, on open. */
     requireExpiry: boolean;
+    ppnRate: 0 | 11;
+    amountContext: Omit<ReceiptAmountContext, "cumulativeOrderedValue" | "finalReceipt">;
   } | null>(null);
 
   const [detailOpen, setDetailOpen] = useState(false);
@@ -277,6 +293,9 @@ export function PurchaseOrderPanel({
         res.rows.map((row) => ({
           ...row,
           status: normalizePurchaseOrderStatus(row.status),
+          subtotal_amount: Number(row.subtotal_amount),
+          ppn_rate: normalizePpnRate(row.ppn_rate),
+          ppn_amount: Number(row.ppn_amount),
           total_amount: Number(row.total_amount),
           received_amount: Number(row.received_amount),
           receipt_count: Number(row.receipt_count),
@@ -304,6 +323,9 @@ export function PurchaseOrderPanel({
     return {
       ...rawHeader,
       status: normalizePurchaseOrderStatus(rawHeader.status),
+      subtotal_amount: Number(rawHeader.subtotal_amount),
+      ppn_rate: normalizePpnRate(rawHeader.ppn_rate),
+      ppn_amount: Number(rawHeader.ppn_amount),
       total_amount: Number(rawHeader.total_amount),
       received_amount: Number(rawHeader.received_amount),
       receipt_count: Number(rawHeader.receipt_count),
@@ -317,6 +339,9 @@ export function PurchaseOrderPanel({
       })),
       receipts: (receiptsRes.rows as unknown as PurchaseOrderReceipt[]).map((receipt) => ({
         ...receipt,
+        subtotal_amount: Number(receipt.subtotal_amount),
+        ppn_rate: normalizePpnRate(receipt.ppn_rate),
+        ppn_amount: Number(receipt.ppn_amount),
         total_amount: Number(receipt.total_amount),
         line_count: Number(receipt.line_count),
       })),
@@ -454,18 +479,40 @@ export function PurchaseOrderPanel({
     const timestamp = nowIso();
 
     await runTransaction(async (tx) => {
-      // Guard the transition inside the transaction: a second tab may have
-      // submitted the same draft a moment earlier.
+      // Guard and tax snapshot are read inside the transaction: a second tab may
+      // have submitted the draft, while a later vendor edit must not retax it.
+      const currentVendorRate = async () => {
+        const selected = await tx.query<{ ppn_enabled: number }>(
+          `SELECT ppn_enabled FROM suppliers WHERE id = $1`,
+          [draft.supplierId]
+        );
+        if (!selected.rows[0]) throw new Error("Vendor tidak ditemukan. Muat ulang halaman.");
+        return vendorPpnRate(selected.rows[0].ppn_enabled);
+      };
+
+      let ppnRate = vendorPpnRate(null);
       if (orderId) {
-        const guarded = await tx.query<{ status: string }>(
-          `SELECT status FROM purchase_orders WHERE id = $1`,
+        const guarded = await tx.query<{ status: string; supplier_id: string | null; ppn_rate: number }>(
+          `SELECT status, supplier_id, ppn_rate FROM purchase_orders WHERE id = $1`,
           [orderId]
         );
-        if (guarded.rows[0]?.status !== "draft") {
+        const stored = guarded.rows[0];
+        if (stored?.status !== "draft") {
           throw new Error("Hanya draf yang bisa diubah. Muat ulang halaman.");
         }
+        ppnRate =
+          stored.supplier_id === draft.supplierId
+            ? normalizePpnRate(stored.ppn_rate)
+            : await currentVendorRate();
+      } else {
+        ppnRate = await currentVendorRate();
       }
 
+      const pricedLines = draft.items.map((line) => ({
+        ...line,
+        subtotal: lineSubtotal(line.quantity, line.unitCost),
+      }));
+      const amounts = procurementAmounts(pricedLines, ppnRate, { type: draft.discountType, value: draft.discountValue });
       const status: PurchaseOrderStatus = options.submit ? "submitted" : "draft";
       let targetId = orderId;
 
@@ -474,11 +521,11 @@ export function PurchaseOrderPanel({
         await tx.query(
           `UPDATE purchase_orders
               SET supplier_id = $2, supplier_name = $3, branch_id = $4, warehouse_id = $5,
-                  total_amount = $6, notes = $7, expected_date = $8, payment_terms_days = $9,
-                  status = $10,
-                  submitted_by = COALESCE(submitted_by, $11),
-                  submitted_at = COALESCE($12, submitted_at),
-                  updated_at = $12
+                  subtotal_amount = $6, ppn_rate = $7, ppn_amount = $8, total_amount = $9,
+                  notes = $10, expected_date = $11, payment_terms_days = $12, status = $13,
+                  submitted_by = COALESCE(submitted_by, $14),
+                  submitted_at = COALESCE($15, submitted_at), updated_at = $15,
+                  discount_type = $16, discount_value = $17, discount_amount = $18
             WHERE id = $1`,
           [
             targetId,
@@ -486,13 +533,17 @@ export function PurchaseOrderPanel({
             draft.supplierName,
             branchId,
             draft.destinationWarehouseId,
-            draft.totalAmount,
+            amounts.subtotal,
+            amounts.ppnRate,
+            amounts.ppnAmount,
+            amounts.total,
             draft.notes || null,
             draft.expectedDate || null,
             draft.paymentTermsDays,
             status,
             options.submit ? user?.id ?? null : null,
             timestamp,
+            amounts.discountType, amounts.discountValue, amounts.discountAmount,
           ]
         );
       } else {
@@ -502,10 +553,11 @@ export function PurchaseOrderPanel({
         const inserted = await tx.query<{ id: string }>(
           `INSERT INTO purchase_orders
              (po_number, supplier_id, supplier_name, branch_id, warehouse_id, status,
-              total_amount, notes, expected_date, payment_terms_days, created_by,
-              submitted_by, submitted_at, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                   CASE WHEN $6 = 'submitted' THEN $13 ELSE NULL END, $13, $13)
+              subtotal_amount, ppn_rate, ppn_amount, total_amount, notes, expected_date,
+              payment_terms_days, created_by, submitted_by, submitted_at, created_at, updated_at,
+              discount_type, discount_value, discount_amount)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                   CASE WHEN $6 = 'submitted' THEN $16 ELSE NULL END, $16, $16, $17, $18, $19)
            RETURNING id`,
           [
             poNumber,
@@ -514,19 +566,23 @@ export function PurchaseOrderPanel({
             branchId,
             draft.destinationWarehouseId,
             status,
-            draft.totalAmount,
+            amounts.subtotal,
+            amounts.ppnRate,
+            amounts.ppnAmount,
+            amounts.total,
             draft.notes || null,
             draft.expectedDate || null,
             draft.paymentTermsDays,
             user?.id ?? null,
             options.submit ? user?.id ?? null : null,
             timestamp,
+            amounts.discountType, amounts.discountValue, amounts.discountAmount,
           ]
         );
         targetId = inserted.rows[0].id;
       }
 
-      for (const line of draft.items) {
+      for (const line of pricedLines) {
         await tx.query(
           `INSERT INTO purchase_order_items
              (purchase_order_id, product_id, variant_id, quantity, unit_name,
@@ -553,7 +609,11 @@ export function PurchaseOrderPanel({
           supplier: draft.supplierName,
           warehouseId: draft.destinationWarehouseId,
           itemsCount: draft.items.length,
-          totalAmount: draft.totalAmount,
+          subtotalAmount: amounts.subtotal,
+          discountType: amounts.discountType, discountValue: amounts.discountValue, discountAmount: amounts.discountAmount,
+          ppnRate: amounts.ppnRate,
+          ppnAmount: amounts.ppnAmount,
+          totalAmount: amounts.total,
           status,
         },
         userId: user?.id,
@@ -770,6 +830,10 @@ export function PurchaseOrderPanel({
           unitCost: Number(line.unit_cost),
           subtotal: Number(line.subtotal),
         })),
+        subtotalAmount: Number(data.subtotal_amount),
+        discountType: data.discount_type ?? "none", discountValue: Number(data.discount_value ?? 0), discountAmount: Number(data.discount_amount ?? 0),
+        ppnRate: normalizePpnRate(data.ppn_rate),
+        ppnAmount: Number(data.ppn_amount),
         totalAmount: Number(data.total_amount),
       });
       setEditorOpen(true);
@@ -782,6 +846,13 @@ export function PurchaseOrderPanel({
     try {
       const data = await fetchDetail(order.id);
       setEditingId(null);
+      const currentPpnRate = vendorPpnRate(
+        vendors.find((vendor) => vendor.id === data.supplier_id)?.ppn_enabled
+      );
+      const duplicateAmounts = procurementAmounts(
+        data.lines.map((line) => ({ quantity: line.quantity, unitCost: Number(line.unit_cost) })),
+        currentPpnRate, { type: data.discount_type ?? "none", value: Number(data.discount_value ?? 0) }
+      );
       setEditorDraft({
         supplierId: data.supplier_id ?? "",
         supplierName: data.supplier_name ?? "",
@@ -801,10 +872,11 @@ export function PurchaseOrderPanel({
           unitCost: Number(line.unit_cost),
           subtotal: Math.round(line.quantity * Number(line.unit_cost)),
         })),
-        totalAmount: data.lines.reduce(
-          (sum, line) => sum + Math.round(line.quantity * Number(line.unit_cost)),
-          0
-        ),
+        subtotalAmount: duplicateAmounts.subtotal,
+        discountType: duplicateAmounts.discountType, discountValue: duplicateAmounts.discountValue, discountAmount: duplicateAmounts.discountAmount,
+        ppnRate: duplicateAmounts.ppnRate,
+        ppnAmount: duplicateAmounts.ppnAmount,
+        totalAmount: duplicateAmounts.total,
       });
       setEditorOpen(true);
     } catch (error) {
@@ -818,9 +890,12 @@ export function PurchaseOrderPanel({
     try {
       // Read before the transaction opens: the policy decides whether an expiry
       // date is mandatory, and it must not cost a query inside the write.
-      const [res, issueMethod] = await Promise.all([
+      const [res, issueMethod, previous] = await Promise.all([
         query<ReceiptLineRow>(RECEIPT_LINES_SQL, [order.id]),
         getStockIssueMethod(),
+        query<{ subtotal: number; discount: number; ppn: number }>(
+          `SELECT COALESCE(SUM(subtotal_amount), 0) AS subtotal, COALESCE(SUM(discount_amount), 0) AS discount,
+                  COALESCE(SUM(ppn_amount), 0) AS ppn FROM goods_receipts WHERE purchase_order_id = $1`, [order.id]),
       ]);
       setReceiptTarget({
         id: order.id,
@@ -828,6 +903,9 @@ export function PurchaseOrderPanel({
         vendorName: order.supplier_name ?? "Tanpa vendor",
         warehouseName: warehouseName(order.warehouse_id),
         requireExpiry: issueMethod === "fefo",
+        ppnRate: normalizePpnRate(order.ppn_rate),
+        amountContext: { poSubtotal: Number(order.subtotal_amount), poDiscountAmount: Number(order.discount_amount ?? 0),
+          previousSubtotal: Number(previous.rows[0].subtotal), previousDiscount: Number(previous.rows[0].discount), previousPpn: Number(previous.rows[0].ppn) },
         lines: res.rows.map((row) => ({
           purchaseOrderItemId: row.purchase_order_item_id,
           productId: row.product_id,
@@ -835,6 +913,8 @@ export function PurchaseOrderPanel({
           sku: row.sku,
           ordered: Number(row.ordered),
           alreadyReceived: Number(row.already_received),
+          previousValue: Number(row.previous_value),
+          previousSubtotal: Number(row.previous_subtotal),
           unitName: row.unit_name,
           conversionFactor: Number(row.conversion_factor) || 1,
           unitCost: Number(row.unit_cost),
@@ -966,7 +1046,14 @@ export function PurchaseOrderPanel({
       Tanggal: order.created_at.slice(0, 10),
       Diharapkan: order.expected_date ?? "-",
       Status: PO_STATUS_LABEL[order.status],
-      "Nilai PO": Number(order.total_amount),
+      Subtotal: Number(order.subtotal_amount),
+      "Jenis Diskon": order.discount_type,
+      "Nilai Diskon": Number(order.discount_value),
+      "Diskon (Rp)": Number(order.discount_amount),
+      "DPP": Number(order.subtotal_amount) - Number(order.discount_amount),
+      "PPN (%)": Number(order.ppn_rate),
+      "Nilai PPN": Number(order.ppn_amount),
+      "Total Pembayaran": Number(order.total_amount),
       Diterima: effectiveReceivedAmount(order),
       "Diajukan Oleh": order.submitted_by_name ?? "-",
       "Disetujui Oleh": order.approved_by_name ?? "-",
@@ -981,6 +1068,13 @@ export function PurchaseOrderPanel({
       { wch: 12 },
       { wch: 20 },
       { wch: 16 },
+      { wch: 16 },
+      { wch: 14 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 10 },
+      { wch: 16 },
+      { wch: 18 },
       { wch: 16 },
       { wch: 20 },
       { wch: 20 },
@@ -1141,6 +1235,7 @@ export function PurchaseOrderPanel({
                   </TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     {formatCurrency(Number(order.total_amount))}
+                    {Number(order.discount_amount) > 0 && <p className="text-xs text-muted-foreground">Diskon {formatCurrency(Number(order.discount_amount))}</p>}
                   </TableCell>
                   <TableCell className="text-right whitespace-nowrap text-muted-foreground">
                     {formatCurrency(effectiveReceivedAmount(order))}
@@ -1217,6 +1312,8 @@ export function PurchaseOrderPanel({
         warehouseName={receiptTarget?.warehouseName ?? ""}
         lines={receiptTarget?.lines ?? []}
         requireExpiry={receiptTarget?.requireExpiry ?? false}
+        ppnRate={receiptTarget?.ppnRate ?? 0}
+        amountContext={receiptTarget?.amountContext}
         onSubmit={handleReceive}
       />
 

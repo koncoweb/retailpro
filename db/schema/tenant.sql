@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 12);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 14);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
 -- receipt/tax/bank/payment_channels settings as JSON text. `qris_image` holds the
@@ -133,6 +133,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
   -- 'supplier' | 'distributor' | 'trader' | 'manufacturer' | 'service' | 'other'
   category            TEXT NOT NULL DEFAULT 'supplier',
   tax_id              TEXT,
+  -- Fixed-rate procurement PPN. Prices stay exclusive; new POs snapshot 11%.
+  ppn_enabled         INTEGER NOT NULL DEFAULT 0 CHECK (ppn_enabled IN (0, 1)),
   contact_person      TEXT,
   phone               TEXT,
   email               TEXT,
@@ -485,7 +487,15 @@ CREATE TABLE IF NOT EXISTS purchase_orders (
   -- | 'rejected' | 'cancelled'. No stock moves before 'approved'; only a
   -- goods receipt may advance the last two. See docs/spec-purchase-order.md.
   status                TEXT NOT NULL DEFAULT 'draft',
-  total_amount          INTEGER NOT NULL DEFAULT 0,
+  -- Unit prices and lines are exclusive of PPN. These document-level amounts
+  -- are snapshotted so editing the vendor never changes an existing order.
+  subtotal_amount       INTEGER NOT NULL DEFAULT 0 CHECK (subtotal_amount >= 0),
+  discount_type         TEXT NOT NULL DEFAULT 'none' CHECK (discount_type IN ('none', 'percent', 'amount')),
+  discount_value        REAL NOT NULL DEFAULT 0 CHECK (discount_value >= 0 AND (discount_type != 'percent' OR discount_value <= 100)),
+  discount_amount       INTEGER NOT NULL DEFAULT 0 CHECK (discount_amount >= 0 AND discount_amount <= subtotal_amount),
+  ppn_rate              INTEGER NOT NULL DEFAULT 0 CHECK (ppn_rate IN (0, 11)),
+  ppn_amount            INTEGER NOT NULL DEFAULT 0 CHECK (ppn_amount >= 0),
+  total_amount          INTEGER NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
   notes                 TEXT,
   expected_date         TEXT,
   -- Snapshot of the vendor's terms at the time the order was raised, so a
@@ -536,7 +546,12 @@ CREATE TABLE IF NOT EXISTS goods_receipts (
   supplier_name     TEXT,
   -- The vendor's own delivery-note / invoice number, free text.
   supplier_document TEXT,
-  total_amount      INTEGER NOT NULL DEFAULT 0,
+  -- Receipt PPN is calculated independently from the delivered net value.
+  subtotal_amount   INTEGER NOT NULL DEFAULT 0 CHECK (subtotal_amount >= 0),
+  discount_amount   INTEGER NOT NULL DEFAULT 0 CHECK (discount_amount >= 0 AND discount_amount <= subtotal_amount),
+  ppn_rate          INTEGER NOT NULL DEFAULT 0 CHECK (ppn_rate IN (0, 11)),
+  ppn_amount        INTEGER NOT NULL DEFAULT 0 CHECK (ppn_amount >= 0),
+  total_amount      INTEGER NOT NULL DEFAULT 0 CHECK (total_amount >= 0),
   notes             TEXT,
   received_by       TEXT,
   received_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),

@@ -69,7 +69,7 @@ export const STOCK_REQUEST_PRIORITY_LABEL: Record<string, string> = {
  * read without guessing which orders are a shop and which are a customer.
  */
 export const STOCK_REQUEST_SOURCE_LABEL: Record<string, string> = {
-  branch: "Cabang",
+  branch: "Outlet",
   online: "Toko Online",
 };
 

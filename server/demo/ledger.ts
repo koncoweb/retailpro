@@ -1187,11 +1187,12 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
 
     add(
       `INSERT INTO purchase_orders
-         (id, po_number, supplier_id, supplier_name, branch_id, warehouse_id, status, total_amount,
-          notes, expected_date, payment_terms_days, submitted_by, submitted_at, approved_by,
-          approved_at, rejected_by, rejected_at, rejection_reason, cancelled_by, cancelled_at,
+         (id, po_number, supplier_id, supplier_name, branch_id, warehouse_id, status,
+          subtotal_amount, ppn_rate, ppn_amount, total_amount, notes, expected_date,
+          payment_terms_days, submitted_by, submitted_at, approved_by, approved_at,
+          rejected_by, rejected_at, rejection_reason, cancelled_by, cancelled_at,
           cancel_reason, received_at, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         purchaseOrderId,
         poNumber,
@@ -1200,6 +1201,7 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
         branch.id,
         identity.centralWarehouseId,
         order.status,
+        total,
         total,
         order.notes,
         order.expectedInDays !== undefined
@@ -1265,8 +1267,9 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
       add(
         `INSERT INTO goods_receipts
            (id, grn_number, purchase_order_id, warehouse_id, branch_id, supplier_id,
-            supplier_name, supplier_document, total_amount, notes, received_by, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            supplier_name, supplier_document, subtotal_amount, ppn_rate, ppn_amount,
+            total_amount, notes, received_by, received_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)`,
         [
           receiptId,
           grnNumber,
@@ -1276,6 +1279,7 @@ export function buildDemoStatements(identity: ThaliaIdentity, now = new Date()):
           supplier.id,
           supplier.name,
           delivery.document ?? null,
+          amount,
           amount,
           index === 0 ? order.notes : null,
           identity.staff[0].id,

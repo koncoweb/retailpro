@@ -11,10 +11,10 @@ import { expect, type App, type Screen } from 'e2e';
 /** Route -> the level-1 heading the page renders once its data has loaded. */
 const SCREEN: Record<string, string> = {
   '/backoffice': 'Dashboard',
-  '/backoffice/branches': 'Manajemen Cabang',
+  '/backoffice/branches': 'Manajemen Outlet',
   '/backoffice/warehouses': 'Manajemen Gudang',
-  '/backoffice/branches/dashboard': 'Dashboard Percabangan',
-  '/backoffice/branches/orders': 'Pesanan Cabang',
+  '/backoffice/branches/dashboard': 'Dashboard Outlet',
+  '/backoffice/branches/orders': 'Pesanan Outlet',
   '/backoffice/branches/transfer': 'Transfer Stok Antar Gudang',
   '/backoffice/inventory/products': 'Inventory Produk',
   '/backoffice/inventory/po': 'Inventory Produk',

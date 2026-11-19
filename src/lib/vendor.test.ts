@@ -5,10 +5,13 @@ import {
   isOverdue,
   nextVendorCode,
   outstandingAmount,
+  parseVendorPpn,
   vendorCategoryLabel,
   vendorInitials,
   vendorPaymentMethodLabel,
+  vendorPpnLabel,
   vendorStatusLabel,
+  VENDOR_PPN_RATE,
 } from "./vendor";
 
 describe("nextVendorCode", () => {
@@ -101,5 +104,33 @@ describe("vendorInitials", () => {
 
   it("ignores punctuation and extra whitespace", () => {
     expect(vendorInitials("  PT  Sumber-Terigu  ")).toBe("PS");
+  });
+});
+
+describe("vendor PPN sheet values", () => {
+  it("accepts the supported enabled values case-insensitively", () => {
+    for (const value of ["PPN", "ppn", "Ya", "TRUE", "1"]) {
+      expect(parseVendorPpn(value)).toBe(true);
+    }
+  });
+
+  it("accepts the supported disabled values and blank legacy cells", () => {
+    for (const value of ["Non-PPN", "non ppn", "Tidak", "FALSE", "0", "", "   ", null, undefined]) {
+      expect(parseVendorPpn(value)).toBe(false);
+    }
+  });
+
+  it("rejects unknown nonblank values instead of silently disabling PPN", () => {
+    for (const value of ["11%", "Pajak", "Y", "2"]) {
+      expect(parseVendorPpn(value)).toBeNull();
+    }
+  });
+
+  it("uses one fixed rate and unambiguous display labels", () => {
+    expect(VENDOR_PPN_RATE).toBe(11);
+    expect(vendorPpnLabel(true)).toBe("PPN 11%");
+    expect(vendorPpnLabel(1)).toBe("PPN 11%");
+    expect(vendorPpnLabel(false)).toBe("Non-PPN");
+    expect(vendorPpnLabel(0)).toBe("Non-PPN");
   });
 });

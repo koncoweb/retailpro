@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Dokumen | `docs/fitur-tenant.md` |
-| Terakhir diperbarui | **2026-11-19** |
+| Terakhir diperbarui | **2026-11-20** |
 | Cakupan | Semua fitur yang tersedia di dalam satu tenant (POS + back office) |
 
 ## Cara memakai log ini
@@ -17,6 +17,18 @@
 ---
 
 ## 1. Log perubahan fitur
+
+### 2026-11-20 — PPN vendor, total bruto pengadaan, dan cetak PO A4 (skema v13)
+
+| Waktu | Ref | Modul | Perubahan | Status |
+|---|---|---|---|---|
+| 2026-11-20 | — (working tree) | Vendor | Master vendor mendapat satu switch **PPN 11%**; mati berarti **Non-PPN**. Status tampil di daftar/detail dan berdiri sendiri dari NPWP maupun pengaturan pajak POS | Baru |
+| 2026-11-20 | — (working tree) | Vendor / Sheet | Kontrak CSV/Excel vendor meng-append **`PPN` sebagai kolom ke-22** tanpa mengubah 21 kolom lama. Parser menerima `PPN`/`Ya`/`true`/`1` dan `Non-PPN`/`Tidak`/`false`/`0` tanpa beda kapital, menolak nilai asing, serta membawa PPN pada baris lanjutan. Impor existing tetap aditif: setting tersimpan tidak ditimpa sheet dan pratinjau menyebutkannya | Ubah |
+| 2026-11-20 | — (working tree) | Purchase Order | PO menampilkan dan menyimpan **subtotal neto + PPN snapshot + total pembayaran bruto**. PO baru memakai setting vendor saat itu; edit draf vendor sama mempertahankan snapshot; ganti vendor mengambil rate vendor baru. Submitted/approved/received tidak pernah menghitung ulang dari master vendor | Ubah |
+| 2026-11-20 | — (working tree) | Penerimaan / Hutang | Setiap GRN menghitung subtotal dari kuantitas/harga aktual, memakai rate tersimpan PO, membulatkan PPN sendiri, lalu membuat tepat satu `expenses` sebesar bruto. HPP batch, last cost, dan pricelist vendor tetap neto; pembayaran cash memakai bruto | Ubah |
+| 2026-11-20 | — (working tree) | Cetak | Detail PO mendapat **Cetak / Simpan PDF** A4 melalui browser: nomor/status, vendor/tujuan/tanggal/termin, baris produk-varian-pecahan, subtotal/PPN/bruto, catatan, label draf/batal/tolak, dan pernyataan bahwa dokumen bukan faktur pajak. HTML meng-escape data pengguna dan tidak memakai jalur thermal/ESC-POS | Baru |
+| 2026-11-20 | — (working tree) | Skema | **Skema v13** menambah `suppliers.ppn_enabled` dan snapshot `subtotal_amount`/`ppn_rate`/`ppn_amount` pada PO serta GRN. Upgrade v12 mempertahankan total historis, mengisi subtotal dari total lama, dan menetapkan PPN nol; jumlah tabel tetap 39 | Baru |
+| 2026-11-20 | — (working tree) | Uji | Unit penuh **34 berkas / 566 test** lulus bersama app/node typecheck. E2E fokus tersedia untuk toggle vendor, PO PPN/non-PPN, snapshot historis, penerimaan parsial, payable bruto, dan HPP neto; run cloud belum sah karena tenant terkonfigurasi masih di bawah v13 dan tidak dimigrasikan tanpa otorisasi | — |
 
 ### 2026-11-19 — sheet vendor jadi satu vendor per berkas (baris pertama vendor, barisnya produk)
 

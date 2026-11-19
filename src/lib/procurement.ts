@@ -208,6 +208,130 @@ export function checkApprovalRights(params: {
 }
 
 // ---------------------------------------------------------------------------
+// Money and tax snapshots
+// ---------------------------------------------------------------------------
+
+export type ProcurementPpnRate = 0 | 11;
+
+export interface ProcurementAmountLine {
+  quantity: number;
+  unitCost: number;
+}
+
+export type ProcurementDiscountType = "none" | "percent" | "amount";
+export interface ProcurementDiscount { type: ProcurementDiscountType; value: number; }
+
+export interface ProcurementAmounts {
+  subtotal: number;
+  discountType: ProcurementDiscountType;
+  discountValue: number;
+  discountAmount: number;
+  taxableAmount: number;
+  ppnRate: ProcurementPpnRate;
+  ppnAmount: number;
+  total: number;
+}
+
+export function normalizePpnRate(value: number | null | undefined): ProcurementPpnRate {
+  return Number(value) === 11 ? 11 : 0;
+}
+
+export function vendorPpnRate(
+  enabled: boolean | number | null | undefined
+): ProcurementPpnRate {
+  return enabled === true || Number(enabled) === 1 ? 11 : 0;
+}
+
+/** Same-vendor draft edits retain the saved snapshot; a vendor switch adopts the new master. */
+export function resolveDraftPpnRate(params: {
+  savedSupplierId?: string | null;
+  savedPpnRate?: number | null;
+  nextSupplierId: string;
+  nextVendorPpnEnabled?: boolean | number | null;
+}): ProcurementPpnRate {
+  return params.savedSupplierId === params.nextSupplierId
+    ? normalizePpnRate(params.savedPpnRate)
+    : vendorPpnRate(params.nextVendorPpnEnabled);
+}
+
+export function lineSubtotal(quantity: number, unitCost: number): number {
+  const value = Number(quantity) * Number(unitCost);
+  return Math.round(Number.isFinite(value) ? value : 0);
+}
+
+/** PPN is rounded once at document level, after rounded rupiah line totals. */
+export function procurementAmounts(
+  lines: ProcurementAmountLine[],
+  rate: number | null | undefined,
+  discount: ProcurementDiscount = { type: "none", value: 0 }
+): ProcurementAmounts {
+  const subtotal = lines.reduce(
+    (sum, line) => sum + Math.max(0, lineSubtotal(line.quantity, line.unitCost)),
+    0
+  );
+  const discountType = discount.type;
+  const discountValue = discountType === "none" ? 0 : Number(discount.value);
+  const invalid = validateProcurementDiscount(discount, subtotal);
+  if (invalid) throw new Error(invalid);
+  const discountAmount = discountType === "percent" ? Math.round(subtotal * discountValue / 100)
+    : discountType === "amount" ? Math.round(discountValue) : 0;
+  const taxableAmount = Math.max(0, subtotal - discountAmount);
+  const ppnRate = normalizePpnRate(rate);
+  const ppnAmount = Math.round((taxableAmount * ppnRate) / 100);
+  return { subtotal, discountType, discountValue, discountAmount, taxableAmount, ppnRate, ppnAmount, total: taxableAmount + ppnAmount };
+}
+
+export function validateProcurementDiscount(discount: ProcurementDiscount, subtotal: number): string | null {
+  if (!["none", "percent", "amount"].includes(discount.type)) return "Jenis diskon tidak valid";
+  if (discount.type === "none") return null;
+  const value = Number(discount.value);
+  if (!Number.isFinite(value) || value < 0) return "Nilai diskon tidak valid";
+  if (discount.type === "percent" && value > 100) return "Diskon persen maksimal 100%";
+  if (discount.type === "amount" && (!Number.isInteger(value) || value > subtotal)) return "Diskon rupiah harus bulat dan tidak melebihi subtotal";
+  return null;
+}
+
+export interface ReceiptAmountLine extends ProcurementAmountLine {
+  previousValue?: number;
+  previousSubtotal?: number;
+}
+
+export function receiptLineSubtotal(line: ReceiptAmountLine): number {
+  if (line.quantity <= 0) return 0;
+  return Math.max(0, lineSubtotal(1, (line.previousValue ?? 0) + line.quantity * line.unitCost)
+    - (line.previousSubtotal ?? 0));
+}
+
+export interface ReceiptAmountContext {
+  poSubtotal: number;
+  poDiscountAmount: number;
+  /** Cumulative received value at the original PO prices, including this receipt. */
+  cumulativeOrderedValue: number;
+  previousSubtotal: number;
+  previousDiscount: number;
+  previousPpn: number;
+  finalReceipt: boolean;
+}
+
+/** Allocate the PO snapshot proportionally; cumulative tax rounding reconciles the last receipt. */
+export function receiptProcurementAmounts(
+  lines: ReceiptAmountLine[], rate: number | null | undefined, context: ReceiptAmountContext
+): ProcurementAmounts {
+  const raw = procurementAmounts(lines.map((line) => ({ quantity: 1, unitCost: receiptLineSubtotal(line) })), rate);
+  const fraction = context.poSubtotal > 0 ? Math.min(1, Math.max(0, context.cumulativeOrderedValue / context.poSubtotal)) : 0;
+  const targetDiscount = Math.round(context.poDiscountAmount * (context.finalReceipt ? 1 : fraction));
+  const remainingDiscount = Math.max(0, targetDiscount - context.previousDiscount);
+  if (context.finalReceipt && remainingDiscount > raw.subtotal) {
+    throw new Error("Sisa diskon PO melebihi nilai penerimaan terakhir. Periksa harga penerimaan.");
+  }
+  const discountAmount = Math.min(raw.subtotal, remainingDiscount);
+  const taxableAmount = raw.subtotal - discountAmount;
+  const cumulativeNet = context.previousSubtotal + raw.subtotal - context.previousDiscount - discountAmount;
+  const ppnAmount = Math.max(0, Math.round(cumulativeNet * raw.ppnRate / 100) - context.previousPpn);
+  return { ...raw, discountAmount, taxableAmount, ppnAmount, total: taxableAmount + ppnAmount };
+}
+
+// ---------------------------------------------------------------------------
 // Quantities
 // ---------------------------------------------------------------------------
 

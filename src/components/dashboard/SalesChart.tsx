@@ -129,7 +129,7 @@ export function SalesChart() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h3 className="text-lg font-semibold">Penjualan Mingguan</h3>
-          <p className="text-sm text-muted-foreground">Per cabang (dalam Rupiah)</p>
+          <p className="text-sm text-muted-foreground">Per outlet (dalam Rupiah)</p>
         </div>
         <div className="flex items-center gap-4 text-sm flex-wrap justify-end">
           {branches.map((branch, index) => (
@@ -151,7 +151,7 @@ export function SalesChart() {
       <div
         className={cn("h-[300px]", loaded && !hasSales && "hidden")}
         role="img"
-        aria-label={`Grafik penjualan 7 hari terakhir per cabang, total ${weekTotalLabel}`}
+        aria-label={`Grafik penjualan 7 hari terakhir per outlet, total ${weekTotalLabel}`}
       >
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={data}>

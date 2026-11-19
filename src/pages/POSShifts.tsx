@@ -27,7 +27,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2, MapPin, Printer, Landmark, QrCode } from "lucide-react";
+import { Clock, DollarSign, Calendar, AlertCircle, CheckCircle, Loader2, MapPin, Printer } from "lucide-react";
 import { toast } from "sonner";
 import { query, runTransaction } from "@/lib/db";
 import { useAuth } from "@/hooks/use-auth";
@@ -226,7 +226,7 @@ export default function POSShifts() {
     const userId = user?.id;
 
     if (!userId || !branchId) {
-      toast.error("Belum ada cabang yang bisa diakses akun ini. Hubungi owner.");
+      toast.error("Belum ada outlet yang bisa diakses akun ini. Hubungi owner.");
       return;
     }
 
@@ -356,11 +356,11 @@ export default function POSShifts() {
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
                 <AlertCircle className="w-5 h-5 text-warning" />
-                Cabang belum tersedia
+                Outlet belum tersedia
               </CardTitle>
               <CardDescription>
-                Shift butuh sebuah cabang untuk dibuka. Akun ini belum punya
-                cabang yang bisa diakses — minta owner menetapkan cabang atau
+                Shift butuh sebuah outlet untuk dibuka. Akun ini belum punya
+                outlet yang bisa diakses — minta owner menetapkan outlet atau
                 scope role Anda, lalu muat ulang halaman ini.
               </CardDescription>
             </CardHeader>
@@ -378,7 +378,7 @@ export default function POSShifts() {
             <Select value={branchId ?? ""} onValueChange={setBranchId}>
               <SelectTrigger className="w-auto min-w-[180px] h-9 gap-2 text-sm">
                 <MapPin className="w-4 h-4" />
-                <SelectValue placeholder="Pilih cabang" />
+                <SelectValue placeholder="Pilih outlet" />
               </SelectTrigger>
               <SelectContent>
                 {branches.map((branch) => (
@@ -391,7 +391,7 @@ export default function POSShifts() {
           ) : (
             <div className="flex items-center gap-2 text-sm text-muted-foreground bg-muted/50 px-3 py-1.5 rounded-full">
               <MapPin className="w-4 h-4" />
-              <span>{branchName ?? "Cabang"}</span>
+              <span>{branchName ?? "Outlet"}</span>
             </div>
           )}
         </div>
@@ -458,63 +458,23 @@ export default function POSShifts() {
                   </div>
                 </div>
 
-                <div className="border rounded-lg overflow-hidden">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Metode Pembayaran</TableHead>
-                        <TableHead className="text-right">Total Transaksi</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      <TableRow>
-                        <TableCell>Tunai (Cash)</TableCell>
-                        <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.cash)}</TableCell>
-                      </TableRow>
-                      {transactionsSummary.transfer > 0 && (
-                        <TableRow>
-                          <TableCell>
-                            <span className="inline-flex items-center gap-2"><Landmark className="w-4 h-4 text-muted-foreground" />Transfer Bank</span>
-                          </TableCell>
-                          <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.transfer)}</TableCell>
-                        </TableRow>
-                      )}
-                      {transactionsSummary.qris > 0 && (
-                        <TableRow>
-                          <TableCell>
-                            <span className="inline-flex items-center gap-2"><QrCode className="w-4 h-4 text-muted-foreground" />QRIS</span>
-                          </TableCell>
-                          <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.qris)}</TableCell>
-                        </TableRow>
-                      )}
-                      {transactionsSummary.total - transactionsSummary.cash - transactionsSummary.transfer - transactionsSummary.qris > 0 && (
-                        <TableRow>
-                          <TableCell>Non-Tunai Lainnya</TableCell>
-                          <TableCell className="text-right font-medium">{formatCurrency(transactionsSummary.total - transactionsSummary.cash - transactionsSummary.transfer - transactionsSummary.qris)}</TableCell>
-                        </TableRow>
-                      )}
-                      <TableRow className="bg-muted/50 font-bold">
-                        <TableCell>Total Penjualan</TableCell>
-                        <TableCell className="text-right">{formatCurrency(transactionsSummary.total)}</TableCell>
-                      </TableRow>
-                      {transactionsSummary.fee > 0 && (
-                        <TableRow>
-                          <TableCell className="text-muted-foreground">Biaya merchant (total)</TableCell>
-                          <TableCell className="text-right text-muted-foreground">{formatCurrency(transactionsSummary.fee)}</TableCell>
-                        </TableRow>
-                      )}
-                      {transactionsSummary.voided > 0 && (
-                        <TableRow>
-                          <TableCell className="text-muted-foreground">
-                            Bon di-void (tidak dihitung)
-                          </TableCell>
-                          <TableCell className="text-right text-muted-foreground">
-                            {transactionsSummary.voided} transaksi
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
+                <div className="border rounded-lg p-4 space-y-2">
+                  <div className="flex justify-between text-lg font-bold">
+                    <span>Total Penjualan</span>
+                    <span className="text-primary">{formatCurrency(transactionsSummary.total)}</span>
+                  </div>
+                  {transactionsSummary.fee > 0 && (
+                    <div className="flex justify-between text-sm text-muted-foreground">
+                      <span>Biaya merchant (total)</span>
+                      <span>{formatCurrency(transactionsSummary.fee)}</span>
+                    </div>
+                  )}
+                  {transactionsSummary.voided > 0 && (
+                    <div className="flex justify-between text-sm text-muted-foreground">
+                      <span>Bon di-void (tidak dihitung)</span>
+                      <span>{transactionsSummary.voided} transaksi</span>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-4 pt-4 border-t">

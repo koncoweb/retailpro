@@ -61,7 +61,14 @@ import { cn } from "@/lib/utils";
 import { query } from "@/lib/db";
 import { formatCurrency } from "@/lib/formatters";
 import { isRackWarehouse, warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
-import { isoToday, validatePurchaseOrder } from "@/lib/procurement";
+import {
+  isoToday,
+  procurementAmounts,
+  resolveDraftPpnRate,
+  validatePurchaseOrder,
+  validateProcurementDiscount,
+  type ProcurementDiscountType,
+} from "@/lib/procurement";
 import { defaultVendorFor } from "@/lib/vendor-catalog";
 
 import { ProductUnit } from "@/components/inventory/AddProductModal";
@@ -117,6 +124,7 @@ export interface VendorOption {
   lead_time_days?: number;
   /** Auto-fill skips a vendor the vendor screen says not to order from. */
   status?: string | null;
+  ppn_enabled?: number;
 }
 
 export interface PurchaseOrderDraftLine {
@@ -144,6 +152,12 @@ export interface PurchaseOrderDraftValues {
   expectedDate: string;
   notes: string;
   items: PurchaseOrderDraftLine[];
+  subtotalAmount: number;
+  discountType: ProcurementDiscountType;
+  discountValue: number;
+  discountAmount: number;
+  ppnRate: 0 | 11;
+  ppnAmount: number;
   totalAmount: number;
 }
 
@@ -220,6 +234,8 @@ export function PurchaseOrderModal({
   const [costPrice, setCostPrice] = useState("");
   const [items, setItems] = useState<PurchaseOrderDraftLine[]>([]);
   const [notes, setNotes] = useState("");
+  const [discountType, setDiscountType] = useState<ProcurementDiscountType>("none");
+  const [discountValue, setDiscountValue] = useState("0");
   const [expectedDate, setExpectedDate] = useState("");
   const [selectedVendor, setSelectedVendor] = useState("");
   const [openCombobox, setOpenCombobox] = useState(false);
@@ -434,12 +450,16 @@ export function PurchaseOrderModal({
       setDestinationWarehouse(initialDraft.destinationWarehouseId);
       setExpectedDate(initialDraft.expectedDate);
       setNotes(initialDraft.notes);
+      setDiscountType(initialDraft.discountType ?? "none");
+      setDiscountValue(String(initialDraft.discountValue ?? 0));
       setItems(initialDraft.items);
     } else {
       setSelectedVendor("");
       setDestinationWarehouse(defaultWarehouseId ?? "");
       setExpectedDate("");
       setNotes("");
+      setDiscountType("none");
+      setDiscountValue("0");
       setItems([]);
     }
     setSelectedProduct("");
@@ -453,10 +473,16 @@ export function PurchaseOrderModal({
     setSplitNotice(null);
   }, [open, initialDraft, defaultWarehouseId]);
 
-  const totalAmount = useMemo(
-    () => items.reduce((sum, item) => sum + item.subtotal, 0),
-    [items]
-  );
+  const ppnRate = resolveDraftPpnRate({
+    savedSupplierId: initialDraft?.supplierId,
+    savedPpnRate: initialDraft?.ppnRate,
+    nextSupplierId: selectedVendor,
+    nextVendorPpnEnabled: activeVendor?.ppn_enabled,
+  });
+  const rawAmounts = useMemo(() => procurementAmounts(items, ppnRate), [items, ppnRate]);
+  const discount = { type: discountType, value: parseNumber(discountValue) };
+  const discountError = validateProcurementDiscount(discount, rawAmounts.subtotal);
+  const amounts = discountError ? rawAmounts : procurementAmounts(items, ppnRate, discount);
 
   const unitOptions = useMemo(() => {
     const packs = selectedProductObj ? packsOf(selectedProductObj, selectedVariantObj) : [];
@@ -804,6 +830,7 @@ export function PurchaseOrderModal({
       return;
     }
 
+    if (discountError) { toast.error(discountError); return; }
     const draft: PurchaseOrderDraftValues = {
       supplierId: vendor.id,
       supplierName: vendor.name,
@@ -812,7 +839,13 @@ export function PurchaseOrderModal({
       expectedDate,
       notes: notes.trim(),
       items,
-      totalAmount,
+      subtotalAmount: amounts.subtotal,
+      discountType: amounts.discountType,
+      discountValue: amounts.discountValue,
+      discountAmount: amounts.discountAmount,
+      ppnRate: amounts.ppnRate,
+      ppnAmount: amounts.ppnAmount,
+      totalAmount: amounts.total,
     };
 
     // Same guards the write path applies, evaluated before anything is sent.
@@ -1162,19 +1195,47 @@ export function PurchaseOrderModal({
                     </TableRow>
                   ))}
                   <TableRow className="bg-muted/50">
-                    <TableCell colSpan={4} className="text-right font-semibold">
-                      Total PO:
+                    <TableCell colSpan={4} className="text-right font-medium">Subtotal:</TableCell>
+                    <TableCell className="text-right font-medium">
+                      Rp {amounts.subtotal.toLocaleString("id-ID")}
                     </TableCell>
+                    <TableCell />
+                  </TableRow>
+                  <TableRow className="bg-muted/50">
+                    <TableCell colSpan={4} className="text-right font-medium">Diskon PO / DPP:</TableCell>
+                    <TableCell className="text-right">-Rp {amounts.discountAmount.toLocaleString("id-ID")} / Rp {amounts.taxableAmount.toLocaleString("id-ID")}</TableCell><TableCell />
+                  </TableRow>
+                  <TableRow className="bg-muted/50">
+                    <TableCell colSpan={4} className="text-right font-medium">
+                      {amounts.ppnRate === 11 ? "PPN 11%:" : "PPN (Non-PPN):"}
+                    </TableCell>
+                    <TableCell className="text-right font-medium">
+                      Rp {amounts.ppnAmount.toLocaleString("id-ID")}
+                    </TableCell>
+                    <TableCell />
+                  </TableRow>
+                  <TableRow className="bg-muted/50">
+                    <TableCell colSpan={4} className="text-right font-semibold">Total Pembayaran:</TableCell>
                     <TableCell className="text-right font-bold text-lg">
-                      Rp {totalAmount.toLocaleString("id-ID")}
+                      Rp {amounts.total.toLocaleString("id-ID")}
                     </TableCell>
-                    <TableCell></TableCell>
+                    <TableCell />
                   </TableRow>
                 </TableBody>
               </Table>
             </div>
           )}
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div><Label>Jenis Diskon PO</Label>
+              <Select value={discountType} onValueChange={(value: ProcurementDiscountType) => { setDiscountType(value); setDiscountValue("0"); }}>
+                <SelectTrigger aria-label="Jenis Diskon PO"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="none">Tanpa diskon</SelectItem><SelectItem value="percent">Persen (%)</SelectItem><SelectItem value="amount">Nominal (Rp)</SelectItem></SelectContent>
+              </Select>
+            </div>
+            <div><Label htmlFor="po-discount">Nilai Diskon PO</Label><Input id="po-discount" type="number" min={0} step={discountType === "percent" ? "0.01" : "1"} max={discountType === "percent" ? 100 : rawAmounts.subtotal} disabled={discountType === "none"} value={discountValue} onChange={(event) => setDiscountValue(event.target.value)} /></div>
+            <p className="text-xs text-muted-foreground sm:col-span-2">Diskon satu dokumen, sebelum PPN. {discountError && <span className="text-destructive">{discountError}</span>}</p>
+          </div>
           <div>
             <Label>Catatan</Label>
             <Textarea

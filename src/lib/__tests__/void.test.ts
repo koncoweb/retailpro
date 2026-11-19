@@ -215,7 +215,7 @@ describe('void statements against schema v9', () => {
   beforeAll(async () => {
     await run(
       `INSERT INTO branches (id, name, code, status) VALUES ($1, $2, $3, 'active')`,
-      [branchId, 'Cabang Void', 'VOD']
+      [branchId, 'Outlet Void', 'VOD']
     );
     await run(
       `INSERT INTO warehouses (id, name, code, type, branch_id, status, is_default)

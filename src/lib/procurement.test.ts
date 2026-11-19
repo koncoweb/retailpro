@@ -15,11 +15,19 @@ import {
   effectiveReceivedAmount,
   formatDocumentNumber,
   isFullyReceived,
+  lineSubtotal,
   nextDocumentSequence,
+  normalizePpnRate,
   normalizePurchaseOrderStatus,
   PO_STATUS_LABEL,
+  procurementAmounts,
+  receiptProcurementAmounts,
+  receiptLineSubtotal,
+  validateProcurementDiscount,
   remainingQuantity,
+  resolveDraftPpnRate,
   validatePurchaseOrder,
+  vendorPpnRate,
   validateReceipt,
   PURCHASE_ORDER_STATUSES,
   type PurchaseOrderStatus,
@@ -165,6 +173,156 @@ describe('purchase orders: approval rights', () => {
         can: makeChecker(buildGrants({ role_permissions: { purchasing: { approve_po: false } } })['purchasing']),
       })
     ).toContain('tidak punya izin');
+  });
+});
+
+describe('purchase orders: PPN amounts', () => {
+  it('adds fixed 11% PPN to a tax-exclusive subtotal', () => {
+    expect(procurementAmounts([{ quantity: 1, unitCost: 1_000_000 }], 11)).toMatchObject({
+      subtotal: 1_000_000,
+      ppnRate: 11,
+      ppnAmount: 110_000,
+      total: 1_110_000,
+    });
+  });
+
+  it('keeps non-PPN and empty documents at their net amount', () => {
+    expect(procurementAmounts([{ quantity: 2, unitCost: 12_500 }], 0)).toMatchObject({
+      subtotal: 25_000,
+      ppnRate: 0,
+      ppnAmount: 0,
+      total: 25_000,
+    });
+    expect(procurementAmounts([], 11)).toMatchObject({
+      subtotal: 0,
+      ppnRate: 11,
+      ppnAmount: 0,
+      total: 0,
+    });
+  });
+
+  it('rounds each fractional line before calculating document PPN', () => {
+    expect(lineSubtotal(0.333, 1_000)).toBe(333);
+    expect(
+      procurementAmounts(
+        [
+          { quantity: 0.333, unitCost: 1_000 },
+          { quantity: 0.667, unitCost: 1_000 },
+        ],
+        11
+      )
+    ).toMatchObject({ subtotal: 1_000, ppnRate: 11, ppnAmount: 110, total: 1_110 });
+
+    expect(procurementAmounts([{ quantity: 1, unitCost: 5 }], 11)).toMatchObject({
+      subtotal: 5,
+      ppnRate: 11,
+      ppnAmount: 1,
+      total: 6,
+    });
+  });
+
+  it('normalizes vendor flags and unsupported stored rates', () => {
+    expect(normalizePpnRate(11)).toBe(11);
+    expect(normalizePpnRate(0)).toBe(0);
+    expect(normalizePpnRate(10)).toBe(0);
+    expect(normalizePpnRate(undefined)).toBe(0);
+    expect(vendorPpnRate(true)).toBe(11);
+    expect(vendorPpnRate(1)).toBe(11);
+    expect(vendorPpnRate(false)).toBe(0);
+    expect(vendorPpnRate(0)).toBe(0);
+  });
+
+  it('retains a same-vendor draft snapshot and adopts a switched vendor rate', () => {
+    expect(
+      resolveDraftPpnRate({
+        savedSupplierId: 'vendor-a',
+        savedPpnRate: 0,
+        nextSupplierId: 'vendor-a',
+        nextVendorPpnEnabled: 1,
+      })
+    ).toBe(0);
+    expect(
+      resolveDraftPpnRate({
+        savedSupplierId: 'vendor-a',
+        savedPpnRate: 11,
+        nextSupplierId: 'vendor-b',
+        nextVendorPpnEnabled: 0,
+      })
+    ).toBe(0);
+    expect(
+      resolveDraftPpnRate({
+        nextSupplierId: 'vendor-b',
+        nextVendorPpnEnabled: 1,
+      })
+    ).toBe(11);
+  });
+});
+
+describe('purchase orders: discounts and receipt reconciliation', () => {
+  it('applies one percentage or fixed discount before PPN', () => {
+    const lines = [{ quantity: 2, unitCost: 500_000 }];
+    const percent = procurementAmounts(lines, 11, { type: 'percent', value: 10 });
+    expect(percent).toEqual({
+      subtotal: 1_000_000, discountType: 'percent', discountValue: 10,
+      discountAmount: 100_000, taxableAmount: 900_000, ppnRate: 11,
+      ppnAmount: 99_000, total: 999_000,
+    });
+    expect(procurementAmounts(lines, 11, { type: 'amount', value: 100_000 }))
+      .toMatchObject({ discountAmount: 100_000, taxableAmount: 900_000, total: 999_000 });
+    expect(procurementAmounts(lines, 0, { type: 'percent', value: 100 }))
+      .toMatchObject({ discountAmount: 1_000_000, taxableAmount: 0, ppnAmount: 0, total: 0 });
+    expect(procurementAmounts(lines, 11)).toMatchObject({ discountType: 'none', discountValue: 0, discountAmount: 0 });
+  });
+
+  it('rejects invalid discounts and rounds percent discounts once', () => {
+    for (const value of [-1, 101, NaN, Infinity]) {
+      expect(validateProcurementDiscount({ type: 'percent', value }, 100)).not.toBeNull();
+    }
+    for (const value of [-1, 101, 0.1, NaN]) {
+      expect(() => procurementAmounts([{ quantity: 1, unitCost: 100 }], 11, { type: 'amount', value })).toThrow();
+    }
+    expect(procurementAmounts([{ quantity: 1, unitCost: 5 }], 11, { type: 'percent', value: 10 }))
+      .toMatchObject({ discountAmount: 1, taxableAmount: 4, ppnAmount: 0, total: 4 });
+  });
+
+  it('reconciles discount and PPN on three receipts, including the last rupiah', () => {
+    let previousSubtotal = 0, previousDiscount = 0, previousPpn = 0;
+    const discounts: number[] = [], taxes: number[] = [];
+    for (let index = 1; index <= 3; index++) {
+      const amounts = receiptProcurementAmounts([{ quantity: 1, unitCost: 5 }], 11, {
+        poSubtotal: 15, poDiscountAmount: 2, cumulativeOrderedValue: index * 5,
+        previousSubtotal, previousDiscount, previousPpn, finalReceipt: index === 3,
+      });
+      discounts.push(amounts.discountAmount); taxes.push(amounts.ppnAmount);
+      previousSubtotal += amounts.subtotal; previousDiscount += amounts.discountAmount; previousPpn += amounts.ppnAmount;
+    }
+    expect(discounts).toEqual([1, 0, 1]);
+    expect(taxes).toEqual([0, 1, 0]);
+    expect(previousSubtotal - previousDiscount + previousPpn).toBe(14);
+  });
+
+  it('carries line rounding across fractional deliveries and price overrides', () => {
+    expect(receiptLineSubtotal({ quantity: 0.333, unitCost: 5 })).toBe(2);
+    expect(receiptLineSubtotal({ quantity: 0.333, unitCost: 5, previousValue: 1.665, previousSubtotal: 2 })).toBe(1);
+    expect(receiptLineSubtotal({ quantity: 0.334, unitCost: 5, previousValue: 3.33, previousSubtotal: 3 })).toBe(2);
+    expect(receiptLineSubtotal({ quantity: 0.334, unitCost: 6, previousValue: 3.33, previousSubtotal: 3 })).toBe(2);
+    expect(receiptLineSubtotal({ quantity: 0, unitCost: 5, previousValue: 3.33, previousSubtotal: 3 })).toBe(0);
+  });
+
+  it('keeps the fixed PO discount when invoice prices change', () => {
+    expect(receiptProcurementAmounts([{ quantity: 1, unitCost: 150 }], 11, {
+      poSubtotal: 200, poDiscountAmount: 20, cumulativeOrderedValue: 200,
+      previousSubtotal: 100, previousDiscount: 10, previousPpn: 10, finalReceipt: true,
+    })).toMatchObject({ discountAmount: 10, taxableAmount: 140, ppnAmount: 15, total: 155 });
+  });
+
+  it('defers a capped partial discount and refuses an impossible final discount', () => {
+    const context = { poSubtotal: 200, poDiscountAmount: 100, cumulativeOrderedValue: 100,
+      previousSubtotal: 0, previousDiscount: 0, previousPpn: 0, finalReceipt: false };
+    expect(receiptProcurementAmounts([{ quantity: 1, unitCost: 5 }], 11, context))
+      .toMatchObject({ discountAmount: 5, taxableAmount: 0, total: 0 });
+    expect(() => receiptProcurementAmounts([{ quantity: 1, unitCost: 5 }], 11, { ...context, finalReceipt: true }))
+      .toThrow(/Sisa diskon PO/);
   });
 });
 

@@ -117,6 +117,18 @@ describe('groupVendorProductRows', () => {
     ]);
     expect(group.products).toHaveLength(0);
     expect(group.vendor.paymentTermsDays).toBe(14);
+    expect(group.vendor.ppnEnabled).toBe(false);
+  });
+
+  it('parses a new vendor PPN setting from the integrated sheet', () => {
+    const [enabled] = groupVendorProductRows([
+      row({ vendorCode: 'VND-PPN', vendorName: 'PT Kena Pajak', ppn: 'Ya' }),
+    ]);
+    const [disabled] = groupVendorProductRows([
+      row({ vendorCode: 'VND-NET', vendorName: 'PT Harga Bersih', ppn: 'Non-PPN' }),
+    ]);
+    expect(enabled.vendor.ppnEnabled).toBe(true);
+    expect(disabled.vendor.ppnEnabled).toBe(false);
   });
 
   it('links by product name when the SKU column is left blank', () => {
@@ -227,6 +239,7 @@ describe('VENDOR_PRODUCT_COLUMNS', () => {
       'Kode Varian',
       'Atribut Varian',
       'Barcode Varian',
+      'PPN',
     ]);
   });
 
@@ -309,6 +322,27 @@ describe('planVendorProductImport', () => {
     expect(plan.vendors[0].isNew).toBe(false);
     expect(plan.vendors[0].vendorId).toBe('v1');
     expect(plan.summary.existingVendors).toBe(1);
+  });
+
+  it('surfaces that an existing vendor keeps its stored PPN setting', () => {
+    const source = universe({
+      vendors: [
+        { id: 'v1', name: 'PT Sumber Makmur', code: 'VND-0001', ppnEnabled: true },
+      ],
+    });
+    const plan = planVendorProductImport(
+      groupVendorProductRows([
+        row({ vendorCode: 'VND-0001', vendorName: 'PT Sumber Makmur', ppn: 'Non-PPN' }),
+      ]),
+      source,
+      { priceMode: 'overwrite' }
+    );
+
+    expect(plan.vendors[0]).toMatchObject({
+      isNew: false,
+      existingPpnEnabled: true,
+      vendor: { ppnEnabled: false },
+    });
   });
 
   it('links a product by SKU instead of duplicating it, and still writes its price rows', () => {
@@ -601,6 +635,7 @@ describe('carryVendorForward', () => {
         vendorName: 'PT Sumber Makmur',
         phone: '0811',
         terms: '30',
+        ppn: 'PPN',
         sku: 'KOP-001',
         productName: 'Kopi',
       }),
@@ -612,6 +647,7 @@ describe('carryVendorForward', () => {
     expect(second.vendorCode).toBe('VND-0001');
     expect(second.phone).toBe('0811');
     expect(second.terms).toBe('30');
+    expect(second.ppn).toBe('PPN');
     // Only the vendor columns travel; a line's product columns are its own.
     expect(second.productName).toBe('Gula');
     expect(second.sku).toBe('GUL-002');
@@ -912,6 +948,7 @@ describe('one vendor per file', () => {
     expect(VENDOR_PRODUCT_TEMPLATE_ROWS.indexOf(stated[0])).toBe(0);
     expect(stated[0].vendorCode).toBe('VND-9999');
     expect(stated[0].vendorName).toBe('PT Contoh Vendor');
+    expect(stated[0].ppn).toBe('PPN');
   });
 
   it('leaves the vendor row free of product columns', () => {
@@ -963,6 +1000,7 @@ describe('one vendor per file', () => {
         phone: '0812',
         email: 'rina@sumber.id',
         terms: '14',
+        ppn: 'Non-PPN',
         sku: 'KOP-001',
         productName: 'Kopi Sachet',
       }),

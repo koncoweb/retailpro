@@ -111,7 +111,7 @@ export function buildSaleReceipt(
   body.push({ text: `No      : ${trx.invoiceNumber}` });
   body.push({ text: `Tanggal : ${stampDate(trx.createdAt)}` });
   body.push({ text: `Kasir   : ${trx.cashierName ?? '-'}` });
-  if (trx.branchName) body.push({ text: `Cabang  : ${trx.branchName}` });
+  if (trx.branchName) body.push({ text: `Outlet  : ${trx.branchName}` });
   body.push({ text: `Pelanggan: ${trx.customerName || 'Walk-in'}` });
   body.push(dividerLine(columns));
 

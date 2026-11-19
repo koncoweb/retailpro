@@ -24,11 +24,11 @@ const buttonVariants = cva(
         posPayment: "bg-gradient-to-r from-success to-primary text-success-foreground text-lg font-bold shadow-lg hover:shadow-xl hover:opacity-95 active:scale-[0.97]",
       },
       size: {
-        default: "h-10 px-4 py-2",
-        sm: "h-9 rounded-md px-3",
+        default: "h-9 px-3.5",
+        sm: "h-8 rounded-md px-2.5 text-xs",
         lg: "h-11 rounded-lg px-8",
         xl: "h-14 rounded-xl px-10 text-base",
-        icon: "h-10 w-10",
+        icon: "h-9 w-9",
         iconSm: "h-8 w-8",
         iconLg: "h-12 w-12",
         /**

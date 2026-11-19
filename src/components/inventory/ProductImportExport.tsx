@@ -529,7 +529,7 @@ export function ProductImportExport({ products, onImport }: ProductImportExportP
 
   return (
     <>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-1.5">
         <input
           ref={fileInputRef}
           id="product-import-file"
@@ -539,18 +539,18 @@ export function ProductImportExport({ products, onImport }: ProductImportExportP
           className="hidden"
         />
         <PermissionGate permission="manage_variants">
-          <Button variant="outline" className="gap-2" onClick={() => fileInputRef.current?.click()}>
-            <Upload className="w-4 h-4" />
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => fileInputRef.current?.click()}>
+            <Upload className="w-3.5 h-3.5" />
             Import
           </Button>
         </PermissionGate>
         <PermissionGate permission="export_reports">
-          <Button variant="outline" className="gap-2" onClick={() => handleExport("xlsx")}>
-            <Download className="w-4 h-4" />
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExport("xlsx")}>
+            <Download className="w-3.5 h-3.5" />
             Export Excel
           </Button>
-          <Button variant="outline" className="gap-2" onClick={() => handleExport("csv")}>
-            <Download className="w-4 h-4" />
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExport("csv")}>
+            <Download className="w-3.5 h-3.5" />
             Export CSV
           </Button>
         </PermissionGate>
@@ -564,7 +564,7 @@ export function ProductImportExport({ products, onImport }: ProductImportExportP
           className="gap-1 text-muted-foreground"
           onClick={() => handleExportTemplate("csv")}
         >
-          <FileSpreadsheet className="w-4 h-4" />
+          <FileSpreadsheet className="w-3.5 h-3.5" />
           Template CSV
         </Button>
         <Button
@@ -573,7 +573,7 @@ export function ProductImportExport({ products, onImport }: ProductImportExportP
           className="gap-1 text-muted-foreground"
           onClick={() => handleExportTemplate("xlsx")}
         >
-          <FileSpreadsheet className="w-4 h-4" />
+          <FileSpreadsheet className="w-3.5 h-3.5" />
           Template Excel
         </Button>
       </div>

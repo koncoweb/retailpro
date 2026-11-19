@@ -37,7 +37,7 @@ type WarehouseType = "central" | "regional" | "store";
 const WAREHOUSE_TYPE_LABEL: Record<WarehouseType, string> = {
   central: "Gudang Pusat (DC)",
   regional: "Gudang Regional",
-  store: "Gudang Cabang",
+  store: "Gudang Outlet",
 };
 
 interface WarehouseRow {
@@ -333,7 +333,7 @@ export default function Warehouses() {
           <div>
             <h1 className="text-xl md:text-2xl lg:text-3xl font-bold">Manajemen Gudang</h1>
             <p className="text-muted-foreground text-sm md:text-base mt-1">
-              Gudang menyimpan stok; cabang menjualnya. Satu gudang bisa melayani banyak cabang.
+              Gudang menyimpan stok; outlet menjualnya. Satu gudang bisa melayani banyak outlet.
             </p>
           </div>
           <Button className="gap-2 w-full sm:w-auto" onClick={openCreate}>
@@ -384,7 +384,7 @@ export default function Warehouses() {
                 <Building2 className="w-4 h-4 md:w-5 md:h-5 text-warning" />
               </div>
               <div>
-                <p className="text-xs md:text-sm text-muted-foreground">Cabang Terlayani</p>
+                <p className="text-xs md:text-sm text-muted-foreground">Outlet Terlayani</p>
                 <p className="text-xl md:text-2xl font-bold">
                   {new Set(mappings.map((mapping) => mapping.branch_id)).size}
                 </p>
@@ -400,7 +400,7 @@ export default function Warehouses() {
                 <TableHead>Gudang</TableHead>
                 <TableHead>Tipe</TableHead>
                 <TableHead>Pemilik</TableHead>
-                <TableHead className="hidden md:table-cell">Melayani Cabang</TableHead>
+                <TableHead className="hidden md:table-cell">Melayani Outlet</TableHead>
                 <TableHead className="text-center">SKU Aktif</TableHead>
                 <TableHead className="text-center hidden sm:table-cell">Stok</TableHead>
                 <TableHead className="text-center">Status</TableHead>
@@ -563,7 +563,7 @@ export default function Warehouses() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Pemilik dipakai untuk laporan; gudang bersama bisa melayani semua cabang.
+                Pemilik dipakai untuk laporan; gudang bersama bisa melayani semua outlet.
               </p>
             </div>
 
@@ -628,9 +628,9 @@ export default function Warehouses() {
 
             <div className="border rounded-md p-4 space-y-3 bg-muted/20">
               <div>
-                <Label className="font-medium">Cabang yang Dilayani</Label>
+                <Label className="font-medium">Outlet yang Dilayani</Label>
                 <p className="text-xs text-muted-foreground">
-                  Cabang hanya bisa menjual stok dari gudang yang dipetakan ke sini.
+                  Outlet hanya bisa menjual stok dari gudang yang dipetakan ke sini.
                 </p>
               </div>
               <div className="grid gap-2">
@@ -650,7 +650,7 @@ export default function Warehouses() {
                   </div>
                 ))}
                 {branches.length === 0 && (
-                  <p className="text-sm text-muted-foreground">Belum ada cabang.</p>
+                  <p className="text-sm text-muted-foreground">Belum ada outlet.</p>
                 )}
               </div>
             </div>

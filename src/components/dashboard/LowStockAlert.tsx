@@ -125,7 +125,7 @@ export function LowStockAlert() {
                   size="sm"
                   variant="outline"
                   className="gap-1 shrink-0 ml-3"
-                  title="Buat pesanan cabang untuk produk ini"
+                  title="Buat pesanan outlet untuk produk ini"
                   onClick={() =>
                     navigate(
                       `/backoffice/branches/orders?product=${item.id}&qty=${Math.max(

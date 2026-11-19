@@ -1,0 +1,80 @@
+﻿
+> vite_react_shadcn_ts@0.0.0 lint
+> eslint .
+
+
+C:\projects\retailpro\server\turso-platform.ts
+  39:1  warning  Unused eslint-disable directive (no problems were reported from '@typescript-eslint/no-explicit-any')
+
+C:\projects\retailpro\src\components\attendance\FaceScanner.tsx
+  126:11  warning  Unused eslint-disable directive (no problems were reported from 'no-console')
+
+C:\projects\retailpro\src\components\dashboard\BranchPerformance.tsx
+  75:41  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\components\dashboard\EmployeeDetailModal.tsx
+  75:48  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  94:46  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\components\dashboard\ProductSalesModal.tsx
+   89:46  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  109:53  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\components\dashboard\RecentTransactions.tsx
+  71:44  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\components\dashboard\SalesChart.tsx
+  89:37  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\components\dashboard\SalesDetailModal.tsx
+  90:62  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  92:44  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\components\dashboard\TransactionDetailModal.tsx
+   88:48  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  106:46  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\components\inventory\AddProductModal.tsx
+  348:6  warning  React Hook useEffect has missing dependencies: 'formData.sku', 'generateSku', and 'mode'. Either include them or remove the dependency array  react-hooks/exhaustive-deps
+
+C:\projects\retailpro\src\contexts\TenantContext.tsx
+  221:17  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+C:\projects\retailpro\src\lib\db\json.ts
+  28:36  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  34:37  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\pages\BranchTransfers.tsx
+  101:6  warning  React Hook useEffect has a missing dependency: 'fetchData'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+C:\projects\retailpro\src\pages\InventoryReport.tsx
+   72:21  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   82:33  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   99:49  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  135:68  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  136:53  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  159:35  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  238:44  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\src\pages\POS.tsx
+  447:5  warning  React Hook useMemo has a missing dependency: 'getProductStock'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+C:\projects\retailpro\src\pages\SalesReport.tsx
+   82:21  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+   92:33  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  108:45  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  190:35  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+  282:40  error  Unexpected any. Specify a different type  @typescript-eslint/no-explicit-any
+
+C:\projects\retailpro\tokoonline\src\components\ui\button.tsx
+  5:14  warning  Fast refresh only works when a file only exports components. Use a new file to share constants or functions between components  react-refresh/only-export-components
+
+C:\projects\retailpro\tokoonline\src\lib\auth\use-current-user.ts
+  59:3  warning  Unused eslint-disable directive (no problems were reported from 'react-hooks/rules-of-hooks')
+
+C:\projects\retailpro\tokoonline\src\routes\order.$id.tsx
+  71:6  warning  React Hook useEffect has a missing dependency: 'order'. Either include it or remove the dependency array  react-hooks/exhaustive-deps
+
+Γ£û 34 problems (25 errors, 9 warnings)
+  0 errors and 3 warnings potentially fixable with the `--fix` option.
+

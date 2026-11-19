@@ -3,6 +3,35 @@
 Semua perubahan penting pada RetailPro didokumentasikan di sini.
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased] — 20 November 2026 — PPN vendor, total pengadaan bruto, dan cetak PO A4 (skema v13)
+
+Vendor kini memiliki satu pilihan **PPN 11% / Non-PPN** yang berdiri sendiri dari NPWP dan pajak POS. Harga katalog, harga baris PO, dan HPP tetap belum termasuk pajak; PO serta setiap penerimaan menyimpan snapshot subtotal, rate, pajak, dan total bruto agar dokumen historis tidak berubah ketika master vendor diedit.
+
+### Added
+
+- **Migrasi `013_vendor_ppn.sql`** — `suppliers.ppn_enabled`; snapshot `subtotal_amount`, `ppn_rate`, `ppn_amount` pada PO dan GRN. Upgrade v12 mempertahankan `total_amount` lama, menyalinnya ke subtotal, dan menetapkan pajak nol; jumlah tabel tetap 39
+- **Switch PPN vendor** di form, badge PPN/Non-PPN pada daftar dan detail, projection lengkap di pemilih vendor, serta detail audit
+- **Perhitungan pengadaan murni** di `src/lib/procurement.ts`: tiap `quantity × unit_cost` dibulatkan ke rupiah, subtotal dijumlahkan, PPN dokumen dibulatkan, lalu total bruto. Write path PO menghitung ulang di dalam transaksi
+- **Snapshot draf**: PO baru/ganti vendor membaca setting vendor authoritative di transaksi; edit draf vendor sama mempertahankan rate tersimpan; dokumen non-draft tidak membaca master vendor
+- **PPN per penerimaan**: rate hanya dari PO tersimpan, subtotal memakai kuantitas/harga aktual, satu `expenses` bruto per GRN, cash `amount_paid` bruto, biaya batch/last cost/pricelist tetap neto
+- **Dokumen A4 PO** (`src/lib/print/purchase-order.ts`) — HTML ter-escape, header tabel berulang, kolom nilai tidak terpotong, label status draf/batal/tolak, angka snapshot, pernyataan bukan faktur pajak, dan iframe sementara yang dibersihkan setelah print/cancel
+
+### Changed
+
+- Kontrak sheet vendor meng-append **`PPN` sebagai kolom ke-22**. Parser ketat menerima `PPN`/`Ya`/`true`/`1` atau `Non-PPN`/`Tidak`/`false`/`0`; blank berarti non-PPN untuk vendor baru, nilai asing dilaporkan. `VENDOR_SHEET_KEYS` membawa nilainya ke baris lanjutan dan ekspor satu-vendor hanya menulisnya di header vendor
+- Impor tetap aditif: vendor existing mempertahankan setting PPN database walau sheet membawa nilai lain; pratinjau menyatakan preservasi. Berkas lama tanpa kolom PPN tetap valid
+- Modal/detail PO dan modal/history penerimaan menampilkan subtotal, PPN, dan total bruto. Ekspor spreadsheet PO memakai angka snapshot; KPI/daftar tetap menjumlah `total_amount` yang sekarang bruto
+
+### Testing
+
+- Vitest: **34 berkas / 566 test** lulus; mencakup schema v13 fresh/upgrade, constraint rate/flag, parser dan round-trip sheet, snapshot draf, pembulatan, receipt parsial, payable bruto/HPP neto, rollback, renderer A4, dan HTML escaping
+- App + Node typecheck lulus. E2E fokus `tests/vendor-ppn-purchase-orders.e2e.ts` pada tenant lokal skema v13 lulus tanpa cache: **2 berkas / 2 test · 26,12s**; membuktikan toggle/reload vendor, PO PPN/non-PPN, snapshot historis, isi A4 tersimpan, receipt parsial, expense bruto, dan HPP neto
+- Verifikasi browser terpisah membuat draf `PO-20261119-0002` untuk vendor PPN dan menampilkan **Subtotal Rp 73.000 · PPN 11% Rp 8.030 · Total Pembayaran Rp 81.030** serta aksi **Cetak / Simpan PDF**; bukti tangkapan layar lokal ada di `.data/po-detail-ppn11.png`. Tenant cloud terkonfigurasi tetap tidak dimigrasi/reseed karena masih di bawah v13 (`suppliers.ppn_enabled` belum ada) dan tidak ada otorisasi migrasi cloud/fleet
+
+### Docs
+
+- Dokumen hidup diselaraskan ke skema v13 / 39 tabel / 34 berkas 566 test; log tenant dan riwayat skema mendapat baris baru. Body spesifikasi lama tetap beku dan hanya menerima catatan status bertanggal tentang PPN/A4 sebagai ekstensi kemudian
+
 ## [b14f89b] — 19 November 2026 — Sheet vendor satu vendor: satu berkas untuk satu pemasok, lengkap dengan varian dan pecahannya (tanpa migrasi)
 
 Lembar **Import Vendor + Produk** berubah bentuk menjadi yang sebenarnya diterima orang purchasing dari pemasok: **satu berkas untuk satu vendor**. Baris pertama hanya memuat data vendor — kode, nama, kategori, kontak, telepon, email, termin — dengan seluruh kolom produk dibiarkan kosong; baris kedua dan seterusnya adalah produk **vendor itu**, kolom vendor diwarisi dari baris di atasnya. Jumlah produk per berkas tidak lagi terbatas karena yang bertambah adalah baris, bukan kolom. Sheet ikut bertambah **tepat satu kolom di ujung** (20 → **21**, `Barcode Varian`), dan baris produknya kini **sekaya baris sheet produk**: sebuah baris boleh menyebut varian atau pecahan yang belum ada dan harganya tidak lagi dibuang. **Tidak ada perubahan skema** — `schema_version` tetap 12, `apply-schema-all` tidak dijalankan.

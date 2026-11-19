@@ -168,7 +168,7 @@ export function SalesDetailModal({ open, onOpenChange }: SalesDetailModalProps) 
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Cabang</TableHead>
+                  <TableHead>Outlet</TableHead>
                   <TableHead className="text-right">Penjualan</TableHead>
                   <TableHead className="text-center">Transaksi</TableHead>
                   <TableHead className="text-right">Pertumbuhan</TableHead>

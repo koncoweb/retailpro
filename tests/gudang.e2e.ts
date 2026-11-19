@@ -12,17 +12,17 @@ describe('warehouse staff', { tags: ['gudang'], agentContext: APP_CONTEXT }, () 
     await app.open('/mode-select');
 
     // The back office card is re-pointed for this role; it says so on screen.
-    await expect(screen.getByText('Pesanan Cabang')).toBeVisible();
+    await expect(screen.getByText('Pesanan Outlet')).toBeVisible();
 
     await agent.act('enter the back office');
 
     await expect(browser).toHaveURL('/backoffice/branches/orders');
-    await expect(screen.getByRole('heading', 'Pesanan Cabang', { level: 1 })).toBeVisible();
+    await expect(screen.getByRole('heading', 'Pesanan Outlet', { level: 1 })).toBeVisible();
   });
 
   test('the order queue groups the shops that asked for stock', { session: 'gudang' }, async ({ app, screen }) => {
     await app.open('/backoffice/branches/orders');
-    await expect(screen.getByRole('heading', 'Pesanan Cabang', { level: 1 })).toBeVisible();
+    await expect(screen.getByRole('heading', 'Pesanan Outlet', { level: 1 })).toBeVisible();
 
     // Requests are counted per lane, and each lane has a filter tab. The demo
     // tenant ships with no open request, so the counters may legitimately be 0.

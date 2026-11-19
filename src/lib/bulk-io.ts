@@ -353,6 +353,7 @@ export const VENDOR_COLUMNS: ColumnDef[] = [
   { key: "email", label: "Email", aliases: ["surel"], width: 26 },
   { key: "terms", label: "Termin (hari)", aliases: ["termin", "payment terms", "termin hari"], width: 12 },
   { key: "status", label: "Status", aliases: ["status vendor"], width: 12 },
+  { key: "ppn", label: "PPN", aliases: ["status ppn", "vendor ppn", "kena ppn"], width: 12 },
 ];
 
 export const VENDOR_TEMPLATE_ROWS: BulkRow[] = [
@@ -366,6 +367,7 @@ export const VENDOR_TEMPLATE_ROWS: BulkRow[] = [
     email: "contoh@vendor.id",
     terms: "30",
     status: "active",
+    ppn: "PPN",
   },
 ];
 
@@ -406,10 +408,9 @@ export const VENDOR_PRODUCT_COLUMNS: ColumnDef[] = [
   { key: "buyPrice", label: "Harga Beli", aliases: ["harga beli", "modal", "cost", "hpp"], width: 12 },
   { key: "minOrder", label: "Min Order", aliases: ["min order", "minimum order", "moq"], width: 12 },
   { key: "vendorSku", label: "Vendor SKU", aliases: ["vendor sku", "sku vendor"], width: 16 },
-  // Appended last on purpose: a catalogue exported before these columns existed
-  // keeps a stable column order, and an old file still lines up with its header.
-  // Without them a price line cannot say WHICH flavour of a multi-variant product
-  // it is quoting, and the importer would have to guess.
+  // These rich variant columns keep their established order. Without them a
+  // price line cannot say WHICH flavour of a multi-variant product it is quoting,
+  // and the importer would have to guess.
   {
     key: "variantSku",
     label: "Kode Varian",
@@ -428,6 +429,9 @@ export const VENDOR_PRODUCT_COLUMNS: ColumnDef[] = [
     aliases: ["barcode", "kode batang", "barcode varian"],
     width: 18,
   },
+  // PPN is appended after every existing integrated-sheet column so files and
+  // downstream formulas that rely on the first 21 positions remain stable.
+  { key: "ppn", label: "PPN", aliases: ["status ppn", "vendor ppn", "kena ppn"], width: 12 },
 ];
 
 /**
@@ -448,6 +452,7 @@ export const VENDOR_SHEET_KEYS: readonly string[] = [
   "phone",
   "email",
   "terms",
+  "ppn",
 ];
 
 /**
@@ -469,6 +474,7 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     phone: "081200000000",
     email: "contoh@vendor.id",
     terms: "30",
+    ppn: "PPN",
     sku: "",
     productName: "",
     productCategory: "",
@@ -493,6 +499,7 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     phone: "",
     email: "",
     terms: "",
+    ppn: "",
     sku: "CONTOH-001",
     productName: "Kopi Sachet Contoh",
     productCategory: "Minuman",
@@ -517,6 +524,7 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     phone: "",
     email: "",
     terms: "",
+    ppn: "",
     sku: "CONTOH-001",
     productName: "",
     productCategory: "",
@@ -541,6 +549,7 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     phone: "",
     email: "",
     terms: "",
+    ppn: "",
     sku: "CONTOH-002",
     productName: "Kopi Bubuk Contoh",
     productCategory: "Minuman",
@@ -565,6 +574,7 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     phone: "",
     email: "",
     terms: "",
+    ppn: "",
     sku: "CONTOH-002",
     productName: "",
     productCategory: "",
@@ -589,6 +599,7 @@ export const VENDOR_PRODUCT_TEMPLATE_ROWS: BulkRow[] = [
     phone: "",
     email: "",
     terms: "",
+    ppn: "",
     sku: "CONTOH-002",
     productName: "",
     productCategory: "",

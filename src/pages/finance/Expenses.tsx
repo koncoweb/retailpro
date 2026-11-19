@@ -180,7 +180,7 @@ export default function Expenses() {
       "Tanggal": format(new Date(e.date), "dd MMM yyyy"),
       "Kategori": e.category,
       "Supplier": e.supplier_name || "-",
-      "Cabang": e.branch_name || "Pusat/Semua",
+      "Outlet": e.branch_name || "Pusat/Semua",
       "Deskripsi": e.description || "-",
       "Jumlah": e.amount
     }));
@@ -313,7 +313,7 @@ export default function Expenses() {
                   <TableHead>Tanggal</TableHead>
                   <TableHead>Kategori</TableHead>
                   <TableHead>Supplier</TableHead>
-                  <TableHead>Cabang</TableHead>
+                  <TableHead>Outlet</TableHead>
                   <TableHead>Deskripsi</TableHead>
                   <TableHead className="text-right">Jumlah</TableHead>
                 </TableRow>

@@ -112,9 +112,19 @@ async function seedVariant(productId: string): Promise<string> {
   return variantId;
 }
 
-async function vendorRow(id: string): Promise<{ name: string; code: string | null; category: string | null }> {
-  const rows = await run<{ name: string; code: string | null; category: string | null }>(
-    `SELECT name, code, category FROM suppliers WHERE id = $1`,
+async function vendorRow(id: string): Promise<{
+  name: string;
+  code: string | null;
+  category: string | null;
+  ppn_enabled: number;
+}> {
+  const rows = await run<{
+    name: string;
+    code: string | null;
+    category: string | null;
+    ppn_enabled: number;
+  }>(
+    `SELECT name, code, category, ppn_enabled FROM suppliers WHERE id = $1`,
     [id]
   );
   return rows[0];
@@ -182,6 +192,20 @@ describe('resolveOrCreateVendor', () => {
     expect(row.name).toBe('PT Sumber Makmur');
     expect(row.code).toBe('VND-0001');
     expect(row.category).toBe('supplier');
+  });
+
+  it('stores imported PPN only when it creates a new vendor', async () => {
+    const id = await resolveOrCreateVendor(exec, {
+      name: 'PT PPN Baru',
+      ppnEnabled: true,
+    });
+    expect((await vendorRow(id as string)).ppn_enabled).toBe(1);
+
+    await resolveOrCreateVendor(exec, {
+      name: 'pt ppn baru',
+      ppnEnabled: false,
+    });
+    expect((await vendorRow(id as string)).ppn_enabled).toBe(1);
   });
 
   it('matches case- and space-insensitively rather than duplicating', async () => {

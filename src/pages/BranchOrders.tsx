@@ -260,7 +260,7 @@ export default function BranchOrders() {
       );
     } catch (error) {
       console.error("Failed to load branch orders:", error);
-      toast.error("Gagal memuat pesanan cabang");
+      toast.error("Gagal memuat pesanan outlet");
     } finally {
       setIsLoading(false);
     }
@@ -309,7 +309,45 @@ export default function BranchOrders() {
           ORDER BY p.name ASC`,
         [row.id]
       );
-      setDetail({ ...row, items: res.rows as unknown as OrderDetailLine[] });
+      let deliveryNote: OrderDetail["deliveryNote"] = null;
+      if (["in_transit", "received"].includes(row.status) && row.dispatched_at) {
+        deliveryNote = {
+          requestNumber: row.request_number, transferNumber: row.transfer_number,
+          dispatchedAt: row.dispatched_at, sourceName: row.warehouse_name || "Gudang pusat",
+          destinationName: row.branch_name || "Outlet", outletName: row.branch_name || "Outlet",
+          dispatchedBy: row.dispatched_by_name, receivedBy: row.received_by_name, notes: row.notes,
+          lines: res.rows.filter((item) => Number(item.quantity_dispatched) > 0).map((item) => ({
+            product_name: item.product_name, sku: item.sku, unit_name: item.unit_name,
+            quantity_sent: Number(item.quantity_dispatched) / (Number(item.conversion_factor) || 1),
+            conversion_factor: Number(item.conversion_factor) || 1,
+          })),
+        };
+        if (row.transfer_id) {
+          const transfer = await query<{
+            reference_number: string; sent_at: string | null; status: string;
+            source_name: string; destination_name: string; product_name: string; sku: string;
+            variant_name: string | null; unit_name: string | null; quantity_sent: number; conversion_factor: number;
+          }>(`SELECT tr.reference_number, tr.sent_at, tr.status, sw.name AS source_name,
+                     dw.name AS destination_name, COALESCE(p.name, ti.product_id) AS product_name,
+                     COALESCE(v.sku, p.sku, '') AS sku, v.name AS variant_name,
+                     ti.unit_name, ti.quantity_sent, ti.conversion_factor
+                FROM stock_transfers tr JOIN transfer_items ti ON ti.transfer_id = tr.id
+                LEFT JOIN warehouses sw ON sw.id = tr.source_warehouse_id
+                LEFT JOIN warehouses dw ON dw.id = tr.destination_warehouse_id
+                LEFT JOIN products p ON p.id = ti.product_id
+                LEFT JOIN product_variants v ON v.id = ti.variant_id
+               WHERE tr.id = $1 ORDER BY p.name, ti.id`, [row.transfer_id]);
+          const header = transfer.rows[0];
+          if (!header?.sent_at || !["in_transit", "completed"].includes(header.status)) deliveryNote = null;
+          else deliveryNote = {
+            ...deliveryNote, transferNumber: header.reference_number, dispatchedAt: header.sent_at,
+            sourceName: header.source_name, destinationName: header.destination_name,
+            lines: transfer.rows.map((item) => ({ ...item, quantity_sent: Number(item.quantity_sent), conversion_factor: Number(item.conversion_factor) || 1 })),
+          };
+        }
+        if (!deliveryNote?.lines.some((line) => line.quantity_sent > 0)) deliveryNote = null;
+      }
+      setDetail({ ...row, items: res.rows as unknown as OrderDetailLine[], deliveryNote });
       setIsDetailOpen(true);
     } catch (error) {
       console.error("Failed to load order lines:", error);
@@ -745,7 +783,7 @@ export default function BranchOrders() {
 
     const rows = visibleOrders.map((order) => ({
       "No. Pesanan": order.request_number,
-      Cabang: order.branch_name ?? "-",
+      Outlet: order.branch_name ?? "-",
       Gudang: order.warehouse_name ?? "-",
       Sumber: STOCK_REQUEST_SOURCE_LABEL[order.source] ?? order.source,
       Status: STOCK_REQUEST_STATUS_LABEL[order.status],
@@ -770,9 +808,9 @@ export default function BranchOrders() {
       { wch: 30 },
     ];
     const book = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(book, sheet, "Pesanan Cabang");
-    XLSX.writeFile(book, `Pesanan_Cabang_${new Date().toISOString().split("T")[0]}.xlsx`);
-    toast.success("Berhasil export pesanan cabang");
+    XLSX.utils.book_append_sheet(book, sheet, "Pesanan Outlet");
+    XLSX.writeFile(book, `Pesanan_Outlet_${new Date().toISOString().split("T")[0]}.xlsx`);
+    toast.success("Berhasil export pesanan outlet");
   };
 
   const canCreate = can("request_stock");
@@ -785,9 +823,9 @@ export default function BranchOrders() {
       <div className="space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl lg:text-3xl font-bold">Pesanan Cabang</h1>
+            <h1 className="text-2xl lg:text-3xl font-bold">Pesanan Outlet</h1>
             <p className="text-muted-foreground mt-1">
-              Permintaan stok dari cabang ke gudang pusat
+              Permintaan stok dari outlet ke gudang pusat
             </p>
           </div>
           <div className="flex gap-2">
@@ -837,7 +875,7 @@ export default function BranchOrders() {
           <div className="relative flex-1 max-w-md">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <Input
-              placeholder="Cari no. pesanan, cabang, atau transfer..."
+              placeholder="Cari no. pesanan, outlet, atau transfer..."
               className="pl-10"
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
@@ -846,10 +884,10 @@ export default function BranchOrders() {
           {!lockedBranchId && (
             <Select value={branchFilter} onValueChange={setBranchFilter}>
               <SelectTrigger className="w-[220px]">
-                <SelectValue placeholder="Semua cabang" />
+                <SelectValue placeholder="Semua outlet" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Semua cabang</SelectItem>
+                <SelectItem value="all">Semua outlet</SelectItem>
                 {branches.map((branch) => (
                   <SelectItem key={branch.id} value={branch.id}>
                     {branch.name}
@@ -891,7 +929,7 @@ export default function BranchOrders() {
             <TableHeader>
               <TableRow>
                 <TableHead>No. Pesanan</TableHead>
-                <TableHead>Cabang</TableHead>
+                <TableHead>Outlet</TableHead>
                 <TableHead>Gudang</TableHead>
                 <TableHead className="text-center">Sumber</TableHead>
                 <TableHead className="text-center">Baris</TableHead>

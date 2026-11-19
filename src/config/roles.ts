@@ -11,7 +11,7 @@ export const ROLES = [
   { value: "platform_owner", label: "Platform Owner", description: "Akses penuh ke seluruh sistem" },
   { value: "tenant_owner", label: "Owner", description: "Pemilik usaha, akses penuh ke tenant" },
   { value: "tenant_admin", label: "Admin", description: "Administrator tenant" },
-  { value: "store_manager", label: "Store Manager", description: "Kepala cabang/toko" },
+  { value: "store_manager", label: "Store Manager", description: "Kepala outlet/toko" },
   { value: "cashier", label: "Cashier", description: "Kasir, akses POS" },
   { value: "warehouse", label: "Warehouse Staff", description: "Staff gudang" },
   { value: "purchasing", label: "Purchasing", description: "Bagian pembelian" },
@@ -79,7 +79,7 @@ export const PERMISSION_CATALOG = {
     {
       key: "view_inventory",
       label: "Lihat Inventory",
-      hint: "Membuka daftar produk dan stok. Membuka juga halaman gudang, pesanan cabang, dan transfer.",
+      hint: "Membuka daftar produk dan stok. Membuka juga halaman gudang, pesanan outlet, dan transfer.",
     },
     {
       key: "add_stock",
@@ -89,7 +89,7 @@ export const PERMISSION_CATALOG = {
     {
       key: "transfer_stock",
       label: "Transfer Stok",
-      hint: "Memindahkan stok antar gudang atau antar cabang.",
+      hint: "Memindahkan stok antar gudang atau antar outlet.",
     },
     {
       key: "stock_opname",
@@ -103,8 +103,8 @@ export const PERMISSION_CATALOG = {
     },
     {
       key: "approve_stock_request",
-      label: "Setujui Pesanan Cabang",
-      hint: "Menyetujui atau menolak permintaan barang yang dibuat cabang.",
+      label: "Setujui Pesanan Outlet",
+      hint: "Menyetujui atau menolak permintaan barang yang dibuat outlet.",
     },
     {
       key: "dispatch_stock",
@@ -151,7 +151,7 @@ export const PERMISSION_CATALOG = {
     {
       key: "view_employees",
       label: "Lihat Karyawan",
-      hint: "Membuka daftar karyawan, termasuk gaji dan cabang tempat bekerja.",
+      hint: "Membuka daftar karyawan, termasuk gaji dan outlet tempat bekerja.",
     },
     {
       key: "add_employee",
@@ -161,7 +161,7 @@ export const PERMISSION_CATALOG = {
     {
       key: "edit_employee",
       label: "Edit Karyawan",
-      hint: "Mengubah nama, cabang, role, dan status aktif karyawan.",
+      hint: "Mengubah nama, outlet, role, dan status aktif karyawan.",
     },
     {
       key: "delete_employee",
@@ -209,8 +209,8 @@ export const PERMISSION_CATALOG = {
     },
     {
       key: "manage_branches",
-      label: "Kelola Cabang",
-      hint: "Menambah cabang, mengatur gudang miliknya, dan menentukan kepala cabang.",
+      label: "Kelola Outlet",
+      hint: "Menambah outlet, mengatur gudang miliknya, dan menentukan kepala outlet.",
     },
   ],
   collaboration: [

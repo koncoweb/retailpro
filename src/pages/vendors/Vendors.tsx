@@ -61,6 +61,8 @@ import {
   vendorCategoryLabel,
   vendorStatusBadgeClass,
   vendorStatusLabel,
+  vendorPpnLabel,
+  parseVendorPpn,
 } from "@/lib/vendor";
 import { VendorFormModal, type VendorRecord } from "@/components/vendors/VendorFormModal";
 import { VendorProductImport } from "@/components/vendors/VendorProductImport";
@@ -90,6 +92,7 @@ interface VendorRow {
   phone: string | null;
   email: string | null;
   payment_terms_days: number;
+  ppn_enabled: number;
   credit_limit: number;
   rating: number;
   outstanding: number;
@@ -123,7 +126,7 @@ function mapVendorStatus(value: string | null | undefined): string {
 const VENDOR_LIST_SQL = `
   SELECT
     v.id, v.name, v.code, v.legal_name, v.category, v.status, v.contact_person,
-    v.phone, v.email, v.payment_terms_days, v.credit_limit, v.rating,
+    v.phone, v.email, v.payment_terms_days, v.ppn_enabled, v.credit_limit, v.rating,
     COALESCE((
       SELECT SUM(e.amount - e.amount_paid)
         FROM expenses e
@@ -329,6 +332,7 @@ export default function Vendors() {
     email: v.email ?? "",
     terms: String(v.payment_terms_days ?? 0),
     status: v.status ?? "active",
+    ppn: vendorPpnLabel(v.ppn_enabled),
   });
 
   const handleExport = (format: "xlsx" | "csv") => {
@@ -352,6 +356,7 @@ export default function Vendors() {
       Telepon: vendor.phone || "-",
       Email: vendor.email || "-",
       Termin: `${vendor.payment_terms_days} hari`,
+      PPN: vendorPpnLabel(vendor.ppn_enabled),
       Produk: vendor.product_count,
       PO: vendor.po_count,
       Hutang: vendor.outstanding,
@@ -397,11 +402,15 @@ export default function Vendors() {
         email: (r.email ?? "").trim(),
         terms: parseIdNumber(r.terms),
         status: mapVendorStatus(r.status),
+        ppnEnabled: parseVendorPpn(r.ppn),
       }));
 
       // A vendor needs a name; an email, when present, must look like one.
       const valid = parsed.filter(
-        (v) => v.name && (!v.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email))
+        (v) =>
+          v.name &&
+          v.ppnEnabled !== null &&
+          (!v.email || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email))
       );
       const invalid = parsed.length - valid.length;
 
@@ -436,8 +445,9 @@ export default function Vendors() {
         await runTransaction(async (tx) => {
           await tx.query(
             `INSERT INTO suppliers
-               (code, name, legal_name, category, status, contact_person, phone, email, payment_terms_days)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+               (code, name, legal_name, category, status, contact_person, phone, email,
+                payment_terms_days, ppn_enabled)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
             [
               code,
               v.name,
@@ -448,6 +458,7 @@ export default function Vendors() {
               v.phone || null,
               v.email || null,
               v.terms,
+              v.ppnEnabled ? 1 : 0,
             ]
           );
         });
@@ -479,12 +490,12 @@ export default function Vendors() {
       <div className="flex flex-col gap-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl lg:text-3xl font-bold tracking-tight">Vendor</h1>
+            <h1 className="text-xl lg:text-2xl font-bold tracking-tight">Vendor</h1>
             <p className="text-muted-foreground mt-1">
               Master data pemasok: kontak, termin pembayaran, produk yang dipasok, dan hutang usaha.
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             <input
               ref={fileInputRef}
               type="file"
@@ -493,8 +504,8 @@ export default function Vendors() {
               className="hidden"
             />
             <PermissionGate permission="manage_vendor_prices">
-              <Button variant="outline" className="gap-2" onClick={() => fileInputRef.current?.click()}>
-                <Upload className="w-4 h-4" />
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => fileInputRef.current?.click()}>
+                <Upload className="w-3.5 h-3.5" />
                 Import
               </Button>
             </PermissionGate>
@@ -508,12 +519,12 @@ export default function Vendors() {
               onImported={fetchVendors}
             />
             <PermissionGate permission="export_reports">
-              <Button variant="outline" className="gap-2" onClick={() => handleExport("xlsx")}>
-                <Download className="w-4 h-4" />
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExport("xlsx")}>
+                <Download className="w-3.5 h-3.5" />
                 Export Excel
               </Button>
-              <Button variant="outline" className="gap-2" onClick={() => handleExport("csv")}>
-                <Download className="w-4 h-4" />
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => handleExport("csv")}>
+                <Download className="w-3.5 h-3.5" />
                 Export CSV
               </Button>
             </PermissionGate>
@@ -537,61 +548,62 @@ export default function Vendors() {
             </Button>
             <PermissionGate permission="manage_vendor_prices">
               <Button
-                className="gap-2"
+                size="sm"
+                className="gap-1.5"
                 onClick={() => {
                   setEditingVendor(null);
                   setFormOpen(true);
                 }}
               >
-                <Plus className="w-4 h-4" />
+                <Plus className="w-3.5 h-3.5" />
                 Tambah Vendor
               </Button>
             </PermissionGate>
           </div>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-card rounded-xl border p-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-card rounded-xl border p-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-primary/10">
                 <Truck className="w-5 h-5 text-primary" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Total Vendor</p>
-                <p className="text-2xl font-bold">{stats?.total_vendors ?? 0}</p>
+                <p className="text-xs text-muted-foreground">Total Vendor</p>
+                <p className="text-lg font-bold">{stats?.total_vendors ?? 0}</p>
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl border p-4">
+          <div className="bg-card rounded-xl border p-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-success/10">
                 <Building2 className="w-5 h-5 text-success" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Vendor Aktif</p>
-                <p className="text-2xl font-bold">{stats?.active_vendors ?? 0}</p>
+                <p className="text-xs text-muted-foreground">Vendor Aktif</p>
+                <p className="text-lg font-bold">{stats?.active_vendors ?? 0}</p>
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl border p-4">
+          <div className="bg-card rounded-xl border p-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-warning/10">
                 <Wallet className="w-5 h-5 text-warning" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Hutang Vendor</p>
-                <p className="text-xl font-bold">{formatCurrency(stats?.outstanding ?? 0)}</p>
+                <p className="text-xs text-muted-foreground">Hutang Vendor</p>
+                <p className="text-base font-bold">{formatCurrency(stats?.outstanding ?? 0)}</p>
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl border p-4">
+          <div className="bg-card rounded-xl border p-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-destructive/10">
                 <AlertTriangle className="w-5 h-5 text-destructive" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Tagihan Jatuh Tempo</p>
-                <p className="text-2xl font-bold text-destructive">{stats?.overdue_bills ?? 0}</p>
+                <p className="text-xs text-muted-foreground">Tagihan Jatuh Tempo</p>
+                <p className="text-lg font-bold text-destructive">{stats?.overdue_bills ?? 0}</p>
               </div>
             </div>
           </div>
@@ -681,7 +693,12 @@ export default function Vendors() {
                       </button>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary">{vendorCategoryLabel(vendor.category)}</Badge>
+                      <div className="flex flex-wrap gap-1">
+                        <Badge variant="secondary">{vendorCategoryLabel(vendor.category)}</Badge>
+                        <Badge variant={Number(vendor.ppn_enabled) === 1 ? "default" : "outline"}>
+                          {vendorPpnLabel(vendor.ppn_enabled)}
+                        </Badge>
+                      </div>
                     </TableCell>
                     <TableCell>
                       <p className="text-sm">{vendor.contact_person || "-"}</p>

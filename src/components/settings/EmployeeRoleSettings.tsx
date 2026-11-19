@@ -615,7 +615,7 @@ export function EmployeeRoleSettings() {
           <div>
             <h3 className="font-semibold">Role & Permission</h3>
             <p className="text-xs text-muted-foreground md:text-sm">
-              Atur apa yang boleh dilakukan tiap role dan di cabang/gudang mana
+              Atur apa yang boleh dilakukan tiap role dan di outlet/gudang mana
             </p>
           </div>
         </div>
@@ -954,11 +954,11 @@ function RoleEditor(props: RoleEditorProps) {
             </span>
           </div>
           <ScopeChips
-            title="Cabang"
+            title="Outlet"
             options={branches}
             selected={draft.scope.branches}
             disabled={!canEdit}
-            emptyHint="Belum ada cabang aktif."
+            emptyHint="Belum ada outlet aktif."
             onToggle={(id, on) => onScope("branches", id, on)}
             onAll={() => onScope("branches", null, false)}
           />
@@ -1162,10 +1162,10 @@ function RolePreview({
       </p>
       {scopeNames ? (
         <p className="text-xs">
-          Hanya melihat cabang: <span className="font-medium">{scopeNames}</span>
+          Hanya melihat outlet: <span className="font-medium">{scopeNames}</span>
         </p>
       ) : (
-        <p className="text-xs">Melihat semua cabang dan gudang.</p>
+        <p className="text-xs">Melihat semua outlet dan gudang.</p>
       )}
       {permissions.access_pos && (
         <p className="text-xs">

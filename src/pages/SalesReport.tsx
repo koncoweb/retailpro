@@ -108,7 +108,7 @@ export default function SalesReport() {
     const exportData = salesData.map((item: any) => ({
       "No. Invoice": item.invoice_number,
       "Tanggal": format(new Date(item.created_at), "dd MMM yyyy HH:mm", { locale: id }),
-      "Cabang": item.branch_name || "-",
+      "Outlet": item.branch_name || "-",
       "Kasir": item.cashier_name || "-",
       "Metode Pembayaran": paymentLabel(item.payment_method),
       "Kanal": item.source === "online" ? "Online" : "Kasir",
@@ -183,10 +183,10 @@ export default function SalesReport() {
             </div>
             <Select value={selectedBranch} onValueChange={setSelectedBranch}>
               <SelectTrigger className="w-full sm:w-[200px]">
-                <SelectValue placeholder="Pilih Cabang" />
+                <SelectValue placeholder="Pilih Outlet" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Semua Cabang</SelectItem>
+                <SelectItem value="all">Semua Outlet</SelectItem>
                 {branches.map((b: any) => (
                   <SelectItem key={b.id} value={b.id}>
                     {b.name}
@@ -254,7 +254,7 @@ export default function SalesReport() {
                 <TableRow>
                   <TableHead>No. Invoice</TableHead>
                   <TableHead>Tanggal</TableHead>
-                  <TableHead>Cabang</TableHead>
+                  <TableHead>Outlet</TableHead>
                   <TableHead>Kasir</TableHead>
                   <TableHead>Metode</TableHead>
                   <TableHead>Kanal</TableHead>

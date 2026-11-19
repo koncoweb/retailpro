@@ -19,6 +19,7 @@
  */
 import { parseIdNumber, VENDOR_SHEET_KEYS, type BulkRow } from "./bulk-io";
 import { normalizeVendorName } from "./vendor-catalog";
+import { parseVendorPpn } from "./vendor";
 import {
   groupsFromAttributes,
   parseAttributeCell,
@@ -38,6 +39,7 @@ export interface VendorSeed {
   phone: string | null;
   email: string | null;
   paymentTermsDays: number | null;
+  ppnEnabled: boolean;
   /** How many sheet lines produced this vendor; used for the summary counts. */
   rowCount: number;
 }
@@ -318,6 +320,7 @@ export function groupVendorProductRows(rows: BulkRow[]): VendorProductGroup[] {
           phone: null,
           email: null,
           paymentTermsDays: null,
+          ppnEnabled: parseVendorPpn(row.ppn) === true,
           rowCount: 0,
         },
         products: [],
@@ -494,6 +497,7 @@ export interface ExistingVendor {
   id: string;
   name: string;
   code: string | null;
+  ppnEnabled?: boolean | number | null;
 }
 
 /** Everything the planner needs, read by the caller in one pass. */
@@ -660,6 +664,8 @@ export interface VendorPlan {
   /** Null when the vendor has to be created; the writer then mints the code. */
   vendorId: string | null;
   isNew: boolean;
+  /** Stored master value; imports never replace it for an existing vendor. */
+  existingPpnEnabled: boolean | null;
   products: ProductPlan[];
 }
 
@@ -859,6 +865,7 @@ export function planVendorProductImport(
       vendor: seed,
       vendorId: known?.id ?? null,
       isNew: !known,
+      existingPpnEnabled: known ? Number(known.ppnEnabled ?? 0) === 1 : null,
       products: [],
     };
     if (known) summary.existingVendors += 1;

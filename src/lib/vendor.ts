@@ -41,6 +41,23 @@ export const VENDOR_PAYMENT_METHODS: Array<{ value: VendorPaymentMethod; label: 
 ];
 
 export const VENDOR_CODE_PREFIX = "VND";
+export const VENDOR_PPN_RATE = 11 as const;
+
+export function vendorPpnLabel(enabled: boolean | number | null | undefined): string {
+  return Number(enabled) === 1 ? `PPN ${VENDOR_PPN_RATE}%` : "Non-PPN";
+}
+
+/**
+ * Strict sheet parser. Blank stays false for backward-compatible files; any
+ * nonblank value outside the documented vocabulary is rejected by the caller.
+ */
+export function parseVendorPpn(value: unknown): boolean | null {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return false;
+  if (["ppn", "ya", "true", "1"].includes(text)) return true;
+  if (["non-ppn", "non ppn", "tidak", "false", "0"].includes(text)) return false;
+  return null;
+}
 
 /** Payment terms in days, offered as quick picks in the vendor form. */
 export const PAYMENT_TERM_OPTIONS = [0, 7, 14, 30, 45, 60, 90];

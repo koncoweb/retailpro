@@ -139,7 +139,7 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
 
           {/* Chart by Branch */}
           <div>
-            <h4 className="font-semibold mb-3">Produk Terjual per Cabang</h4>
+            <h4 className="font-semibold mb-3">Produk Terjual per Outlet</h4>
             <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={branchProductData}>
@@ -168,7 +168,7 @@ export function ProductSalesModal({ open, onOpenChange }: ProductSalesModalProps
                   <TableRow>
                     <TableHead>Produk</TableHead>
                     <TableHead>SKU</TableHead>
-                    <TableHead>Cabang</TableHead>
+                    <TableHead>Outlet</TableHead>
                     <TableHead className="text-center">Terjual</TableHead>
                     <TableHead className="text-right">Pendapatan</TableHead>
                   </TableRow>

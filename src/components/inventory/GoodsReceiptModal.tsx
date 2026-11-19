@@ -21,7 +21,15 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { AlertTriangle, Loader2, PackageCheck } from "lucide-react";
-import { isoToday, validateReceipt, type ReceiptLineInput } from "@/lib/procurement";
+import {
+  isoToday,
+  receiptProcurementAmounts,
+  lineSubtotal,
+  validateReceipt,
+  type ProcurementPpnRate,
+  type ReceiptLineInput,
+  type ReceiptAmountContext,
+} from "@/lib/procurement";
 
 /** One order line as the delivery desk sees it. */
 export interface ReceiptLineSource {
@@ -32,6 +40,8 @@ export interface ReceiptLineSource {
   /** Ordered quantity, in `unitName`. */
   ordered: number;
   alreadyReceived: number;
+  previousValue?: number;
+  previousSubtotal?: number;
   unitName: string;
   conversionFactor: number;
   /** Agreed price; the line starts here but the operator may correct it. */
@@ -60,6 +70,9 @@ interface GoodsReceiptModalProps {
   lines: ReceiptLineSource[];
   /** True when the tenant picks stock FEFO, which makes the expiry mandatory. */
   requireExpiry: boolean;
+  /** Saved on the PO; never read from the live vendor during receipt. */
+  ppnRate: ProcurementPpnRate;
+  amountContext?: Omit<ReceiptAmountContext, "cumulativeOrderedValue" | "finalReceipt">;
   onSubmit: (payload: GoodsReceiptPayload) => Promise<void>;
 }
 
@@ -86,6 +99,8 @@ export function GoodsReceiptModal({
   warehouseName,
   lines,
   requireExpiry,
+  ppnRate,
+  amountContext,
   onSubmit,
 }: GoodsReceiptModalProps) {
   const [drafts, setDrafts] = useState<Record<string, LineDraft>>({});
@@ -114,16 +129,33 @@ export function GoodsReceiptModal({
 
   const receivedOn = isoToday();
 
-  const totals = useMemo(() => {
-    const value = lines.reduce((sum, line) => {
+  const { totals, amountError } = useMemo(() => {
+    const amountLines = lines.map((line) => {
       const draft = drafts[line.purchaseOrderItemId];
-      const qty = draft ? parseNumber(draft.quantity) : 0;
-      const cost = draft ? parseNumber(draft.unitCost) : 0;
-      if (!Number.isFinite(qty) || !Number.isFinite(cost) || qty <= 0) return sum;
-      return sum + Math.round(qty * cost);
-    }, 0);
-    return { value };
-  }, [drafts, lines]);
+      const quantity = draft ? parseNumber(draft.quantity) : 0;
+      const unitCost = draft ? parseNumber(draft.unitCost) : 0;
+      return {
+        quantity: Number.isFinite(quantity) && quantity > 0 ? quantity : 0,
+        unitCost: Number.isFinite(unitCost) ? Math.max(0, unitCost) : 0,
+        previousValue: line.previousValue,
+        previousSubtotal: line.previousSubtotal,
+      };
+    });
+    const context = {
+      poSubtotal: 0, poDiscountAmount: 0, previousSubtotal: 0, previousDiscount: 0, previousPpn: 0,
+      ...amountContext,
+      cumulativeOrderedValue: lines.reduce((sum, line, index) => sum + lineSubtotal(line.alreadyReceived + amountLines[index].quantity, line.unitCost), 0),
+      finalReceipt: lines.length > 0 && lines.every((line, index) => line.alreadyReceived + amountLines[index].quantity >= line.ordered - 1e-9),
+    };
+    try {
+      return { totals: receiptProcurementAmounts(amountLines, ppnRate, context), amountError: null };
+    } catch (error) {
+      return {
+        totals: receiptProcurementAmounts(amountLines, ppnRate, { ...context, finalReceipt: false }),
+        amountError: error instanceof Error ? error.message : "Nilai penerimaan tidak valid",
+      };
+    }
+  }, [drafts, lines, ppnRate, amountContext]);
 
   const update = (id: string, patch: Partial<LineDraft>) => {
     setDrafts((current) => ({ ...current, [id]: { ...current[id], ...patch } }));
@@ -145,6 +177,7 @@ export function GoodsReceiptModal({
 
   const handleSubmit = async () => {
     if (saving) return;
+    if (amountError) { toast.error(amountError); return; }
 
     const receiptLines = buildLines();
     const invalid = validateReceipt(receiptLines, { receivedOn, requireExpiry });
@@ -304,11 +337,24 @@ export function GoodsReceiptModal({
                   );
                 })}
                 <TableRow className="bg-muted/50">
-                  <TableCell colSpan={7} className="text-right font-semibold">
-                    Nilai penerimaan:
+                  <TableCell colSpan={7} className="text-right font-medium">Subtotal:</TableCell>
+                  <TableCell className="text-right font-medium">
+                    Rp {totals.subtotal.toLocaleString("id-ID")}
                   </TableCell>
+                </TableRow>
+                <TableRow className="bg-muted/50"><TableCell colSpan={7} className="text-right">Diskon PO / DPP:</TableCell><TableCell className="text-right">-Rp {totals.discountAmount.toLocaleString("id-ID")} / Rp {totals.taxableAmount.toLocaleString("id-ID")}</TableCell></TableRow>
+                <TableRow className="bg-muted/50">
+                  <TableCell colSpan={7} className="text-right font-medium">
+                    {totals.ppnRate === 11 ? "PPN 11%:" : "PPN (Non-PPN):"}
+                  </TableCell>
+                  <TableCell className="text-right font-medium">
+                    Rp {totals.ppnAmount.toLocaleString("id-ID")}
+                  </TableCell>
+                </TableRow>
+                <TableRow className="bg-muted/50">
+                  <TableCell colSpan={7} className="text-right font-semibold">Total tagihan:</TableCell>
                   <TableCell className="text-right font-bold">
-                    Rp {totals.value.toLocaleString("id-ID")}
+                    Rp {totals.total.toLocaleString("id-ID")}
                   </TableCell>
                 </TableRow>
               </TableBody>
@@ -325,6 +371,7 @@ export function GoodsReceiptModal({
             />
           </div>
 
+          {amountError && <p role="alert" className="text-sm text-destructive">{amountError}</p>}
           <p className="text-xs text-muted-foreground">
             Penerimaan ini menambah stok di gudang tujuan, mengubah sisa pesanan, dan mencatat
             satu tagihan ke vendor dalam satu transaksi.
@@ -335,7 +382,7 @@ export function GoodsReceiptModal({
           <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
             Batal
           </Button>
-          <Button className="flex-1" onClick={handleSubmit} disabled={saving}>
+          <Button className="flex-1" onClick={handleSubmit} disabled={saving || !!amountError}>
             {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
             Simpan Penerimaan
           </Button>

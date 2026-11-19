@@ -14,9 +14,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Loader2, ShoppingCart } from "lucide-react";
+import { Loader2, Printer, ShoppingCart } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/formatters";
+import { printPurchaseOrder } from "@/lib/print/purchase-order";
 import {
   PO_ACTION_LABEL,
   PO_STATUS_LABEL,
@@ -35,6 +37,12 @@ export interface PurchaseOrderRow {
   supplier_name: string | null;
   branch_id: string | null;
   warehouse_id: string | null;
+  discount_type: "none" | "percent" | "amount";
+  discount_value: number;
+  discount_amount: number;
+  subtotal_amount: number;
+  ppn_rate: 0 | 11;
+  ppn_amount: number;
   total_amount: number;
   expected_date: string | null;
   created_at: string;
@@ -83,6 +91,10 @@ export interface PurchaseOrderReceipt {
   id: string;
   grn_number: string;
   received_at: string;
+  discount_amount: number;
+  subtotal_amount: number;
+  ppn_rate: 0 | 11;
+  ppn_amount: number;
   total_amount: number;
   supplier_document: string | null;
   /** Who booked the delivery; null on rows written before the actor was kept. */
@@ -210,9 +222,21 @@ export function PurchaseOrderDetail({
               </div>
             )}
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div><p className="text-muted-foreground">Diskon PO{order.discount_type === "percent" ? ` (${Number(order.discount_value)}%)` : ""}</p><p className="font-semibold">{formatCurrency(Number(order.discount_amount ?? 0))}</p></div>
+              <div><p className="text-muted-foreground">DPP</p><p className="font-semibold">{formatCurrency(Number(order.subtotal_amount) - Number(order.discount_amount ?? 0))}</p></div>
               <div>
-                <p className="text-muted-foreground">Nilai PO</p>
+                <p className="text-muted-foreground">Subtotal</p>
+                <p className="font-semibold">{formatCurrency(Number(order.subtotal_amount))}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">
+                  {Number(order.ppn_rate) === 11 ? "PPN 11%" : "PPN (Non-PPN)"}
+                </p>
+                <p className="font-semibold">{formatCurrency(Number(order.ppn_amount))}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground">Total Pembayaran</p>
                 <p className="font-semibold">{formatCurrency(Number(order.total_amount))}</p>
               </div>
               <div>
@@ -320,7 +344,10 @@ export function PurchaseOrderDetail({
                         <TableHead>Diterima Oleh</TableHead>
                         <TableHead>Dok. Vendor</TableHead>
                         <TableHead className="text-right">Baris</TableHead>
-                        <TableHead className="text-right">Nilai</TableHead>
+                        <TableHead className="text-right">Subtotal</TableHead>
+                        <TableHead className="text-right">Diskon</TableHead>
+                        <TableHead className="text-right">PPN</TableHead>
+                        <TableHead className="text-right">Total</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -332,6 +359,15 @@ export function PurchaseOrderDetail({
                           <TableCell>{receipt.supplier_document ?? "-"}</TableCell>
                           <TableCell className="text-right">{Number(receipt.line_count)}</TableCell>
                           <TableCell className="text-right">
+                            {formatCurrency(Number(receipt.subtotal_amount))}
+                          </TableCell>
+                          <TableCell className="text-right">{formatCurrency(Number(receipt.discount_amount ?? 0))}</TableCell>
+                          <TableCell className="text-right">
+                            {Number(receipt.ppn_rate) === 11
+                              ? formatCurrency(Number(receipt.ppn_amount))
+                              : "Non-PPN"}
+                          </TableCell>
+                          <TableCell className="text-right font-medium">
                             {formatCurrency(Number(receipt.total_amount))}
                           </TableCell>
                         </TableRow>
@@ -345,6 +381,46 @@ export function PurchaseOrderDetail({
         )}
 
         <div className="flex flex-wrap gap-2 justify-end">
+          {order && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                try {
+                  printPurchaseOrder({
+                    poNumber: order.po_number,
+                    status: order.status,
+                    vendorName: order.supplier_name ?? "Tanpa vendor",
+                    warehouseName: warehouseName(order.warehouse_id),
+                    createdAt: order.created_at,
+                    expectedDate: order.expected_date,
+                    paymentTermsDays: order.payment_terms_days,
+                    notes: order.notes,
+                    subtotalAmount: order.subtotal_amount,
+                    discountType: order.discount_type, discountValue: Number(order.discount_value), discountAmount: Number(order.discount_amount),
+                    ppnRate: order.ppn_rate,
+                    ppnAmount: order.ppn_amount,
+                    totalAmount: order.total_amount,
+                    lines: order.lines.map((line) => ({
+                      productName: line.product_name,
+                      sku: line.sku,
+                      variantName: line.variant_name,
+                      quantity: line.quantity,
+                      unitName: line.unit_name,
+                      unitCost: line.unit_cost,
+                      subtotal: line.subtotal,
+                    })),
+                  }, {
+                    onError: (error) => toast.error(error.message),
+                  });
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "Gagal membuka dokumen cetak");
+                }
+              }}
+            >
+              <Printer className="mr-2 h-4 w-4" />
+              Cetak / Simpan PDF
+            </Button>
+          )}
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Tutup
           </Button>

@@ -12,7 +12,7 @@
  *   - `id` defaults to a UUID when an INSERT omits it,
  *   - `ON CONFLICT` upserts work (they need the UNIQUE index to exist).
  */
-import { mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createClient, type Client } from '@libsql/client';
@@ -52,7 +52,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(12);
+    expect(rows[0].version).toBe(14);
   });
 
   it('exposes every table the application queries', async () => {
@@ -227,12 +227,12 @@ describe('seed state', () => {
     await run(
       `INSERT INTO branches (id, name, code, address, phone, email, status, sales_target)
        VALUES ($1, $2, $3, $4, $5, $6, 'active', $7)`,
-      [branchId, 'Cabang Pusat', 'PST', 'Jl. Mawar 1', '021-555', 'pusat@contoh.id', 50_000_000]
+      [branchId, 'Outlet Pusat', 'PST', 'Jl. Mawar 1', '021-555', 'pusat@contoh.id', 50_000_000]
     );
     await run(
       `INSERT INTO warehouses (id, name, code, type, branch_id, status, is_default)
        VALUES ($1, $2, $3, 'store', $4, 'active', 1)`,
-      [warehouseId, 'Cabang Pusat - Gudang', 'PST-GD', branchId]
+      [warehouseId, 'Outlet Pusat - Gudang', 'PST-GD', branchId]
     );
     await run(
       `INSERT INTO warehouses (id, name, code, type, branch_id, status, is_default)
@@ -677,7 +677,7 @@ describe('seed state', () => {
     // what upgrades an existing (v7) tenant. The fleet runner discovers
     // migrations by numeric prefix and its target version must match.
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*12/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*14/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '008_attendance_geo_face.sql'),
       'utf8'
@@ -877,6 +877,10 @@ describe('seed state', () => {
 
     const expected = [
       'purchase_orders.status',
+      'purchase_orders.subtotal_amount',
+      'purchase_orders.ppn_rate',
+      'purchase_orders.ppn_amount',
+      'purchase_orders.total_amount',
       'purchase_orders.payment_terms_days',
       'purchase_orders.submitted_by',
       'purchase_orders.approved_by',
@@ -892,6 +896,9 @@ describe('seed state', () => {
       'expenses.goods_receipt_id',
       'goods_receipts.grn_number',
       'goods_receipts.purchase_order_id',
+      'goods_receipts.subtotal_amount',
+      'goods_receipts.ppn_rate',
+      'goods_receipts.ppn_amount',
       'goods_receipts.total_amount',
       'goods_receipt_items.goods_receipt_id',
       'goods_receipt_items.purchase_order_item_id',
@@ -928,11 +935,11 @@ describe('seed state', () => {
     // long-dated the moment they crossed a branch boundary.
     await run(`INSERT INTO products (id, sku, name) VALUES ('product-xfer', 'SKU-XFER', 'Produk Transfer')`);
     await run(
-      `INSERT INTO branches (id, name, code) VALUES ('branch-2', 'Cabang Tujuan', 'TJU')`
+      `INSERT INTO branches (id, name, code) VALUES ('branch-2', 'Outlet Tujuan', 'TJU')`
     );
     await run(
       `INSERT INTO warehouses (id, name, code, type, branch_id, status, is_default)
-       VALUES ('warehouse-2', 'Cabang Tujuan - Gudang', 'TJU-GD', 'store', 'branch-2', 'active', 1)`
+       VALUES ('warehouse-2', 'Outlet Tujuan - Gudang', 'TJU-GD', 'store', 'branch-2', 'active', 1)`
     );
     await run(
       `INSERT INTO branch_warehouses (branch_id, warehouse_id, is_default, priority)
@@ -1169,7 +1176,7 @@ describe('payment channels (012)', () => {
 
   it('ships the migration 012 file that upgrades a v11 tenant', async () => {
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*12/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*14/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '012_payment_channels.sql'),
       'utf8'
@@ -1179,5 +1186,91 @@ describe('payment channels (012)', () => {
     expect(migration).toMatch(/ALTER TABLE tenants ADD COLUMN qris_image/i);
     expect(migration).toMatch(/CREATE TABLE IF NOT EXISTS storefront_orders/i);
     expect(migration).toMatch(/SET version = 12 WHERE id = 1/i);
+  });
+});
+
+describe('vendor PPN migration (013)', () => {
+  it('upgrades v12 history without changing document or expense totals', async () => {
+    const migrationPath = path.join(root, 'db', 'migrations', '013_vendor_ppn.sql');
+    const migrationDbPath = path.join(
+      os.tmpdir(),
+      `rp-migration-013-${process.pid}-${Date.now()}.db`
+    );
+    const migrationClient = createClient({ url: `file:${migrationDbPath}` });
+
+    try {
+      await migrationClient.executeMultiple(`
+        CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+        INSERT INTO schema_version (id, version) VALUES (1, 12);
+        CREATE TABLE suppliers (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+        CREATE TABLE purchase_orders (
+          id TEXT PRIMARY KEY,
+          total_amount INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE goods_receipts (
+          id TEXT PRIMARY KEY,
+          total_amount INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE expenses (
+          id TEXT PRIMARY KEY,
+          amount INTEGER NOT NULL,
+          amount_paid INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO suppliers (id, name) VALUES ('vendor-old', 'Vendor Lama');
+        INSERT INTO purchase_orders (id, total_amount) VALUES ('po-old', 1000000);
+        INSERT INTO goods_receipts (id, total_amount) VALUES ('gr-old', 450000);
+        INSERT INTO expenses (id, amount, amount_paid) VALUES ('exp-old', 450000, 125000);
+      `);
+      await migrationClient.executeMultiple(readFileSync(migrationPath, 'utf8'));
+
+      const version = await migrationClient.execute(
+        `SELECT version FROM schema_version WHERE id = 1`
+      );
+      expect(Number(version.rows[0].version)).toBe(13);
+
+      const vendor = await migrationClient.execute(
+        `SELECT ppn_enabled FROM suppliers WHERE id = 'vendor-old'`
+      );
+      expect(Number(vendor.rows[0].ppn_enabled)).toBe(0);
+
+      const po = await migrationClient.execute(
+        `SELECT subtotal_amount, ppn_rate, ppn_amount, total_amount
+           FROM purchase_orders WHERE id = 'po-old'`
+      );
+      expect(po.rows[0]).toMatchObject({
+        subtotal_amount: 1000000,
+        ppn_rate: 0,
+        ppn_amount: 0,
+        total_amount: 1000000,
+      });
+
+      const receipt = await migrationClient.execute(
+        `SELECT subtotal_amount, ppn_rate, ppn_amount, total_amount
+           FROM goods_receipts WHERE id = 'gr-old'`
+      );
+      expect(receipt.rows[0]).toMatchObject({
+        subtotal_amount: 450000,
+        ppn_rate: 0,
+        ppn_amount: 0,
+        total_amount: 450000,
+      });
+
+      const expense = await migrationClient.execute(
+        `SELECT amount, amount_paid FROM expenses WHERE id = 'exp-old'`
+      );
+      expect(expense.rows[0]).toMatchObject({ amount: 450000, amount_paid: 125000 });
+
+      await expect(
+        migrationClient.execute(`UPDATE suppliers SET ppn_enabled = 2 WHERE id = 'vendor-old'`)
+      ).rejects.toThrow();
+      await expect(
+        migrationClient.execute(`UPDATE purchase_orders SET ppn_rate = 10 WHERE id = 'po-old'`)
+      ).rejects.toThrow();
+      await expect(
+        migrationClient.execute(`UPDATE goods_receipts SET ppn_amount = -1 WHERE id = 'gr-old'`)
+      ).rejects.toThrow();
+    } finally {
+      migrationClient.close();
+    }
   });
 });

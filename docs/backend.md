@@ -3,9 +3,9 @@
 | | |
 |---|---|
 | Dokumen | `docs/backend.md` |
-| Terakhir diperbarui | **2026-11-19** |
+| Terakhir diperbarui | **2026-11-20** |
 | Database | Turso / libSQL — satu database per tenant + satu control database (dua-duanya di cloud untuk produksi) |
-| Versi skema tenant | **12** (`db/schema/tenant.sql`, migrasi `db/migrations/`) — **impor varian kaya 2026-11-19 tidak menambah migrasi** |
+| Versi skema tenant | **13** (`db/schema/tenant.sql`, migrasi `db/migrations/`) — PPN vendor dan snapshot pajak pengadaan ada di migrasi `013_vendor_ppn.sql` |
 | Runtime API | Node ≥ 20 (Vercel Functions) |
 
 > Dokumen ini menggantikan `Backend.md` lama (arsitektur Neon/Postgres dengan RLS) yang sudah
@@ -16,8 +16,8 @@
 ## 1. Peta kode
 
 ```
-db/schema/tenant.sql      Skema DB tenant (39 tabel + indeks + trigger), idempoten, schema_version = 12
-db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 012)
+db/schema/tenant.sql      Skema DB tenant (39 tabel + indeks + trigger), idempoten, schema_version = 13
+db/migrations/*.sql       Migrasi bertahap untuk database yang masih versi lama (002 … 013)
 db/schema/control.sql     Skema control DB (Better Auth 4 tabel + registry)
 db/schema/seed.sql        Seed provisioning dengan placeholder {{TOKEN}}
 db/__tests__/             Test skema, seed, dan tenant demo (DB sementara per run)
@@ -216,7 +216,7 @@ dengan yang bisa dibaca pengunjung mana pun.
 
 | Tabel | Kolom |
 |---|---|
-| `schema_version` | `id` (selalu 1), `version` (**12**), `applied_at` |
+| `schema_version` | `id` (selalu 1), `version` (**13**), `applied_at` |
 | `tenants` | `id`, `name`, `slug`, `settings` (JSON: `role_permissions`, `custom_roles`, `role_scopes`, `user_permissions` (pengecualian izin per karyawan, `userId → {permKey: false}`, restrict-only), `payroll_config`, `receipt`, `printer` (`mode` driver/usb/bluetooth + `paperWidthMm`), `tax`, `bank`, `pricing` (`auto_pack_price`, `min_margin_pct`, `rounding`), `inventory` → `{stock_issue_method}`, `payment_channels` → `{channels: PaymentChannel[], updated_at}`), `qris_image` (v12 — data URL gambar QRIS statis, terpisah dari `settings` agar tidak membengkak), `created_at` |
 | `branches` | `id`, `name`, `code`, `type` (`store`/`online`/`hybrid`), `is_headquarters`, `parent_branch_id`, `address`, `phone`, `email`, `timezone` (default `Asia/Jakarta`), `status`, `sales_target`, `latitude`, `longitude`, `geo_radius_m` (default 150), `require_geo`, `require_face` (v8 — titik & radius geofence tempat karyawan absen), `created_at` |
 | `warehouses` | `id`, `name`, `code`, `type` (`central`/`regional`/`store`), `branch_id` (**NULL** = gudang bersama/DC), `address`, `status`, `is_default`, `latitude`, `longitude`, `geo_radius_m`, `require_geo`, `require_face` (v8), `created_at` |
@@ -228,7 +228,7 @@ dengan yang bisa dibaca pengunjung mana pun.
 | Tabel | Kolom |
 |---|---|
 | `categories` | `id`, `name`, `created_at` |
-| `suppliers` | Master vendor. `id`, `code` (unik, `VND-0001`), `name` (unik), `legal_name`, `category` (`supplier`/`distributor`/`trader`/`manufacturer`/`service`/`other`), `tax_id`, `website`, `contact_person`, `phone`, `email`, `address`, `city`, `province`, `postal_code`, `payment_terms_days`, `credit_limit`, `currency`, `bank_name`, `bank_account_number`, `bank_account_name`, `lead_time_days`, `rating` (0–5), `status` (`active`/`inactive`/`blacklisted`), `notes`, `settings`, `created_at`, `updated_at` |
+| `suppliers` | Master vendor. `id`, `code` (unik, `VND-0001`), `name` (unik), `legal_name`, `category` (`supplier`/`distributor`/`trader`/`manufacturer`/`service`/`other`), `tax_id`, `ppn_enabled` (v13, 0/1; independen dari NPWP dan pajak POS), `website`, `contact_person`, `phone`, `email`, `address`, `city`, `province`, `postal_code`, `payment_terms_days`, `credit_limit`, `currency`, `bank_name`, `bank_account_number`, `bank_account_name`, `lead_time_days`, `rating` (0–5), `status` (`active`/`inactive`/`blacklisted`), `notes`, `settings`, `created_at`, `updated_at` |
 | `customers` | `id`, `name`, `phone`, `email`, `address`, `notes`, `preferences`, `total_spent`, `points`, `created_at` |
 | `products` | **Model**, bukan SKU: `id`, `sku`, `name`, `description`, `category`, `cost_price` (ringkasan varian default, satuan dasar), `min_stock_level`, `is_tracked`, `supplier_id`, `variant_attributes` (JSON grup atribut berurutan, mis. `[{"name":"Rasa","values":["Putih","Cokelat"]}]`), `created_at` |
 | `product_variants` | **SKU yang dijual dan diistok**: `id`, `product_id`, `sku` (unik), `barcode`, `name` (label manusia, mis. `"Susu 250ml"`), `attributes` (JSON `{"Rasa":"Cokelat"}`), `cost_price`, `price`, `status`, `created_at` |
@@ -273,9 +273,9 @@ Harga jual ada di `product_units.price` / `product_variants.price`, **tidak** di
 | `stock_request_items` | `id`, `request_id`, `product_id`, `variant_id`, `unit_name`, `conversion_factor`, `quantity_requested`, `quantity_approved`, `quantity_dispatched`, `quantity_received`, `notes` — semua kuantitas dalam **satuan dasar** |
 | `stock_transfers` | Dokumen **eksekusi**: `id`, `reference_number`, `source_warehouse_id`, `destination_warehouse_id`, `status` (`pending`/`in_transit`/`completed`/`cancelled`), `notes`, `requested_by`, `approved_by`, `received_by`, `sent_at`, `received_at`, `request_id` (tautan ke permintaan), `created_at` |
 | `transfer_items` | `id`, `transfer_id`, `product_id`, `variant_id`, `source_batch_id`, `quantity_sent`, `quantity_received`, `unit_name`, `conversion_factor`, `cost_price`, `notes` |
-| `purchase_orders` | `id`, `po_number`, `supplier_id`, `supplier_name`, `branch_id`, `warehouse_id`, `status` (`draft`/`submitted`/`approved`/`partially_received`/`received`/`rejected`/`cancelled`; `ordered` dipensiunkan di v5 dan dinormalkan ke `approved`), `total_amount`, `notes`, `expected_date`, `payment_terms_days` (snapshot termin vendor saat pesanan dibuat), jejak setiap langkah (`submitted_by/at`, `approved_by/at`, `rejected_by/at` + `rejection_reason`, `cancelled_by/at` + `cancel_reason`), `received_at`, `created_by`, `created_at`, `updated_at`. `received_amount` **bukan** kolom — dihitung dari `goods_receipts` lewat `effectiveReceivedAmount()` |
+| `purchase_orders` | `id`, `po_number`, `supplier_id`, `supplier_name`, `branch_id`, `warehouse_id`, `status` (`draft`/`submitted`/`approved`/`partially_received`/`received`/`rejected`/`cancelled`; `ordered` dipensiunkan di v5 dan dinormalkan ke `approved`), `subtotal_amount` (neto), `ppn_rate` (0/11 snapshot vendor), `ppn_amount`, `total_amount` (bruto), `notes`, `expected_date`, `payment_terms_days` (snapshot termin vendor saat pesanan dibuat), jejak setiap langkah (`submitted_by/at`, `approved_by/at`, `rejected_by/at` + `rejection_reason`, `cancelled_by/at` + `cancel_reason`), `received_at`, `created_by`, `created_at`, `updated_at`. `received_amount` **bukan** kolom — dihitung dari `goods_receipts` lewat `effectiveReceivedAmount()` |
 | `purchase_order_items` | `id`, `purchase_order_id`, `product_id`, `variant_id`, `quantity`, `quantity_received`, `unit_name`, `conversion_factor`, `unit_cost`, `subtotal`, `notes` |
-| `goods_receipts` | Dokumen **penerimaan** (satu PO boleh beberapa kali datang): `id`, `grn_number`, `purchase_order_id`, `warehouse_id`, `branch_id`, `supplier_id`, `supplier_name`, `supplier_document`, `total_amount`, `notes`, `received_by`, `received_at`, `created_at` |
+| `goods_receipts` | Dokumen **penerimaan** (satu PO boleh beberapa kali datang): `id`, `grn_number`, `purchase_order_id`, `warehouse_id`, `branch_id`, `supplier_id`, `supplier_name`, `supplier_document`, `subtotal_amount` (harga aktual neto), `ppn_rate` (snapshot rate PO), `ppn_amount` (dibulatkan per GRN), `total_amount` (bruto yang dibukukan ke `expenses`), `notes`, `received_by`, `received_at`, `created_at` |
 | `goods_receipt_items` | `id`, `goods_receipt_id`, `purchase_order_item_id`, `product_id`, `variant_id`, `quantity` (dalam `unit_name` PO), `unit_name`, `conversion_factor`, `unit_cost` (harga yang benar-benar dibayar), `subtotal`, `batch_id`, `batch_number`, `expiry_date` |
 | `vendor_products` | Katalog per vendor: `id`, `vendor_id`, `product_id`, `vendor_sku`, `last_cost`, `lead_time_days`, `min_order_qty`, `is_preferred`, `created_at`. `UNIQUE(vendor_id, product_id)` |
 | `vendor_price_list` | **Pricelist kesepakatan**: `id`, `vendor_id`, `variant_id`, `unit_name` (disalin saat simpan), `conversion_factor`, `buy_price` (**per pecahan**, bukan per satuan dasar), `min_qty`, `status` (`active`/`inactive`), `notes`, `updated_by`, `updated_at`, `created_at`. `UNIQUE(vendor_id, variant_id, unit_name)` |
@@ -294,7 +294,9 @@ sudah menunjuk ke sana, jadi modul vendor memperluas tabel yang sama (skema v3).
 `vendor_products` adalah katalog N:N (produk bisa dipasok beberapa vendor; satu vendor
 utama tetap di `products.supplier_id`). `vendor_payments` adalah buku pembayaran cicilan —
 saldo hutang tetap di `expenses.amount_paid`, jadi Hutang/AP dan halaman vendor tidak
-pernah menghitung kewajiban dua kali.
+pernah menghitung kewajiban dua kali. Sejak v13, `expenses.amount` untuk penerimaan PO adalah
+total bruto GRN; `product_batches.cost_price`, `vendor_products.last_cost`, dan
+`vendor_price_list.buy_price` tetap neto.
 
 **Katalog vendor punya satu penulis** (v10): `vendor_products`, `vendor_price_list`, dan
 `is_preferred` hanya boleh ditulis lewat `src/lib/vendor-catalog.ts`; lihat §5.12.
@@ -693,6 +695,10 @@ Test: `src/lib/vendor-catalog.test.ts` (26), `src/lib/vendor-import.test.ts` (51
     `src/lib/product-write.ts`. Tepat satu `is_preferred = 1` per produk; master vendor/produk bersifat
     aditif (tidak pernah di-rename baris yang sudah ada, termasuk saat impor), sedangkan harga
     **boleh** mengikuti sheet. Lihat §5.12 dan `docs/spec-vendor-produk-terintegrasi.md`.
+17. **PPN pengadaan adalah snapshot dokumen (v13).** PO baru mengambil 0/11 dari vendor; edit draf
+    dengan vendor yang sama mempertahankan rate tersimpan, sedangkan ganti vendor mengambil rate
+    vendor baru. Penerimaan hanya membaca rate PO, menghitung pajak sekali per GRN, dan membukukan
+    satu `expenses` bruto. Harga baris, HPP batch, `last_cost`, dan pricelist selalu neto.
 
 ---
 
@@ -708,7 +714,7 @@ Test: `src/lib/vendor-catalog.test.ts` (26), `src/lib/vendor-import.test.ts` (51
 | `npm run demo:tenant` | Seed tenant contoh (lokal, `--url`, atau `--tenant <slug>`) |
 | `npm run demo:local` | Siapkan data plane lokal lengkap: control DB file + shim + tenant demo |
 | `npm run demo:cloud` | Buat/reseed control DB + tenant Thalia di Turso cloud; `-- --write-env` menulis `CONTROL_DB_URL`/`CONTROL_DB_TOKEN`/`TURSO_GROUP`/`STOREFRONT_TENANT_SLUG` ke `.env` |
-| `npm test` | Vitest: **33 berkas, 547 test** (terukur 2026-11-19; translate, skema, seed, demo tenant, roles, permission-matrix, date-range, inventory-utils, units, bulk-io, password, stock-issue, stock-movement, branch-orders, vendor, **vendor-catalog**, **vendor-import**, **product-import**, procurement, goods-receipt, pricing, variants, geolocation, face, pos-branch, shift-attendance, **void**, **chat-mentions**, **payment-channels**, **print**: escpos/receipt-doc/zreport-doc/html-render) |
+| `npm test` | Vitest: **34 berkas, 566 test** (terukur 2026-11-20; termasuk skema/upgrade v13, parser + round-trip PPN sheet vendor, snapshot PO, penerimaan/payable bruto dengan HPP neto, serta renderer HTML A4 PO di samping suite sebelumnya) |
 | `npm run test:e2e` | tester.army (`e2e run`): menjalankan SPA di Chromium; butuh dev server `:8080` (+ `dev:api` untuk alur auth) dan `E2E_AI_*`. Detail di [frontend.md](frontend.md) §12 |
 
 ---
@@ -735,6 +741,7 @@ Test: `src/lib/vendor-catalog.test.ts` (26), `src/lib/vendor-import.test.ts` (51
 | 2026-11-17 | **Skema v10** (`db/migrations/010_vendor_catalog_indexes.sql`): `idx_vendor_products_pref ON vendor_products(product_id, is_preferred)` dan `idx_suppliers_name_nc ON suppliers(name COLLATE NOCASE)`. **Tidak ada tabel atau kolom baru** — yang berubah adalah cara tabel lama dibaca dan siapa yang boleh menulisnya | Tenant v9: dua `CREATE INDEX IF NOT EXISTS` saja, tanpa backfill dan tanpa perubahan data; `tenant.sql` men-stamp `(1, 10)` dan runner menaikkan `CURRENT_SCHEMA_VERSION` 9 → 10. Jumlah tabel tetap 34. Invarian baru dijaga `db/__tests__/schema.test.ts` (indeks) dan `db/__tests__/demo-tenant.test.ts` (katalog⇄harga, `is_preferred` tunggal) — lihat §5.12 dan [spec-vendor-produk-terintegrasi.md](spec-vendor-produk-terintegrasi.md) |
 | 2026-11-17 | **Skema v11** (`db/migrations/011_chat.sql`): empat tabel chat internal sepenuhnya aditif — `chat_conversations` (channel/DM, denormalized `last_message_at`/`last_message_sender_id`/`last_message_preview`), `chat_participants` (PK `(conversation_id, user_id)`, `member_role`), `chat_messages` (`body` teks natural, soft-delete `deleted`), `chat_mentions` (snapshot `label` per mention); tujuh indeks termasuk partial `UNIQUE(dm_key)` dan `UNIQUE(name) WHERE kind='channel'` | Tenant v10 → v11: hanya `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`, **tidak ada `ALTER` pada tabel lama** sehingga nol risiko ke baris live; `tenant.sql` men-stamp `(1, 11)`, runner menaikkan `CURRENT_SCHEMA_VERSION` 10 → 11, jumlah tabel 34 → 38. Kunci izin `use_chat`/`manage_channels` di `src/config/roles.ts` (chat = akses data sisi browser lewat `src/lib/chat.ts`, tanpa endpoint baru). Tidak ada row-level security — visibilitas channel/DM aturan UI, bukan batas keamanan. Lihat §5.13 dan [spec-chat-internal.md](spec-chat-internal.md) |
 | 2026-11-19 | **Skema v12** (`db/migrations/012_payment_channels.sql`): `transactions` + `fee_amount INTEGER NOT NULL DEFAULT 0` / `fee_label TEXT` / `source TEXT NOT NULL DEFAULT 'pos'`; `tenants` + `qris_image TEXT`; tabel baru `storefront_orders` (satu baris per seller per pesanan online, `parent_id`/`items` JSON/`status` `pending_payment`..`void`, `transaction_id` nullable) + tiga indeks (`parent_id`, `status`, `created_at`) | Tenant v11 → v12: `ALTER TABLE` dengan default konstan (nol risiko ke baris live) + `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`; `tenant.sql` men-stamp `(1, 12)`, runner menaikkan `CURRENT_SCHEMA_VERSION` 11 → 12, jumlah tabel 38 → 39. Channel pembayaran disimpan sebagai kunci JSON `payment_channels` di `tenants.settings` (pola yang sama dengan pengaturan lain); gambar QRIS di kolom `tenants.qris_image` terpisah agar dokumen settings tidak membengkak. Lihat §5.14 dan [spec-channel-pembayaran.md](spec-channel-pembayaran.md) |
+| 2026-11-20 | **Skema v13** (`db/migrations/013_vendor_ppn.sql`): `suppliers.ppn_enabled` (0/1), serta `subtotal_amount`, `ppn_rate` (0/11), dan `ppn_amount` pada `purchase_orders` dan `goods_receipts`; `total_amount` menjadi total bruto dokumen | Tenant v12 → v13: vendor lama default non-PPN; subtotal PO/GR lama diisi dari total historis, rate/pajak nol, sehingga total lama, expense/payment, dan HPP tidak berubah. Tidak ada tabel baru (tetap 39). Database baru memperoleh CHECK flag/rate dan nilai nonnegatif langsung dari `tenant.sql`; runner/stamp naik ke 13 |
 
 Cara mengubah skema ke depan:
 

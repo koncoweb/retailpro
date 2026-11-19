@@ -123,7 +123,7 @@ export default function BranchDashboard() {
     }
 
     const exportData = performance.map(b => ({
-      "Nama Cabang": b.name,
+      "Nama Outlet": b.name,
       "Status": b.status,
       "Jumlah Transaksi": b.transactions,
       "Total Penjualan": b.sales
@@ -131,7 +131,7 @@ export default function BranchDashboard() {
 
     const ws = XLSX.utils.json_to_sheet(exportData);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Performa Cabang");
+    XLSX.utils.book_append_sheet(wb, ws, "Performa Outlet");
 
     const wscols = [
       { wch: 25 }, // Nama
@@ -141,8 +141,8 @@ export default function BranchDashboard() {
     ];
     ws['!cols'] = wscols;
 
-    XLSX.writeFile(wb, `Performa_Cabang_${new Date().toISOString().split('T')[0]}.xlsx`);
-    toast.success("Berhasil export data performa cabang");
+    XLSX.writeFile(wb, `Performa_Outlet_${new Date().toISOString().split('T')[0]}.xlsx`);
+    toast.success("Berhasil export data performa outlet");
   };
 
   if (statsLoading || perfLoading) {
@@ -153,9 +153,9 @@ export default function BranchDashboard() {
     <div className="space-y-6 p-6 pb-16">
       <div className="flex items-start justify-between">
         <div className="flex flex-col gap-2">
-          <h1 className="text-3xl font-bold tracking-tight">Dashboard Percabangan</h1>
+          <h1 className="text-3xl font-bold tracking-tight">Dashboard Outlet</h1>
           <p className="text-muted-foreground">
-            Ringkasan performa dan statistik seluruh cabang bulan ini.
+            Ringkasan performa dan statistik seluruh outlet bulan ini.
           </p>
         </div>
         <PermissionGate permission="export_reports">
@@ -169,7 +169,7 @@ export default function BranchDashboard() {
       {/* Stats Grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <StatCard 
-          title="Total Cabang" 
+          title="Total Outlet"
           value={stats?.totalBranches || 0} 
           icon={Building2} 
           description={`${stats?.activeBranches || 0} Aktif`}
@@ -184,13 +184,13 @@ export default function BranchDashboard() {
           title="Total Karyawan" 
           value={stats?.totalEmployees || 0} 
           icon={Users} 
-          description="Terdaftar di cabang"
+          description="Terdaftar di outlet"
         />
         <StatCard 
           title="Rata-rata Penjualan" 
           value={formatCurrency(stats?.totalBranches ? (stats.totalSales / stats.totalBranches) : 0)} 
           icon={TrendingUp} 
-          description="Per cabang"
+          description="Per outlet"
         />
       </div>
 
@@ -198,7 +198,7 @@ export default function BranchDashboard() {
         {/* Chart Section */}
         <Card className="col-span-4">
           <CardHeader>
-            <CardTitle>Performa Penjualan Cabang</CardTitle>
+            <CardTitle>Performa Penjualan Outlet</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
             <div className="h-[350px] w-full">
@@ -234,14 +234,14 @@ export default function BranchDashboard() {
         {/* Top Branches List */}
         <Card className="col-span-3">
           <CardHeader>
-            <CardTitle>Peringkat Cabang</CardTitle>
+            <CardTitle>Peringkat Outlet</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                 <TableRow>
-                  <TableHead>Cabang</TableHead>
+                  <TableHead>Outlet</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Penjualan</TableHead>
                 </TableRow>

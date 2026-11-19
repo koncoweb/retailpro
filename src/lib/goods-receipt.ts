@@ -23,6 +23,9 @@ import {
   derivePurchaseOrderStatus,
   isoToday,
   nextDocumentNumber,
+  receiptProcurementAmounts,
+  receiptLineSubtotal,
+  lineSubtotal,
   RECEIVABLE_STATUSES,
   validateReceipt,
   type PurchaseOrderStatus,
@@ -81,7 +84,12 @@ export interface ReceivePurchaseOrderResult {
   grnNumber: string;
   /** The order's status after this delivery. */
   status: PurchaseOrderStatus;
-  /** Value of this delivery, in rupiah — what the bill is for. */
+  /** Tax-exclusive value of this delivery. */
+  subtotalAmount: number;
+  discountAmount: number;
+  ppnRate: 0 | 11;
+  ppnAmount: number;
+  /** Gross value of this delivery — what the bill is for. */
   totalAmount: number;
   /** How many order lines were touched. */
   linesReceived: number;
@@ -96,6 +104,9 @@ interface PurchaseOrderRow {
   supplier_id: string | null;
   supplier_name: string | null;
   payment_terms_days: number | null;
+  ppn_rate: number | null;
+  subtotal_amount: number;
+  discount_amount: number;
 }
 
 interface PurchaseOrderItemRow {
@@ -133,7 +144,7 @@ export async function receivePurchaseOrder(
 
   const headerRes = await tx.query<PurchaseOrderRow>(
     `SELECT id, po_number, status, warehouse_id, branch_id, supplier_id, supplier_name,
-            payment_terms_days
+            payment_terms_days, ppn_rate, subtotal_amount, discount_amount
        FROM purchase_orders
       WHERE id = $1`,
     [params.purchaseOrderId]
@@ -209,20 +220,43 @@ export async function receivePurchaseOrder(
   });
   if (invalid) throw new GoodsReceiptError(invalid);
 
-  const delivered = planned.filter((line) => line.quantity > EPS);
+  const priorLines = await tx.query<{ item_id: string; value: number; subtotal: number }>(
+    `SELECT i.purchase_order_item_id AS item_id, SUM(i.quantity * i.unit_cost) AS value,
+            SUM(i.subtotal) AS subtotal
+       FROM goods_receipt_items i JOIN goods_receipts gr ON gr.id = i.goods_receipt_id
+      WHERE gr.purchase_order_id = $1 GROUP BY i.purchase_order_item_id`, [header.id]);
+  const priorById = new Map(priorLines.rows.map((row) => [row.item_id, row]));
+  const delivered = planned.filter((line) => line.quantity > EPS).map((line) => ({
+    ...line,
+    previousValue: Number(priorById.get(line.row.id)?.value ?? 0),
+    previousSubtotal: Number(priorById.get(line.row.id)?.subtotal ?? 0),
+  }));
 
   // ---- write ----------------------------------------------------------------
   const grnNumber = await nextDocumentNumber(tx, "GRN");
-  const totalAmount = delivered.reduce(
-    (sum, line) => sum + money(line.quantity * line.unitCost),
-    0
+  const receivedById = new Map(delivered.map((line) => [line.row.id, line.quantity]));
+  const updatedLines = itemRes.rows.map((row) => ({
+    quantity: Number(row.quantity),
+    quantity_received: Number(row.quantity_received ?? 0) + (receivedById.get(row.id) ?? 0),
+  }));
+  const status = derivePurchaseOrderStatus(updatedLines, currentStatus);
+  const previous = await tx.query<{ subtotal: number; discount: number; ppn: number }>(
+    `SELECT COALESCE(SUM(subtotal_amount), 0) AS subtotal, COALESCE(SUM(discount_amount), 0) AS discount,
+            COALESCE(SUM(ppn_amount), 0) AS ppn FROM goods_receipts WHERE purchase_order_id = $1`, [header.id]);
+  const amounts = receiptProcurementAmounts(
+    delivered, header.ppn_rate,
+    { poSubtotal: Number(header.subtotal_amount), poDiscountAmount: Number(header.discount_amount),
+      cumulativeOrderedValue: itemRes.rows.reduce((sum, row) => sum + lineSubtotal(Number(row.quantity_received ?? 0) + (receivedById.get(row.id) ?? 0), Number(row.unit_cost)), 0),
+      previousSubtotal: Number(previous.rows[0].subtotal), previousDiscount: Number(previous.rows[0].discount),
+      previousPpn: Number(previous.rows[0].ppn), finalReceipt: status === "received" }
   );
 
   const receiptRes = await tx.query<{ id: string }>(
     `INSERT INTO goods_receipts
        (grn_number, purchase_order_id, warehouse_id, branch_id, supplier_id, supplier_name,
-        supplier_document, total_amount, notes, received_by, received_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+        supplier_document, subtotal_amount, ppn_rate, ppn_amount, total_amount, notes,
+        received_by, discount_amount, received_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
              strftime('%Y-%m-%dT%H:%M:%fZ','now'))
      RETURNING id`,
     [
@@ -233,19 +267,32 @@ export async function receivePurchaseOrder(
       header.supplier_id ?? null,
       header.supplier_name ?? null,
       params.supplierDocument?.trim() || null,
-      totalAmount,
+      amounts.subtotal,
+      amounts.ppnRate,
+      amounts.ppnAmount,
+      amounts.total,
       params.notes?.trim() || null,
       params.userId ?? null,
+      amounts.discountAmount,
     ]
   );
   const receiptId = receiptRes.rows[0].id;
 
+  let grossAllocated = 0;
+  let discountAllocated = 0;
   for (const line of delivered) {
+    const lineGross = receiptLineSubtotal(line);
+    grossAllocated += lineGross;
+    const nextDiscount = amounts.subtotal > 0 ? Math.round(amounts.discountAmount * grossAllocated / amounts.subtotal) : 0;
+    const lineDiscount = nextDiscount - discountAllocated;
+    discountAllocated = nextDiscount;
     const factor = Number(line.row.conversion_factor) || 1;
     // The order speaks in cases, the shelf speaks in pieces: the batch is
     // always in base units, with the cost divided back down.
     const baseQty = line.quantity * factor;
-    const baseCost = money(line.unitCost / factor);
+    const baseCost = lineDiscount === 0
+      ? money(line.unitCost / factor)
+      : money((lineGross - lineDiscount) / baseQty);
     const batchNumber = line.batchNumber ?? grnNumber;
 
     const batchRes = await tx.query<{ id: string }>(
@@ -286,7 +333,7 @@ export async function receivePurchaseOrder(
         line.row.unit_name ?? null,
         factor,
         line.unitCost,
-        money(line.quantity * line.unitCost),
+        lineGross,
         batchRes.rows[0].id,
         batchNumber,
         line.expiryDate,
@@ -332,13 +379,6 @@ export async function receivePurchaseOrder(
 
   // The order's status follows from the lines it now holds, never from the
   // receipt alone: a second delivery can arrive out of order.
-  const receivedById = new Map(delivered.map((line) => [line.row.id, line.quantity]));
-  const updatedLines = itemRes.rows.map((row) => ({
-    quantity: Number(row.quantity),
-    quantity_received: Number(row.quantity_received ?? 0) + (receivedById.get(row.id) ?? 0),
-  }));
-  const status = derivePurchaseOrderStatus(updatedLines, currentStatus);
-
   await tx.query(
     `UPDATE purchase_orders
         SET status = $2,
@@ -368,12 +408,12 @@ export async function receivePurchaseOrder(
      VALUES ($1, 'Pembelian Stok', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       header.branch_id ?? null,
-      totalAmount,
+      amounts.total,
       receivedOn,
       dueDate,
       `Pembelian stok ${grnNumber} (PO ${header.po_number})${supplierLabel}`,
       isCash ? "paid" : "unpaid",
-      isCash ? totalAmount : 0,
+      isCash ? amounts.total : 0,
       header.supplier_id ?? null,
       header.id,
       receiptId,
@@ -391,7 +431,11 @@ export async function receivePurchaseOrder(
       grnNumber,
       poNumber: header.po_number,
       status,
-      totalAmount,
+      subtotalAmount: amounts.subtotal,
+      discountAmount: amounts.discountAmount,
+      ppnRate: amounts.ppnRate,
+      ppnAmount: amounts.ppnAmount,
+      totalAmount: amounts.total,
       linesReceived: delivered.length,
       fromStatus: currentStatus,
     },
@@ -402,7 +446,11 @@ export async function receivePurchaseOrder(
     receiptId,
     grnNumber,
     status,
-    totalAmount,
+    subtotalAmount: amounts.subtotal,
+    discountAmount: amounts.discountAmount,
+    ppnRate: amounts.ppnRate,
+    ppnAmount: amounts.ppnAmount,
+    totalAmount: amounts.total,
     linesReceived: delivered.length,
   };
 }

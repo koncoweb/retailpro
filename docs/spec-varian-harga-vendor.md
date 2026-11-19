@@ -36,6 +36,13 @@
 > [kendala-solusi.md](kendala-solusi.md) KS-49), jadi kesalahan bentuk yang sama tidak bisa masuk lagi
 > tanpa membuat gerbang gagal.
 
+> **Catatan status (2026-11-20).** Isi desain tetap beku. Migrasi `013_vendor_ppn.sql` menambah PPN
+> pengadaan sebagai **snapshot tingkat dokumen**, bukan sebagai dimensi baru pada harga. Karena itu
+> `product_units.cost`, `vendor_price_list.buy_price`, `purchase_order_items.unit_cost`, HPP batch,
+> dan `vendor_products.last_cost` tetap belum termasuk PPN. `suppliers.ppn_enabled` hanya menentukan
+> rate 0/11 saat PO baru memilih vendor; PO/GR menyimpan subtotal, rate, pajak, dan total bruto sendiri,
+> sehingga perubahan master vendor tidak menulis ulang harga atau dokumen historis.
+
 ---
 
 ## 0. Ringkasan

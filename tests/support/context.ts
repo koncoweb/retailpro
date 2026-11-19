@@ -8,5 +8,5 @@ export const APP_CONTEXT =
   'RetailPro is an Indonesian retail POS and back-office app; every screen is in Indonesian. ' +
   'Modes: POS & Kasir, Back Office, Vendor & Supplier. ' +
   'Roles: tenant owner, tenant admin, store manager, kasir (cashier), gudang (warehouse). ' +
-  'Back office sections: Dasbor, Cabang, Inventori, Keuangan, Laporan, Pengaturan. ' +
+  'Back office sections: Dasbor, Outlet, Inventori, Keuangan, Laporan, Pengaturan. ' +
   'Money is shown in rupiah: Rp followed by digits with dots as thousand separators.';

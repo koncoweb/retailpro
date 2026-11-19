@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -27,6 +28,8 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { ArrowRight, Package, Plus, Trash2 } from "lucide-react";
 import { warehouseLabel, type WarehouseOption } from "@/lib/warehouse";
+import { findScanMatch, type BarcodeUnit } from "@/lib/barcode-match";
+import { useBarcodeScanner } from "@/hooks/use-barcode-scanner";
 
 /**
  * One sellable variant of a product, as a transfer needs it: its own stock per
@@ -38,13 +41,14 @@ export interface TransferVariant {
   /** Human label: "Susu 250ml". */
   label: string;
   sku: string;
+  barcode?: string | null;
   /**
    * On-hand quantity per warehouse id, in base units. Optional because a caller
    * that only knows product-level stock (the branch transfer page) still passes
    * `Product[]`; the picker then falls back to the product figure.
    */
   warehouses?: Record<string, number>;
-  units: Array<{ name: string; conversion_factor: number }>;
+  units: BarcodeUnit[];
 }
 
 /**
@@ -59,7 +63,7 @@ export interface TransferProduct {
   sku: string;
   name: string;
   unit_type?: string;
-  units?: Array<{ name: string; conversion_factor: number }>;
+  units?: BarcodeUnit[];
   stock_by_warehouse?: Record<string, number>;
   variants?: TransferVariant[];
 }
@@ -87,7 +91,7 @@ interface StockTransferModalProps {
     to: string;
     items: TransferItem[];
     notes: string;
-  }) => void;
+  }) => void | Promise<void>;
 }
 
 export function StockTransferModal({ open, onOpenChange, products, warehouses, onTransfer }: StockTransferModalProps) {
@@ -99,6 +103,14 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
   const [quantity, setQuantity] = useState("");
   const [transferItems, setTransferItems] = useState<TransferItem[]>([]);
   const [notes, setNotes] = useState("");
+  const [scanCode, setScanCode] = useState("");
+  const [saving, setSaving] = useState(false);
+  const scanInputRef = useRef<HTMLInputElement>(null);
+  const itemsRef = useRef<TransferItem[]>([]);
+  const replaceItems = (items: TransferItem[]) => {
+    itemsRef.current = items;
+    setTransferItems(items);
+  };
 
   const variantsOf = (product: TransferProduct | undefined) => product?.variants ?? [];
 
@@ -111,7 +123,10 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
     if (!product) return 0;
     if (variantId) {
       const variant = product.variants?.find((row) => row.id === variantId);
-      if (variant) return variant.warehouses?.[warehouseId] ?? product.stock_by_warehouse?.[warehouseId] ?? 0;
+      if (!variant) return 0;
+      return variant.warehouses
+        ? variant.warehouses[warehouseId] ?? 0
+        : product.stock_by_warehouse?.[warehouseId] ?? 0;
     }
     // Keys are warehouse ids.
     return product.stock_by_warehouse?.[warehouseId] ?? 0;
@@ -143,7 +158,7 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
   };
 
   const handleAddItem = () => {
-    if (!selectedProduct || !quantity || parseInt(quantity) <= 0) {
+    if (!selectedProduct || !quantity || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0) {
       toast.error("Pilih produk dan masukkan jumlah");
       return;
     }
@@ -165,43 +180,13 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
 
     const baseAvailableStock = getAvailableStock(product, fromWarehouse, variantId);
     const availableStockInUnit = Math.floor(baseAvailableStock / conversionFactor);
-    const qty = parseInt(quantity);
+    const qty = Number(quantity);
 
-    if (qty > availableStockInUnit) {
-      toast.error(`Stok tidak mencukupi. Tersedia: ${availableStockInUnit} ${unitName}`);
-      return;
-    }
-
-    const existingIndex = transferItems.findIndex(item => 
-      item.productId === product.id &&
-      item.variantId === variantId &&
-      item.unitName === unitName
-    );
-
-    if (existingIndex >= 0) {
-      const updated = [...transferItems];
-      const newQty = updated[existingIndex].quantity + qty;
-      
-      if (newQty > availableStockInUnit) {
-        toast.error(`Total stok melebihi batas. Tersedia: ${availableStockInUnit} ${unitName}`);
-        return;
-      }
-      
-      updated[existingIndex].quantity = newQty;
-      setTransferItems(updated);
-    } else {
-      setTransferItems([...transferItems, {
-        productId: product.id,
-        productName: product.name,
-        sku: product.sku,
-        quantity: qty,
-        unitName,
-        conversionFactor,
-        availableStock: availableStockInUnit,
-        variantId,
-        variantName: variant?.label ?? "",
-      }]);
-    }
+    if (!appendItem({
+      productId: product.id, productName: product.name, sku: variant?.sku || product.sku,
+      quantity: qty, unitName, conversionFactor, availableStock: availableStockInUnit,
+      variantId, variantName: variant?.label ?? "",
+    }, baseAvailableStock)) return;
 
     setSelectedProduct("");
     setSelectedVariant("");
@@ -209,13 +194,45 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
     setQuantity("");
   };
 
-  const handleRemoveItem = (index: number) => {
-    const newItems = [...transferItems];
-    newItems.splice(index, 1);
-    setTransferItems(newItems);
+  const appendItem = (item: TransferItem, baseStock: number): boolean => {
+    if (saving) return false;
+    const current = itemsRef.current;
+    const reserved = current.filter((row) => row.productId === item.productId && row.variantId === item.variantId)
+      .reduce((sum, row) => sum + row.quantity * row.conversionFactor, 0);
+    if (reserved + item.quantity * item.conversionFactor > baseStock) {
+      toast.error("Stok tidak mencukupi untuk total semua satuan yang dipilih");
+      return false;
+    }
+    const index = current.findIndex((row) => row.productId === item.productId && row.variantId === item.variantId && row.unitName === item.unitName);
+    replaceItems(index < 0 ? [...current, item] : current.map((row, i) => i === index ? { ...row, quantity: row.quantity + item.quantity } : row));
+    return true;
   };
 
-  const handleSubmit = () => {
+  const handleScan = (code: string) => {
+    if (!fromWarehouse) { toast.error("Pilih gudang asal sebelum scan"); return; }
+    const match = findScanMatch(products, code);
+    if (!match) { toast.error(`Barcode ${code} tidak dikenal`); return; }
+    const { product, variant, unit } = match;
+    if (!variant && product.variants?.length) {
+      pickProduct(product.id);
+      toast.info("Pilih varian produk untuk transfer");
+      return;
+    }
+    const factor = Number(unit?.conversion_factor) || 1;
+    const stock = getAvailableStock(product, fromWarehouse, variant?.id);
+    if (appendItem({
+      productId: product.id, productName: product.name, sku: variant?.sku || product.sku,
+      quantity: 1, unitName: unit?.name || product.unit_type || "Pcs", conversionFactor: factor,
+      availableStock: Math.floor(stock / factor), variantId: variant?.id ?? null,
+      variantName: variant?.label ?? "",
+    }, stock)) setScanCode("");
+  };
+  useBarcodeScanner({ enabled: open && !saving, scanInput: scanInputRef, onScan: handleScan });
+
+  const handleRemoveItem = (index: number) => replaceItems(itemsRef.current.filter((_, i) => i !== index));
+
+  const handleSubmit = async () => {
+    if (saving) return;
     if (!fromWarehouse || !toWarehouse) {
       toast.error("Pilih gudang asal dan tujuan");
       return;
@@ -231,16 +248,14 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
       return;
     }
 
-    onTransfer({
-      from: fromWarehouse,
-      to: toWarehouse,
-      items: transferItems,
-      notes,
-    });
-
-    toast.success("Transfer stok berhasil diproses");
-    onOpenChange(false);
-    resetForm();
+    setSaving(true);
+    try {
+      await onTransfer({ from: fromWarehouse, to: toWarehouse, items: itemsRef.current, notes });
+      onOpenChange(false);
+      resetForm();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Transfer gagal diproses");
+    } finally { setSaving(false); }
   };
 
   const resetForm = () => {
@@ -249,7 +264,9 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
     setSelectedProduct("");
     setSelectedUnit("");
     setQuantity("");
-    setTransferItems([]);
+    replaceItems([]);
+    setSelectedVariant("");
+    setScanCode("");
     setNotes("");
   };
 
@@ -282,6 +299,7 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
       <DialogContent className="sm:max-w-[700px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Transfer Stok</DialogTitle>
+          <DialogDescription>Pilih gudang asal dan tujuan, lalu scan barcode atau tambahkan produk.</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
@@ -289,7 +307,7 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
           <div className="flex items-center gap-4">
             <div className="flex-1">
               <Label>Dari Gudang</Label>
-              <Select value={fromWarehouse} onValueChange={setFromWarehouse}>
+              <Select value={fromWarehouse} onValueChange={(id) => { setFromWarehouse(id); replaceItems([]); setSelectedProduct(""); setSelectedVariant(""); }}>
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="Pilih gudang asal" />
                 </SelectTrigger>
@@ -319,6 +337,10 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
           {/* Add Product */}
           {fromWarehouse && (
             <div className="border rounded-lg p-4 bg-muted/50">
+              <div className="flex gap-2 mb-3">
+                <Input ref={scanInputRef} disabled={saving} aria-label="Scan barcode transfer" placeholder="Scan / ketik barcode atau SKU, lalu Enter" value={scanCode} onChange={(e) => setScanCode(e.target.value)} />
+                <Button type="button" size="sm" disabled={saving || !scanCode.trim()} onClick={() => handleScan(scanCode.trim())}>Tambah Scan</Button>
+              </div>
               <Label className="text-sm font-medium">Tambah Produk</Label>
               <div className="flex flex-wrap gap-2 mt-2">
                 <Select value={selectedProduct} onValueChange={pickProduct}>
@@ -377,6 +399,8 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
 
                 <Input
                   type="number"
+                  min="0"
+                  step="0.001"
                   placeholder="Jml"
                   className="w-24"
                   value={quantity}
@@ -458,7 +482,7 @@ export function StockTransferModal({ open, onOpenChange, products, warehouses, o
           <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
             Batal
           </Button>
-          <Button className="flex-1" onClick={handleSubmit}>
+          <Button className="flex-1" disabled={saving} onClick={handleSubmit}>
             Proses Transfer
           </Button>
         </div>

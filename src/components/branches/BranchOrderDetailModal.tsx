@@ -20,7 +20,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Link } from "react-router-dom";
-import { ArrowRight, CheckCircle2, ClipboardList, Clock, Truck, XCircle } from "lucide-react";
+import { ArrowRight, CheckCircle2, ClipboardList, Clock, Printer, Truck, XCircle } from "lucide-react";
+import { toast } from "sonner";
+import { printDeliveryNote, type DeliveryNoteInput } from "@/lib/print/delivery-note";
 import {
   STOCK_REQUEST_PRIORITY_LABEL,
   STOCK_REQUEST_STATUS_LABEL,
@@ -66,6 +68,7 @@ export interface OrderDetail {
   transfer_id: string | null;
   transfer_number: string | null;
   items: OrderDetailLine[];
+  deliveryNote?: DeliveryNoteInput | null;
 }
 
 interface BranchOrderDetailModalProps {
@@ -166,7 +169,7 @@ export function BranchOrderDetailModal({
             {order.priority === "urgent" && <Badge variant="destructive">Mendesak</Badge>}
           </DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-2">
-            {order.branch_name ?? "Cabang"} <ArrowRight className="w-3 h-3" />
+            {order.branch_name ?? "Outlet"} <ArrowRight className="w-3 h-3" />
             {order.warehouse_name ?? "Gudang pusat"}
             {order.needed_date && (
               <span className="text-muted-foreground">
@@ -195,7 +198,7 @@ export function BranchOrderDetailModal({
 
           {order.notes && (
             <div className="rounded-lg border p-3 text-sm">
-              <span className="text-muted-foreground">Catatan cabang: </span>
+              <span className="text-muted-foreground">Catatan outlet: </span>
               {order.notes}
             </div>
           )}
@@ -308,6 +311,12 @@ export function BranchOrderDetailModal({
         </div>
 
         <div className="flex flex-wrap gap-2 justify-end">
+          {order.deliveryNote && (
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => {
+              try { printDeliveryNote(order.deliveryNote!, { onError: (error) => toast.error(error.message) }); }
+              catch (error) { toast.error(error instanceof Error ? error.message : "Gagal mencetak surat jalan"); }
+            }}><Printer className="w-3.5 h-3.5 mr-1.5" />Cetak Surat Jalan</Button>
+          )}
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Tutup
           </Button>

@@ -87,7 +87,7 @@ export default function RegisterTenant() {
             body: JSON.stringify({
                 companyName: data.tenantName,
                 slug: data.tenantName,
-                branchName: "Cabang Utama",
+                branchName: "Outlet Utama",
                 branchAddress: data.address,
             }),
         });

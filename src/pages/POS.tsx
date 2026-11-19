@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { usePermissions } from "@/hooks/use-permissions";
 import { usePosBranch } from "@/hooks/use-pos-branch";
@@ -18,7 +18,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { PaymentModal, PaymentDetails } from "@/components/pos/PaymentModal";
-import { ShiftModal, ShiftActionData } from "@/components/pos/ShiftModal";
+import { ShiftModal, ShiftActionData, type ShiftReport } from "@/components/pos/ShiftModal";
 import {
   Select,
   SelectContent,
@@ -28,7 +28,7 @@ import {
 } from "@/components/ui/select";
 import { Search, Barcode, Plus, Minus, Trash2, CreditCard, Banknote, Wallet, QrCode, User, Percent, X, Clock, AlertTriangle, Package, MapPin } from "lucide-react";
 import { toast } from "sonner";
-import { Product, ProductUnit, ProductVariant, Transaction, CartItem } from "@/types";
+import { Product, ProductUnit, ProductVariant, CartItem } from "@/types";
 import { query, runTransaction, batchQuery, parseJson, type BatchStatement } from "@/lib/db";
 import { logAuditTx } from "@/lib/audit";
 import { resolveBranchWarehouse } from "@/lib/warehouse";
@@ -37,6 +37,8 @@ import { sortBatchesForIssue } from "@/lib/stock-issue";
 import { parseVariantAttributes, parseVariantGroups, variantLabel } from "@/lib/variants";
 import { bestPackPriceFor, PRICING_SETTING_KEY, type PackInput } from "@/lib/pricing";
 import { unitLabel } from "@/lib/units";
+import { findScanMatch } from "@/lib/barcode-match";
+import { useBarcodeScanner } from "@/hooks/use-barcode-scanner";
 import {
   PAYMENT_CHANNELS_SETTING_KEY,
   normalizeChannels,
@@ -51,9 +53,6 @@ import {
 } from "@/lib/print/print-service";
 import { buildSaleReceiptDoc, buildZReportDoc } from "@/lib/print/receipt-printer";
 
-// Mock Session Data (In real app, this comes from Context/Auth)
-const categories = ["Semua", "Makanan", "Minuman", "Snack", "Personal Care"];
-
 /**
  * Transfer accounts shown when a tenant has not configured the `bank` settings
  * yet. Kept as a fallback only — the finance module (Settings → Perusahaan →
@@ -65,11 +64,17 @@ const FALLBACK_BANKS: Bank[] = [
   { id: "bni", name: "BNI", type: "Debit", accountNumber: "5678901234", accountName: "PT RetailPro", feePercentage: 0 },
 ];
 
-interface ShiftDataState {
-  openTime: Date;
-  pettyCash: number;
-  transactions: Transaction[];
+/** A single customer's in-progress order; the till keeps several open as tabs. */
+interface CartTab {
+  id: string;
+  label: string;
+  items: CartItem[];
+  discount: number;
 }
+
+/** Tab ids only need local uniqueness, so avoid a crypto.randomUUID dependency. */
+const makeTabId = () =>
+  `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0 }).format(value);
@@ -78,16 +83,21 @@ function formatCurrency(value: number) {
 export default function POS() {
   const { user } = useAuth();
   const { can } = usePermissions();
-  const [cart, setCart] = useState<CartItem[]>([]);
+  const [tabs, setTabs] = useState<CartTab[]>(() => [
+    { id: makeTabId(), label: "Pelanggan 1", items: [], discount: 0 },
+  ]);
+  const [activeTabId, setActiveTabId] = useState<string>(() => tabs[0].id);
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
+  const cart = activeTab.items;
+  const discount = activeTab.discount;
   const [searchQuery, setSearchQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [selectedCategory, setSelectedCategory] = useState("Semua");
-  const [discount, setDiscount] = useState(0);
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
   const [isShiftOpen, setIsShiftOpen] = useState(false);
   const [shiftMode, setShiftMode] = useState<"open" | "close">("open");
   const [isShiftActive, setIsShiftActive] = useState(false);
-  const [shiftData, setShiftData] = useState<ShiftDataState | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [shiftReport, setShiftReport] = useState<ShiftReport | null>(null);
   const [showLowStock, setShowLowStock] = useState(true);
   const [currentShiftId, setCurrentShiftId] = useState<string | null>(null);
   /**
@@ -200,6 +210,12 @@ export default function POS() {
                 ), '[]') as units
               FROM products p
               LEFT JOIN product_batches pb ON p.id = pb.product_id AND pb.warehouse_id = $1
+              -- Only products this outlet stocks. Products it never carries are
+              -- hidden; carried-but-empty ones still show as HABIS.
+              WHERE EXISTS (
+                SELECT 1 FROM product_batches e
+                WHERE e.product_id = p.id AND e.warehouse_id = $1
+              )
               GROUP BY p.id
             `,
             params: [warehouseId],
@@ -208,7 +224,7 @@ export default function POS() {
           // a nested aggregate cannot guarantee a pack lands on its own variant.
           {
             sql: `
-              SELECT v.id, v.product_id, v.sku, v.attributes, v.cost_price,
+              SELECT v.id, v.product_id, v.sku, v.barcode, v.attributes, v.cost_price,
                      COALESCE((
                        SELECT pu.price FROM product_units pu
                         WHERE pu.variant_id = v.id AND pu.conversion_factor = 1
@@ -283,6 +299,7 @@ export default function POS() {
           id: string;
           product_id: string;
           sku: string;
+          barcode: string | null;
           attributes: string;
           base_price: number;
         }[]) {
@@ -290,6 +307,7 @@ export default function POS() {
           list.push({
             id: row.id,
             sku: row.sku,
+            barcode: row.barcode,
             // Filled in below, once the product's attribute groups are known.
             label: "",
             attributes: row.attributes,
@@ -442,6 +460,63 @@ export default function POS() {
   const cartKey = (item: Pick<CartItem, "id" | "variant_id" | "unit_name">) =>
     `${item.id}|${item.variant_id ?? ""}|${item.unit_name}`;
 
+  /**
+   * Category tabs come from the products this outlet actually stocks, so a
+   * category added in the backoffice shows up here the moment one of its
+   * products is on the shelf — and never leaks another outlet's categories.
+   */
+  const categories = useMemo(() => {
+    const names = Array.from(
+      new Set(products.map((p) => p.category).filter((c): c is string => !!c && c.trim() !== ""))
+    );
+    names.sort((x, y) => x.localeCompare(y, "id"));
+    return ["Semua", ...names];
+  }, [products]);
+
+  // A branch switch refetches a different catalogue; drop a category that is no
+  // longer present so the grid never gets stuck filtering an empty tab.
+  useEffect(() => {
+    if (!categories.includes(selectedCategory)) setSelectedCategory("Semua");
+  }, [categories, selectedCategory]);
+
+  /** Apply a change to whichever cart tab the cashier is currently on. */
+  const mutateActiveTab = (updater: (tab: CartTab) => CartTab) =>
+    setTabs((prev) => prev.map((t) => (t.id === activeTab.id ? updater(t) : t)));
+
+  /** Tab-aware replacement for the old `setCart`, scoped to the active tab. */
+  const setActiveItems = (next: CartItem[] | ((prev: CartItem[]) => CartItem[])) =>
+    mutateActiveTab((tab) => ({
+      ...tab,
+      items: typeof next === "function" ? next(tab.items) : next,
+    }));
+
+  const setActiveDiscount = (value: number) =>
+    mutateActiveTab((tab) => ({ ...tab, discount: value }));
+
+  const addTab = () => {
+    const maxIdx = tabs.reduce((m, t) => {
+      const n = Number(t.label.replace(/\D+/g, ""));
+      return Number.isFinite(n) ? Math.max(m, n) : m;
+    }, 0);
+    const id = makeTabId();
+    setTabs((prev) => [...prev, { id, label: `Pelanggan ${maxIdx + 1}`, items: [], discount: 0 }]);
+    setActiveTabId(id);
+  };
+
+  const closeTab = (id: string) => {
+    const idx = tabs.findIndex((t) => t.id === id);
+    if (idx === -1) return;
+    const remaining = tabs.filter((t) => t.id !== id);
+    if (remaining.length === 0) {
+      const fresh: CartTab = { id: makeTabId(), label: "Pelanggan 1", items: [], discount: 0 };
+      setTabs([fresh]);
+      setActiveTabId(fresh.id);
+      return;
+    }
+    setTabs(remaining);
+    if (id === activeTab.id) setActiveTabId(remaining[Math.min(idx, remaining.length - 1)].id);
+  };
+
   const lowStockProducts = useMemo(() => 
     products.filter((p) => getProductStock(p) < p.min_stock_alert),
     [products, currentWarehouseId]
@@ -454,7 +529,7 @@ export default function POS() {
     if (!isShiftActive) { toast.error("Buka shift terlebih dahulu"); return; }
     
     const stock = getProductStock(product);
-    if (stock <= 0) { toast.error("Stok produk habis di cabang ini"); return; }
+    if (stock <= 0) { toast.error("Stok produk habis di outlet ini"); return; }
 
     // A product with several SKUs must say which one first: a carton of Susu and
     // a carton of Cokelat are different stock at different prices.
@@ -553,7 +628,7 @@ export default function POS() {
   ) => {
     const stock = getStock(product.id, variant?.id ?? null);
     
-    setCart((prev) => {
+    setActiveItems((prev) => {
       const sameStock = (item: CartItem) =>
         item.id === product.id && (item.variant_id ?? null) === (variant?.id ?? null);
       const existing = prev.find((item) => sameStock(item) && item.unit_name === unitName);
@@ -586,11 +661,44 @@ export default function POS() {
     });
   };
 
+  /**
+   * A scanned code is resolved to a specific pack whenever possible and dropped
+   * straight into the cart — no focusing the search box, no extra click. Anything
+   * the till cannot match is reported instead of silently ignored, which is what
+   * made scanning feel dead before.
+   */
+  const handleScan = (rawCode: string) => {
+    const code = rawCode.trim();
+    if (!code) return;
+    // Clear any digits the wedge left in the search box so the grid is clean.
+    setSearchQuery("");
+    if (!isShiftActive) { toast.error("Buka shift terlebih dahulu"); return; }
+
+    const match = findScanMatch(products, code);
+    if (!match) { toast.error(`Barcode ${code} tidak dikenal`); return; }
+
+    const { product, variant, unit } = match;
+    if (unit) {
+      addCartItem(product, variant, unit.name, Number(unit.conversion_factor) || 1, Number(unit.price) || 0);
+      return;
+    }
+    // No pack could be pinned down: fall back to the normal add flow, which
+    // opens the unit/variant picker when the product has choices.
+    addToCart(product);
+  };
+
+  // Armed only on the main grid; a payment/shift/unit dialog owns the keyboard.
+  useBarcodeScanner({
+    enabled: !isPaymentOpen && !isShiftOpen && !isUnitSelectionOpen && !isMobileCartOpen,
+    scanInput: searchInputRef,
+    onScan: handleScan,
+  });
+
   const updateQuantity = (line: CartItem, delta: number) => {
     const stock = getStock(line.id, line.variant_id ?? null);
     const key = cartKey(line);
     
-    setCart((prev) => {
+    setActiveItems((prev) => {
       // Total base quantity currently in cart for this product AND variant.
       const currentTotalBaseQty = prev
         .filter((i) => i.id === line.id && (i.variant_id ?? null) === (line.variant_id ?? null))
@@ -617,7 +725,7 @@ export default function POS() {
     const stock = getStock(line.id, line.variant_id ?? null);
     const key = cartKey(line);
 
-    setCart((prev) => {
+    setActiveItems((prev) => {
       const currentTotalBaseQty = prev
         .filter((i) => i.id === line.id && (i.variant_id ?? null) === (line.variant_id ?? null))
         .reduce((sum, i) => sum + (i.quantity * i.conversion_factor), 0);
@@ -640,9 +748,9 @@ export default function POS() {
 
   const removeFromCart = (line: CartItem) => {
     const key = cartKey(line);
-    setCart((prev) => prev.filter((item) => cartKey(item) !== key));
+    setActiveItems((prev) => prev.filter((item) => cartKey(item) !== key));
   };
-  const clearCart = () => { setCart([]); setDiscount(0); };
+  const clearCart = () => mutateActiveTab((tab) => ({ ...tab, items: [], discount: 0 }));
 
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const discountAmount = subtotal * (discount / 100);
@@ -701,7 +809,17 @@ export default function POS() {
   }, [selectedProductForUnit, selectedVariantForUnit]);
 
   const filteredProducts = products.filter((product) => {
-    const matchesSearch = product.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const q = searchQuery.toLowerCase();
+    const matchesSearch =
+      product.name.toLowerCase().includes(q) ||
+      product.sku?.toLowerCase().includes(q) ||
+      (product.units ?? []).some((u) => u.barcode?.toLowerCase().includes(q)) ||
+      (product.variants ?? []).some(
+        (v) =>
+          v.sku?.toLowerCase().includes(q) ||
+          v.barcode?.toLowerCase().includes(q) ||
+          (v.units ?? []).some((u) => u.barcode?.toLowerCase().includes(q))
+      );
     const matchesCategory = selectedCategory === "Semua" || product.category === selectedCategory;
     return matchesSearch && matchesCategory;
   });
@@ -723,7 +841,7 @@ export default function POS() {
         // another tab cannot leave the sale pointed at a stale warehouse.
         const warehouseId = currentWarehouseId ?? (await resolveBranchWarehouse(currentBranchId));
         if (!warehouseId) {
-          throw new Error("Gudang untuk cabang ini belum disiapkan, hubungi admin.");
+          throw new Error("Gudang untuk outlet ini belum disiapkan, hubungi admin.");
         }
 
         // Which batch leaves first is a tenant policy (FIFO / LIFO / FEFO).
@@ -972,11 +1090,6 @@ export default function POS() {
         const shiftId = res.rows[0].id;
         setCurrentShiftId(shiftId);
         setIsShiftActive(true);
-        setShiftData({
-          openTime: data.openTime ?? new Date(),
-          pettyCash: data.pettyCash ?? 0,
-          transactions: [],
-        });
         // Opening the drawer is showing up: book the day's check-in unless
         // one already exists. Best-effort — the shift is already committed.
         const cashNote =
@@ -1051,8 +1164,7 @@ export default function POS() {
 
       setCurrentShiftId(null);
       setIsShiftActive(false);
-      setShiftData(null);
-      setTransactions([]);
+      setShiftReport(null);
       setIsShiftOpen(false);
 
       // Closing stamps the day's check-out on rows still missing one.
@@ -1076,7 +1188,86 @@ export default function POS() {
     }
   };
 
-  const openShiftModal = (mode: "open" | "close") => { setShiftMode(mode); setIsShiftOpen(true); };
+  /**
+   * Everything the closing window needs, read fresh from the shift's own rows.
+   * The till used to feed the modal from in-memory state that never reloaded
+   * (and was empty after a refresh or a shift opened at the shift desk), so the
+   * report showed zeros while the printed Z-report was correct. Now both sides
+   * come from the same source: the persisted shift and its transactions.
+   */
+  const fetchShiftReport = async (shiftId: string): Promise<ShiftReport | null> => {
+    try {
+      const [txRes, shiftRes] = await Promise.all([
+        query<{ payment_method: string; total_amount: string | number; fee_amount?: string | number; status: string }>(
+          `SELECT payment_method, total_amount, fee_amount, status FROM transactions WHERE shift_id = $1`,
+          [shiftId]
+        ),
+        query<{ initial_cash: string | number; start_time: string }>(
+          `SELECT initial_cash, start_time FROM shifts WHERE id = $1`,
+          [shiftId]
+        ),
+      ]);
+      const acc = { cashSales: 0, totalSales: 0, feeTotal: 0, txCount: 0, voidCount: 0, voidAmount: 0 };
+      for (const t of txRes.rows) {
+        const amount = Number(t.total_amount) || 0;
+        // A voided bon keeps its total as the record of the cancelled sale, so
+        // it is counted separately and never books into the takings.
+        if (t.status !== "completed") { acc.voidCount += 1; acc.voidAmount += amount; continue; }
+        acc.txCount += 1;
+        acc.totalSales += amount;
+        acc.feeTotal += Number(t.fee_amount) || 0;
+        if (t.payment_method === "cash") acc.cashSales += amount;
+      }
+      const row = shiftRes.rows[0];
+      return {
+        startTime: row?.start_time ?? "",
+        initialCash: Number(row?.initial_cash ?? 0) || 0,
+        cashSales: acc.cashSales,
+        totalSales: acc.totalSales,
+        txCount: acc.txCount,
+        feeTotal: acc.feeTotal,
+        voidCount: acc.voidCount,
+        voidAmount: acc.voidAmount,
+      };
+    } catch (error) {
+      console.error("Failed to build shift report:", error);
+      return null;
+    }
+  };
+
+  const openShiftModal = (mode: "open" | "close") => {
+    setShiftMode(mode);
+    if (mode === "close" && currentShiftId) {
+      void fetchShiftReport(currentShiftId).then(setShiftReport);
+    }
+    setIsShiftOpen(true);
+  };
+
+  // Multi-customer tabs sit above the rows in both shells, so a cashier can
+  // park one customer's cart and start another without losing the first.
+  const cartTabBar = (
+    <div className="flex items-center gap-1 overflow-x-auto pb-1">
+      {tabs.map((tab) => {
+        const count = tab.items.reduce((s, i) => s + i.quantity, 0);
+        const isActive = tab.id === activeTab.id;
+        return (
+          <div key={tab.id} className={`flex items-center gap-1 shrink-0 rounded-lg border h-8 pl-2 pr-1 ${isActive ? "border-primary bg-primary/10" : "border-transparent bg-muted/50"}`}>
+            <button type="button" onClick={() => setActiveTabId(tab.id)} className="text-xs whitespace-nowrap max-w-[120px] truncate">
+              {tab.label}{count > 0 ? ` · ${count}` : ""}
+            </button>
+            {tabs.length > 1 && (
+              <button type="button" onClick={() => closeTab(tab.id)} aria-label={`Tutup ${tab.label}`} className="text-muted-foreground hover:text-destructive">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+        );
+      })}
+      <Button variant="outline" size="sm" onClick={addTab} className="shrink-0 h-8 w-8 p-0" aria-label="Keranjang baru">
+        <Plus className="w-4 h-4" />
+      </Button>
+    </div>
+  );
 
   // Cart rows and totals render from one source into two shells: the desktop
   // side panel and the <lg sheet dialog behind the summary bar. Two copies
@@ -1121,7 +1312,7 @@ export default function POS() {
 
   const cartFooter = (
     <div className="border-t p-3 md:p-4 space-y-3 md:space-y-4">
-      <div className="flex items-center gap-2"><Button variant="outline" size="sm" className="gap-1"><User className="w-4 h-4" />Member</Button>{can("apply_discount") && <Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button>}</div>
+      <div className="flex items-center gap-2"><Button variant="outline" size="sm" className="gap-1"><User className="w-4 h-4" />Member</Button>{can("apply_discount") && <Button variant={discount > 0 ? "default" : "outline"} size="sm" className="gap-1" onClick={() => setActiveDiscount(discount > 0 ? 0 : 10)}><Percent className="w-4 h-4" />{discount > 0 ? `${discount}%` : "Diskon"}</Button>}</div>
       <div className="space-y-2 text-sm"><div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{formatCurrency(subtotal)}</span></div>{discount > 0 && <div className="flex justify-between text-success"><span>Diskon ({discount}%)</span><span>-{formatCurrency(discountAmount)}</span></div>}<div className="flex justify-between text-lg font-bold pt-2 border-t"><span>Total</span><span className="text-primary">{formatCurrency(total)}</span></div></div>
       <div className="grid grid-cols-3 gap-2"><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Banknote className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Tunai</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><CreditCard className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">Kartu</span></Button><Button variant="posSecondary" size="pos" className="flex-col gap-1"><Wallet className="w-5 h-5 md:w-6 md:h-6" /><span className="text-xs">E-Wallet</span></Button></div>
       <Button variant="posPayment" size="xl" className="w-full" disabled={cart.length === 0 || !isShiftActive} onClick={() => { setIsMobileCartOpen(false); setIsPaymentOpen(true); }}>Bayar {formatCurrency(total)}</Button>
@@ -1143,7 +1334,7 @@ export default function POS() {
                   <Select value={currentBranchId} onValueChange={setBranchId}>
                     <SelectTrigger className="w-auto min-w-[160px] h-8 gap-2 text-sm">
                       <MapPin className="w-4 h-4" />
-                      <SelectValue placeholder="Pilih cabang" />
+                      <SelectValue placeholder="Pilih outlet" />
                     </SelectTrigger>
                     <SelectContent>
                       {visibleBranches.map((branch) => (
@@ -1161,8 +1352,8 @@ export default function POS() {
                 )}
             </div>
             <div className="flex gap-2">
-              <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input placeholder="Cari produk..." className="pl-10 text-base" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
-              <Button variant="outline" size="icon"><Barcode className="w-5 h-5" /></Button>
+              <div className="relative flex-1"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" /><Input ref={searchInputRef} placeholder="Cari / scan barcode..." className="pl-10 text-base" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} /></div>
+              <Button variant="outline" size="icon" title="Scan barcode" aria-label="Scan barcode" onClick={() => searchInputRef.current?.focus()}><Barcode className="w-5 h-5" /></Button>
               {!isShiftActive ? <Button onClick={() => openShiftModal("open")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Buka Shift</span></Button> : <Button variant="destructive" onClick={() => openShiftModal("close")} className="gap-2"><Clock className="w-4 h-4" /><span className="hidden sm:inline">Tutup Shift</span></Button>}
             </div>
             <div className="flex gap-2 overflow-x-auto pb-1">{categories.map((category) => (<Button key={category} variant={selectedCategory === category ? "default" : "outline"} size="sm" onClick={() => setSelectedCategory(category)} className="whitespace-nowrap text-xs md:text-sm">{category}</Button>))}</div>
@@ -1289,7 +1480,7 @@ export default function POS() {
             live in the sheet dialog behind the summary bar, so the product
             grid gets to keep the whole phone screen. */}
         <div className="hidden lg:flex w-96 flex-col bg-card rounded-xl border overflow-hidden">
-          <div className="p-3 md:p-4 border-b"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">Keranjang</h2><p className="text-sm text-muted-foreground">{totalItems} item</p></div>{cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart} className="text-destructive"><Trash2 className="w-4 h-4 mr-1" />Hapus</Button>}</div></div>
+          <div className="p-3 md:p-4 border-b space-y-2"><div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">Keranjang</h2><p className="text-sm text-muted-foreground">{totalItems} item</p></div>{cart.length > 0 && <Button variant="ghost" size="sm" onClick={clearCart} className="text-destructive"><Trash2 className="w-4 h-4 mr-1" />Hapus</Button>}</div>{cartTabBar}</div>
           <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-2 md:space-y-3 min-h-[150px]">{cartRows}</div>
           {cartFooter}
         </div>
@@ -1311,7 +1502,7 @@ export default function POS() {
       </div>
 
       <PaymentModal open={isPaymentOpen} onOpenChange={setIsPaymentOpen} total={total} onPaymentComplete={handlePaymentComplete} channels={channels} banks={bankList} qrisDataUrl={qrisDataUrl} />
-      <ShiftModal open={isShiftOpen} onOpenChange={setIsShiftOpen} mode={shiftMode} shiftData={shiftData ? { ...shiftData, transactions } : undefined} onShiftAction={handleShiftAction} />
+      <ShiftModal open={isShiftOpen} onOpenChange={setIsShiftOpen} mode={shiftMode} report={shiftReport ?? undefined} onShiftAction={handleShiftAction} />
 
       {/* The full cart as a sheet on <lg screens: same rows, same totals,
           one tap away from the summary bar. */}
@@ -1320,6 +1511,7 @@ export default function POS() {
           <DialogHeader>
             <DialogTitle>Keranjang ({totalItems} item)</DialogTitle>
           </DialogHeader>
+          <div className="pb-1">{cartTabBar}</div>
           <div className="space-y-2 md:space-y-3 py-2">{cartRows}</div>
           {cartFooter}
         </DialogContent>

@@ -176,22 +176,29 @@ describe('VENDOR_PRODUCT_COLUMNS', () => {
     expect(VENDOR_PRODUCT_COLUMNS.map((column) => column.key)).not.toContain('code');
   });
 
-  it('appends the variant columns last, in order, after the seven vendor ones', () => {
-    // Column order is only load-bearing for file stability: a sheet exported
-    // before these columns existed still lines up with its own header, so new
-    // columns may only ever be appended.
-    expect(VENDOR_PRODUCT_COLUMNS).toHaveLength(21);
+  it('appends PPN after all 21 established integrated-sheet columns', () => {
+    // Column order is load-bearing for file stability: files and formulas made
+    // before PPN existed keep the same first 21 positions.
+    expect(VENDOR_PRODUCT_COLUMNS).toHaveLength(22);
     expect(VENDOR_PRODUCT_COLUMNS.slice(0, 7).map((column) => column.key)).toEqual([
-      ...VENDOR_SHEET_KEYS,
+      'vendorCode',
+      'vendorName',
+      'vendorCategory',
+      'contactPerson',
+      'phone',
+      'email',
+      'terms',
     ]);
-    expect(VENDOR_PRODUCT_COLUMNS.slice(-3).map((column) => column.label)).toEqual([
+    expect(VENDOR_PRODUCT_COLUMNS.slice(-4, -1).map((column) => column.label)).toEqual([
       'Kode Varian',
       'Atribut Varian',
       'Barcode Varian',
     ]);
+    expect(VENDOR_PRODUCT_COLUMNS.at(-1)?.key).toBe('ppn');
+    expect(VENDOR_SHEET_KEYS).toContain('ppn');
   });
 
-  it('gives every template row all 21 keys', () => {
+  it('gives every template row all 22 keys', () => {
     // A missing key would make `toCsv` write an empty cell the importer reads
     // back as blank — and `carryVendorForward` cannot inherit a key that is not
     // there, so a row typed with holes silently loses its vendor.
@@ -199,6 +206,16 @@ describe('VENDOR_PRODUCT_COLUMNS', () => {
     for (const template of VENDOR_PRODUCT_TEMPLATE_ROWS) {
       expect(Object.keys(template).sort()).toEqual(keys);
     }
+  });
+
+  it('keeps old integrated files valid when the appended PPN column is absent', () => {
+    const [read] = normalizeRows(
+      [{ 'Nama Vendor': 'PT Lama', SKU: 'L-1', 'Nama Produk': 'Produk Lama' }],
+      VENDOR_PRODUCT_COLUMNS
+    );
+    expect(read.vendorName).toBe('PT Lama');
+    expect(read.sku).toBe('L-1');
+    expect(read.ppn).toBe('');
   });
 
   it('reads a variant barcode by its label and its aliases', () => {

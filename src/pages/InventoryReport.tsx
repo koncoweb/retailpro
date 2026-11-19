@@ -152,10 +152,10 @@ export default function InventoryReport() {
           <div className="w-full sm:w-[250px]">
             <Select value={selectedBranch} onValueChange={setSelectedBranch}>
               <SelectTrigger>
-                <SelectValue placeholder="Pilih Cabang" />
+                <SelectValue placeholder="Pilih Outlet" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">Semua Cabang</SelectItem>
+                <SelectItem value="all">Semua Outlet</SelectItem>
                 {branches.map((b: any) => (
                   <SelectItem key={b.id} value={b.id}>
                     {b.name}

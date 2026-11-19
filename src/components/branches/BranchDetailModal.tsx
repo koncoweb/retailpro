@@ -568,7 +568,7 @@ export function BranchDetailModal({
                         {employees.length === 0 ? (
                           <TableRow>
                             <TableCell colSpan={3} className="text-center py-8 text-muted-foreground">
-                              Belum ada karyawan di cabang ini
+                              Belum ada karyawan di outlet ini
                             </TableCell>
                           </TableRow>
                         ) : (
@@ -790,7 +790,7 @@ export function BranchDetailModal({
               </Select>
             </div>
             <div className="bg-muted p-3 rounded-lg text-sm text-muted-foreground">
-              <p>User akan ditambahkan ke cabang <strong>{branch?.name}</strong>.</p>
+              <p>User akan ditambahkan ke outlet <strong>{branch?.name}</strong>.</p>
               <p className="mt-1 text-xs">Pastikan email aktif agar user bisa melakukan reset password/login nantinya.</p>
             </div>
           </div>

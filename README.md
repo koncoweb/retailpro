@@ -40,6 +40,12 @@ vendor) and pulls in the agreed price, while switching away from that vendor ask
 lines it owns. Schema v10 only added the two indexes this reads through — no table and no column
 changed.
 
+Vendor PPN is independent from POS tax and NPWP. A vendor can be marked **PPN 11%** or
+**Non-PPN**; prices and catalogue agreements stay tax-exclusive. Purchase orders snapshot the
+selected rate and store subtotal, PPN, and gross payable, while each goods receipt recalculates its
+own tax from actual delivered quantities/prices and books one gross payable. Inventory batch costs
+remain tax-exclusive. Saved POs print as a separate escaped A4 order document through the browser.
+
 A sale can be cancelled without erasing it. Voiding (`src/lib/void.ts`, schema v9)
 marks rows — per line or per whole bon — instead of deleting them: stock returns
 to the batch the line was picked from, `total_amount` is reduced by that line's
@@ -101,7 +107,7 @@ Turso secret. Never import anything from `server/` in `src/`.
 | `npm run dev` | Vite dev server (SPA) |
 | `npm run dev:api` | Local auth/provisioning API on port 3000 |
 | `npm run build` | Production build |
-| `npm test` | Vitest — 33 files / 547 tests (schema + migrations incl. the chat tables, seed, demo tenant, SQL translation, date range, inventory/stock-issue/stock-movement, permissions & roles, the chat mention codec, variants/units/pricing, product import planning, procurement & goods receipt, vendor catalogue + vendor/product import, vendors, branch orders, bulk import, password, geolocation/face, shift attendance, the print model + both renderers, void) |
+| `npm test` | Vitest — 34 files / 566 tests (schema + migrations through v13, seed, demo tenant, SQL translation, date range, inventory/stock-issue/stock-movement, permissions & roles, chat mentions, variants/units/pricing, product import planning, procurement + PPN snapshots, goods receipts + gross payables, vendor catalogue/import + strict PPN parsing, vendors, branch orders, bulk import, password, geolocation/face, shift attendance, thermal printing + the A4 PO renderer, void) |
 | `npm run typecheck` | TypeScript, app project (browser); add `npm run typecheck:node` for `server/`, `api/`, `db/` and `scripts/` |
 | `npm run lint` | ESLint |
 | `npm run test:e2e` | End-to-end tests (tester.army), see below |
@@ -285,7 +291,7 @@ requests, rollback, release checklist): **[docs/deployment.md](docs/deployment.m
 ## Repository layout
 
 ```
-db/schema/tenant.sql     one-database-per-tenant schema (version 11, 38 tables)
+db/schema/tenant.sql     one-database-per-tenant schema (version 13, 39 tables)
 db/migrations/           stepwise migrations for databases already on an older
                          schema version, applied by `npm run schema:apply-all`
 db/schema/seed.sql       provisioning seed with {{TOKEN}} placeholders
@@ -307,24 +313,24 @@ are append-only logs, so read the newest rows first.
 
 | Document | Contents | Updated |
 | --- | --- | --- |
-| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows (incl. printing, void, the vendor catalogue, the chat read/write path, and the storefront order sync), isolation, decisions | 2026-11-19 |
+| [docs/arsitektur.md](docs/arsitektur.md) | Technical architecture: topology, components, critical flows (incl. PPN procurement, printing, void, the vendor catalogue, chat, and storefront order sync), isolation, decisions | 2026-11-20 |
 | [docs/deployment.md](docs/deployment.md) | Deployment runbook: Turso cloud setup, both Vercel projects, env per project, schema migration rollout, `vercel.json` contract, verification, rollback | 2026-11-18 |
-| [docs/backend.md](docs/backend.md) | Backend and database: API surface (incl. storefront orders + payment channels), server modules, full 39-table schema (v12), the single vendor-catalogue writer and the domain writer modules, env vars, invariants, schema change history, deploy constraints on the code | 2026-11-19 |
-| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and allowed roles (incl. the internal chat screen and storefront orders page), data patterns, formatting, printing & void UI, vendor/product entry and import, the marketplace app, limits | 2026-11-19 |
-| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-11-19 |
+| [docs/backend.md](docs/backend.md) | Backend and database: API surface, server modules, full 39-table schema (v13, including vendor/PO/receipt PPN snapshots), domain writers, env vars, invariants, schema history, deploy constraints | 2026-11-20 |
+| [docs/frontend.md](docs/frontend.md) | Frontend: build config, routes and roles, data patterns, vendor PPN/import, PO/receipt totals, A4 + thermal printing, void UI, marketplace, limits | 2026-11-20 |
+| [docs/fitur-tenant.md](docs/fitur-tenant.md) | Tenant feature log, one row per change with commit date/time, plus the role × menu matrix | 2026-11-20 |
 | [docs/fitur-platform.md](docs/fitur-platform.md) | Platform owner capabilities, gaps and roadmap, same dated log format | 2026-11-16 |
 | [docs/panduan-fitur-owner.md](docs/panduan-fitur-owner.md) | Owner-facing report (Indonesian, non-technical): every app section → its screens → its features, the entry points after login, default who-opens-what, and a plain list of what is still missing or display-only | 2026-11-19 |
 | [docs/kendala-solusi.md](docs/kendala-solusi.md) | Problems, bugs and mismatches actually hit (KS-01…KS-58), with cause, fix, evidence and lesson | 2026-11-19 |
-| [docs/spec-purchase-order.md](docs/spec-purchase-order.md) | Design record for the PO lifecycle: four documents, state machine, goods receipt, accounting split — **shipped** as migration `005` | 2026-10-30, status 2026-11-17 |
-| [docs/spec-varian-harga-vendor.md](docs/spec-varian-harga-vendor.md) | Design record for variants, per-pack buy prices and the vendor price list as PO template; §16 lists what actually landed — **shipped** as migration `006` | 2026-10-31, status 2026-11-17 |
+| [docs/spec-purchase-order.md](docs/spec-purchase-order.md) | Frozen PO lifecycle design record; dated notes cover later vendor PPN snapshots, gross receipt payables, and A4 printing — base shipped as migration `005`, extension as `013` | 2026-10-30, status 2026-11-20 |
+| [docs/spec-varian-harga-vendor.md](docs/spec-varian-harga-vendor.md) | Frozen variants/per-pack buy-price design; dated notes clarify PPN stays document-level and catalogue prices remain tax-exclusive | 2026-10-31, status 2026-11-20 |
 | [docs/spec-vendor-produk-terintegrasi.md](docs/spec-vendor-produk-terintegrasi.md) | Design record for the integrated vendor↔product catalogue: where the relation leaked, the four locked decisions, the flat 18-column sheet, PO vendor auto-fill order, why no table or column changed — **shipped** as migration `010`; §9 maps every number it quotes to the command that proves it | 2026-11-17 |
 | [docs/spec-chat-internal.md](docs/spec-chat-internal.md) | Design record for per-tenant internal team chat: DM + channels, the `@`/`#` mention codec, polling rationale, RBAC keys, and the explicit no-RLS / UI-only-visibility caveat — **shipped** as migration `011`, plus a dated post-implementation addendum for the three behaviours that only showed up when the feature was measured | 2026-11-17, addendum 2026-11-18 |
 | [docs/spec-channel-pembayaran.md](docs/spec-channel-pembayaran.md) | Design record for payment channel settings (cash/transfer/QRIS), merchant fee tracking, static QRIS image upload, and full storefront order sync (split per seller, atomic confirm with stock deduction) — **shipped** as migration `012` | 2026-11-19 |
 | [docs/spec-impor-varian-kaya.md](docs/spec-impor-varian-kaya.md) | Design record for the rich variant import: the long flat product sheet (16 columns, one line per variant × pack, `Rasa=Susu;Ukuran=250ml`), code-over-name identity at all three levels, the pure planner `src/lib/product-import.ts`, the additive `extend` policy that replaced "skip existing SKU", the vendor sheet's carry-forward + multi-code + variant-targeted pricing, the arbitrary-variant buy-price defect it fixes, and why no migration was needed — **no schema change** (still v12) | 2026-11-19 |
-| [docs/spec-sheet-vendor-satu-vendor.md](docs/spec-sheet-vendor-satu-vendor.md) | Design record for the one-vendor-per-file vendor sheet: the 21-column contract (`Barcode Varian` appended), the canonical shape (row 1 vendor only, rows 2+ its products/variants/packs) as an **authoring rule, not a rejection**, the opt-in `mayCreateVariants` that lets a vendor sheet create the variant and pack it quotes under `manage_variants` while still never guessing one, the move to one transaction per product, the per-vendor export and its round-trip guarantee — **no schema change** (still v12) | 2026-11-19 |
+| [docs/spec-sheet-vendor-satu-vendor.md](docs/spec-sheet-vendor-satu-vendor.md) | Frozen one-vendor sheet design; later status note appends `PPN` as column 22 while preserving the original 21-column order and additive import policy | 2026-11-19, status 2026-11-20 |
 | [docs/ringkasan-fitur-2026-11-05-06.md](docs/ringkasan-fitur-2026-11-05-06.md) | Frozen sprint summary for 5–6 November (RBAC consolidation, printing, POS/shift hardening) | 2026-11-16 |
-| [CHANGELOG.md](CHANGELOG.md) | Release notes grouped by branch/commit, newest first, with the gate results each release shipped with | 2026-11-19 |
-| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-11-19 |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes grouped by branch/commit or working tree, newest first, with scoped gate results | 2026-11-20 |
+| [requirement.md](requirement.md) | Product and architecture plan, kept in sync with the code, with a dated revision history | 2026-11-20 |
 
 The `spec-*.md` files are point-in-time design records: their bodies are never
 rewritten, only given a dated status note, so the reasoning behind a decision

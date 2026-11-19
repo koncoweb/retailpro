@@ -450,18 +450,18 @@ export default function Customers() {
             className="hidden"
           />
           <PermissionGate permission="view_finance">
-            <Button variant="outline" className="gap-2" onClick={() => fileInputRef.current?.click()}>
-              <Upload className="w-4 h-4" />
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={() => fileInputRef.current?.click()}>
+              <Upload className="w-3.5 h-3.5" />
               Import
             </Button>
           </PermissionGate>
           <PermissionGate permission="export_reports">
-            <Button variant="outline" className="gap-2" onClick={handleExport}>
-              <Download className="w-4 h-4" />
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExport}>
+              <Download className="w-3.5 h-3.5" />
               Export Excel
             </Button>
-            <Button variant="outline" className="gap-2" onClick={handleExportCsv}>
-              <Download className="w-4 h-4" />
+            <Button variant="outline" size="sm" className="gap-1.5" onClick={handleExportCsv}>
+              <Download className="w-3.5 h-3.5" />
               Export CSV
             </Button>
           </PermissionGate>
@@ -471,7 +471,7 @@ export default function Customers() {
             className="gap-1 text-muted-foreground"
             onClick={() => handleTemplate("csv")}
           >
-            <FileSpreadsheet className="w-4 h-4" />
+            <FileSpreadsheet className="w-3.5 h-3.5" />
             Template CSV
           </Button>
           <Button
@@ -480,7 +480,7 @@ export default function Customers() {
             className="gap-1 text-muted-foreground"
             onClick={() => handleTemplate("xlsx")}
           >
-            <FileSpreadsheet className="w-4 h-4" />
+            <FileSpreadsheet className="w-3.5 h-3.5" />
             Template Excel
           </Button>
         </div>

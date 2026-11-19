@@ -99,6 +99,7 @@ export interface VendorIdentity {
   email?: string | null;
   paymentTermsDays?: number | null;
   leadTimeDays?: number | null;
+  ppnEnabled?: boolean | null;
 }
 
 /**
@@ -199,6 +200,7 @@ export async function resolveOrCreateVendor(
     normalizeVendorName(input.email).toLowerCase() || null,
     Number.isFinite(input.paymentTermsDays as number) ? Math.trunc(Number(input.paymentTermsDays)) : 30,
     Number.isFinite(input.leadTimeDays as number) ? Math.trunc(Number(input.leadTimeDays)) : 0,
+    input.ppnEnabled ? 1 : 0,
   ];
   let minted = code || nextVendorCode(await latestVendorCode(exec));
   let lastError: unknown = null;
@@ -208,8 +210,8 @@ export async function resolveOrCreateVendor(
       const inserted = await exec.query<{ id: string }>(
         `INSERT INTO suppliers
            (code, name, legal_name, category, status, contact_person, phone, email,
-            payment_terms_days, lead_time_days)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            payment_terms_days, lead_time_days, ppn_enabled)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING id`,
         [minted, ...details]
       );
@@ -348,6 +350,7 @@ interface CatalogSheetRow {
   phone: string | null;
   email: string | null;
   payment_terms_days: number | null;
+  ppn_enabled: number | null;
   sku: string | null;
   product_name: string | null;
   product_category: string | null;
@@ -392,7 +395,7 @@ export async function vendorCatalogSheetRows(vendorId?: string | null): Promise<
   const res = await executeStatement<CatalogSheetRow>(
     `SELECT
        v.code AS vendor_code, v.name AS vendor_name, v.category AS vendor_category,
-       v.contact_person, v.phone, v.email, v.payment_terms_days,
+       v.contact_person, v.phone, v.email, v.payment_terms_days, v.ppn_enabled,
        p.sku, p.name AS product_name, p.category AS product_category,
        p.min_stock_level, vp.vendor_sku, vp.min_order_qty,
        pv.id AS variant_id, pv.sku AS variant_sku, pv.attributes AS variant_attributes,
@@ -441,6 +444,7 @@ export async function vendorCatalogSheetRows(vendorId?: string | null): Promise<
       phone: row.phone ?? "",
       email: row.email ?? "",
       terms: String(row.payment_terms_days ?? ""),
+      ppn: Number(row.ppn_enabled ?? 0) === 1 ? "PPN" : "Non-PPN",
       sku: row.sku ?? "",
       productName: row.product_name ?? "",
       productCategory: row.product_category ?? "",

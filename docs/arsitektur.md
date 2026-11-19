@@ -4,8 +4,8 @@
 |---|---|
 | Aplikasi | RetailPro — ERP/POS multi-tenant, multi-cabang (pasar Indonesia, IDR) |
 | Dokumen | `docs/arsitektur.md` |
-| Terakhir diperbarui | **2026-11-19** |
-| Versi skema tenant | `schema_version = 12` (`db/schema/tenant.sql` + `db/migrations/`) |
+| Terakhir diperbarui | **2026-11-20** |
+| Versi skema tenant | `schema_version = 13` (`db/schema/tenant.sql` + `db/migrations/`) |
 | Status | Berjalan di lokal **dan** di Vercel (back office + toko online) dengan Turso cloud; belum dipakai data produksi nyata |
 
 > Dokumen ini menjelaskan **bagaimana sistem disusun dan mengapa**. Untuk daftar fitur lihat
@@ -311,8 +311,13 @@ AddProductModal · Vendors.tsx (?tambah-produk=1) · VendorDetail (tab Produk & 
                                  Inventory.tsx mengeksekusi rencananya, satu runTransaction() per produk.
                                  Produk existing menjadi 'extend' (hanya yang kurang ditulis), bukan dilewati
 PurchaseOrderModal.tsx: pilih produk -> applyVendor(defaultVendorFor(...)) -> vendor + lead time
-                        + harga kesepakatan (vendor_price_list) terisi; ganti vendor dengan keranjang
-                        berisi = AlertDialog konfirmasi, bukan drop diam-diam
+                        + harga kesepakatan neto; PO baru/ganti vendor mengambil ppn_enabled 0/11,
+                        sedangkan edit draf vendor sama mempertahankan ppn_rate tersimpan
+PurchaseOrderPanel.tsx: transaction membaca vendor/status/rate authoritative -> membulatkan tiap baris
+                        -> subtotal + PPN dokumen -> total bruto; non-draft ditolak
+GoodsReceiptModal -> goods-receipt.ts: rate hanya dari PO -> subtotal harga aktual + PPN per GRN
+                        -> expenses bruto; product_batches/last_cost/pricelist tetap neto
+PurchaseOrderDetail -> print/purchase-order.ts: HTML A4 escaped dari snapshot tersimpan -> iframe print
 ```
 
 Empat keputusan yang membuat alur ini bisa dipercaya:
@@ -400,13 +405,13 @@ terpisah dan tercatat sebagai lanjutan di [spec-purchase-order.md](spec-purchase
 
 ## 6. Model data
 
-38 tabel di DB tenant (v11: 38; v12: 39 dengan `storefront_orders`), dikelompokkan:
+39 tabel di DB tenant (v11: 38; v12 menambah `storefront_orders`; v13 menambah kolom snapshot PPN tanpa tabel baru), dikelompokkan:
 
 | Domain | Tabel |
 |---|---|
 | Profil | `schema_version`, `tenants`, `branches`, `warehouses`, `branch_warehouses`, `users` |
-| Katalog | `categories`, `suppliers`, `products`, **`product_variants`**, `product_units`, `product_batches` — `products` adalah model, `product_variants` adalah SKU yang benar-benar dijual dan distok |
-| Vendor | `vendor_products`, `vendor_price_list`, `vendor_payments` — `suppliers` adalah master vendor yang dipakai produk, PO, dan hutang; `vendor_price_list` menyimpan harga beli yang disepakati per varian per pecahan. Kedua tabel katalog hanya ditulis `src/lib/vendor-catalog.ts` (v10), dan `is_preferred` dijaga tepat satu per produk |
+| Katalog | `categories`, `suppliers`, `products`, **`product_variants`**, `product_units`, `product_batches` — `suppliers.ppn_enabled` adalah setting PPN vendor saat ini; `products` adalah model, `product_variants` adalah SKU yang benar-benar dijual dan distok |
+| Vendor | `vendor_products`, `vendor_price_list`, `vendor_payments` — harga katalog selalu neto. PO/GR menyimpan `subtotal_amount`, `ppn_rate`, `ppn_amount`, dan `total_amount` bruto sebagai snapshot; receipt menulis payable bruto tanpa mengubah HPP. Kedua tabel katalog hanya ditulis `src/lib/vendor-catalog.ts` (v10), dan `is_preferred` dijaga tepat satu per produk |
 | Penjualan | `shifts`, `transactions`, `transaction_items` — kolom `voided`/`void_*` (v9) membuat pembatalan menjadi penanda, bukan penghapusan |
 | Persediaan | `stock_requests`, `stock_request_items`, `stock_transfers`, `transfer_items`, `purchase_orders`, `purchase_order_items`, `goods_receipts`, `goods_receipt_items` — PO = niat, penerimaan = kenyataan |
 | Keuangan | `expenses`, `payables` |
@@ -432,7 +437,7 @@ Runbook lengkap (langkah deploy, env per proyek, verifikasi, rollback): **[deplo
 | Runtime API | Node ≥ 20 (Vercel Functions, `node:crypto`) |
 | Database | Turso libSQL cloud, grup `ap-southeast-2`; control DB + satu DB per tenant |
 | Dev lokal | `npm run dev` (SPA :8080) + `npm run dev:api` (:3000, proxy `VITE_API_PROXY_TARGET`) + `cd tokoonline && npm run dev` (:8082) |
-| Verifikasi | `npm run typecheck`, `npm test` (Vitest 33 berkas/547 test, terukur 2026-11-19), `npm run audit:sql`, `npm run docs:check` (bentuk tabel markdown + satu versi skema di tiga tempat + indeks dokumen + anchor `§` antar-dokumen; plus positive control di `scripts/__fixtures__/docs-check` yang wajib melaporkan 8 masalah), dan `npm run test:e2e` (tester.army terhadap SPA :8080) — semuanya manual, belum ada CI. Gerbang lint = `npx eslint <berkas yang disentuh>` (0 masalah); `eslint .` repo-wide masih 25 error `no-explicit-any` + 8 warning warisan di 18 berkas dashboard/laporan/POS (`HEAD` sudah begitu, jadi bukan regresi) |
+| Verifikasi | `npm run typecheck`, `npm run typecheck:node`, `npm test` (Vitest 34 berkas/566 test, terukur 2026-11-20), `npm run audit:sql`, `npm run docs:check` (bentuk tabel markdown + satu versi skema di tiga tempat + indeks dokumen + anchor `§` antar-dokumen; positive control wajib 8 masalah), build, changed-file ESLint, dan tester.army terhadap SPA :8080 — semuanya manual, belum ada CI. Repo-wide lint punya backlog terpisah; hasil rilis selalu dilaporkan sesuai lingkup |
 | Variabel | Lihat tabel env di [backend.md](backend.md) §2 (lokal) dan [deployment.md](deployment.md) §4 (produksi) |
 | Kontrak platform | Import relatif `.js` di `api/`+`server/`; route bracket lewat `rewrites` di `vercel.json`; `db/schema/**` ikut ke lambda |
 

@@ -170,7 +170,7 @@ export function TransactionDetailModal({
                 <TableHeader>
                   <TableRow>
                     <TableHead>ID</TableHead>
-                    <TableHead>Cabang</TableHead>
+                    <TableHead>Outlet</TableHead>
                     <TableHead>Waktu</TableHead>
                     <TableHead>Metode</TableHead>
                     <TableHead className="text-right">Jumlah</TableHead>

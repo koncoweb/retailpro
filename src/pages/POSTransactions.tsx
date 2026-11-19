@@ -345,7 +345,7 @@ export default function POSTransactions() {
       "Waktu": new Date(trx.created_at).toLocaleTimeString('id-ID'),
       "Kasir": trx.cashier_name || "Unknown",
       "Customer": trx.customer_name || "Walk-in",
-      "Cabang": getBranchName(trx.branch_id),
+      "Outlet": getBranchName(trx.branch_id),
       "Pembayaran": trx.payment_method,
       "Total Items": trx.items.reduce((sum, item) => sum + item.quantity, 0),
       "Total Amount": trx.total_amount,
@@ -505,7 +505,7 @@ export default function POSTransactions() {
           </Select>
           <Select value={selectedBranch} onValueChange={(v) => { setSelectedBranch(v); setPage(0); }}>
             <SelectTrigger className="w-full sm:w-40">
-              <SelectValue placeholder="Cabang" />
+              <SelectValue placeholder="Outlet" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Semua</SelectItem>
@@ -730,7 +730,7 @@ export default function POSTransactions() {
                   <p>{detailTx.cashier_name || detailTx.cashier_id}</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">Cabang</p>
+                  <p className="text-xs text-muted-foreground">Outlet</p>
                   <p>{getBranchName(detailTx.branch_id)}</p>
                 </div>
                 <div>

@@ -41,6 +41,7 @@ export interface VendorRecord {
   category: string | null;
   status: string | null;
   tax_id: string | null;
+  ppn_enabled: number;
   website: string | null;
   contact_person: string | null;
   phone: string | null;
@@ -78,6 +79,7 @@ interface FormState {
   category: string;
   status: string;
   tax_id: string;
+  ppn_enabled: boolean;
   website: string;
   contact_person: string;
   phone: string;
@@ -105,6 +107,7 @@ const EMPTY_FORM: FormState = {
   category: "supplier",
   status: "active",
   tax_id: "",
+  ppn_enabled: false,
   website: "",
   contact_person: "",
   phone: "",
@@ -133,6 +136,7 @@ function toForm(vendor: VendorRecord): FormState {
     category: vendor.category ?? "supplier",
     status: vendor.status ?? "active",
     tax_id: vendor.tax_id ?? "",
+    ppn_enabled: Number(vendor.ppn_enabled ?? 0) === 1,
     website: vendor.website ?? "",
     contact_person: vendor.contact_person ?? "",
     phone: vendor.phone ?? "",
@@ -237,6 +241,7 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: VendorF
         emptyToNull(form.bank_account_name),
         emptyToNull(form.notes),
         settings,
+        form.ppn_enabled ? 1 : 0,
       ];
 
       let vendorId = vendor?.id ?? "";
@@ -251,9 +256,9 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: VendorF
              payment_terms_days = $15, lead_time_days = $16, credit_limit = $17,
              currency = $18, rating = $19,
              bank_name = $20, bank_account_number = $21, bank_account_name = $22,
-             notes = $23, settings = $24,
+             notes = $23, settings = $24, ppn_enabled = $25,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-           WHERE id = $25`,
+           WHERE id = $26`,
           [...params, vendor?.id]
         );
         toast.success("Vendor berhasil diperbarui");
@@ -263,9 +268,9 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: VendorF
              (code, name, legal_name, category, status, tax_id, website,
               contact_person, phone, email, address, city, province, postal_code,
               payment_terms_days, lead_time_days, credit_limit, currency, rating,
-              bank_name, bank_account_number, bank_account_name, notes, settings)
+              bank_name, bank_account_number, bank_account_name, notes, settings, ppn_enabled)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                   $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+                   $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
            RETURNING id`,
           params
         );
@@ -277,7 +282,13 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: VendorF
         action: isEditing ? "update" : "create",
         entity: "suppliers",
         entityId: vendorId,
-        details: { name: form.name.trim(), code, category: form.category, status: form.status },
+        details: {
+          name: form.name.trim(),
+          code,
+          category: form.category,
+          status: form.status,
+          ppnEnabled: form.ppn_enabled,
+        },
         userId: user?.id,
       });
 
@@ -354,6 +365,22 @@ export function VendorFormModal({ open, onOpenChange, vendor, onSaved }: VendorF
                   placeholder="01.234.567.8-901.000"
                 />
               </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+              <div className="space-y-0.5">
+                <Label htmlFor="vendor-ppn">Vendor PPN 11%</Label>
+                <p className="text-[0.8rem] text-muted-foreground">
+                  Aktifkan jika harga vendor belum termasuk PPN. PO baru akan menambahkan PPN 11%;
+                  jika tidak aktif, vendor diperlakukan sebagai Non-PPN.
+                </p>
+              </div>
+              <Switch
+                id="vendor-ppn"
+                checked={form.ppn_enabled}
+                onCheckedChange={(checked) => set("ppn_enabled", checked)}
+                aria-label="Vendor PPN 11 persen"
+              />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

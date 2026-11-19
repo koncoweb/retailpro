@@ -44,6 +44,9 @@ import {
   ShoppingCart,
   Loader2,
   ClipboardList,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
 } from "lucide-react";
 import { ProductImportExport } from "@/components/inventory/ProductImportExport";
 import { AddProductModal } from "@/components/inventory/AddProductModal";
@@ -85,6 +88,7 @@ import {
 } from "@/lib/stock-movement";
 import { usePermissions } from "@/hooks/use-permissions";
 import { warehouseInScope, type RoleScope } from "@/lib/permission-matrix";
+import { useBarcodeScanner } from "@/hooks/use-barcode-scanner";
 
 import { ProductUnit, type ProductFormPayload } from "@/components/inventory/AddProductModal";
 import {
@@ -94,6 +98,13 @@ import {
   type VariantAttributeGroup,
   type VariantAttributes,
 } from "@/lib/variants";
+import { cn } from "@/lib/utils";
+import {
+  defaultSortDirection,
+  sortInventoryRows,
+  type InventorySortKey,
+  type SortDirection,
+} from "@/lib/inventory-sort";
 
 /**
  * One sellable variant of a product, as the table and the edit form need it.
@@ -141,6 +152,49 @@ interface Product {
   variantGroups: VariantAttributeGroup[];
   /** One row per sellable variant, each with its own packs and stock. */
   variants: ProductVariantRow[];
+}
+
+/**
+ * A sortable column header. The label is a real button so it toggles on click
+ * or Enter, and the caret shows which column and direction is active so a
+ * dense table never loses its sort state.
+ */
+function SortableHead({
+  label,
+  columnKey,
+  activeKey,
+  direction,
+  onSort,
+  align = "left",
+}: {
+  label: string;
+  columnKey: InventorySortKey;
+  activeKey: InventorySortKey | null;
+  direction: SortDirection;
+  onSort: (key: InventorySortKey) => void;
+  align?: "left" | "center" | "right";
+}) {
+  const active = activeKey === columnKey;
+  const Icon = !active ? ArrowUpDown : direction === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <TableHead
+      className={cn(
+        "select-none",
+        align === "right" && "text-right",
+        align === "center" && "text-center",
+      )}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(columnKey)}
+        title={`Urutkan berdasarkan ${label}`}
+        className="inline-flex items-center gap-1 transition-colors hover:text-foreground"
+      >
+        {label}
+        <Icon className={cn("h-3.5 w-3.5", active ? "text-foreground" : "opacity-40")} />
+      </button>
+    </TableHead>
+  );
 }
 
 /**
@@ -275,7 +329,7 @@ interface TransferRow {
 }
 
 const SUPPLIERS_SQL = `
-  SELECT id, name, code, payment_terms_days, lead_time_days, status
+  SELECT id, name, code, payment_terms_days, lead_time_days, status, ppn_enabled
   FROM suppliers
   ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, name ASC
 `;
@@ -438,9 +492,24 @@ export default function Inventory() {
 
   // Filter State
   const [searchQuery, setSearchQuery] = useState("");
+  const scanSearchRef = useRef<HTMLInputElement>(null);
   const [selectedCategory, setSelectedCategory] = useState("Semua");
   const [stockFilter, setStockFilter] = useState("all");
   const [selectedWarehouse, setSelectedWarehouse] = useState("all");
+
+  // Sorting state for the product table (Fitur "sortir barang"). Null keeps the
+  // natural query order until the operator clicks a column header.
+  const [sortKey, setSortKey] = useState<InventorySortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDirection>("asc");
+
+  const toggleSort = (key: InventorySortKey) => {
+    if (sortKey === key) {
+      setSortDir((prev) => (prev === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(defaultSortDirection(key));
+    }
+  };
 
   const categories = Array.from(new Set(products.map(p => p.category).filter(c => c && c.trim() !== "")));
 
@@ -840,7 +909,7 @@ export default function Inventory() {
       fetchTransfers();
     } catch (error) {
       console.error("Transfer failed:", error);
-      toast.error("Gagal membuat transfer");
+      throw error;
     }
   };
 
@@ -1059,9 +1128,12 @@ export default function Inventory() {
   };
 
   const filteredProducts = products.filter((product) => {
+    const q = searchQuery.toLowerCase();
     const matchesSearch =
-      product.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      product.sku.toLowerCase().includes(searchQuery.toLowerCase());
+      product.name.toLowerCase().includes(q) ||
+      product.sku.toLowerCase().includes(q) ||
+      product.units.some((u) => u.barcode?.toLowerCase().includes(q)) ||
+      product.variants.some((v) => v.sku.toLowerCase().includes(q) || v.barcode?.toLowerCase().includes(q) || v.units.some((u) => u.barcode?.toLowerCase().includes(q)));
     const matchesCategory =
       selectedCategory === "Semua" || product.category === selectedCategory;
     const matchesStock =
@@ -1077,6 +1149,19 @@ export default function Inventory() {
     }
     
     return matchesSearch && matchesCategory && matchesStock;
+  });
+
+  // Column sorting is applied last so the operator sees the sort order on
+  // whatever the search and filters already narrowed down.
+  const visibleProducts = sortInventoryRows(filteredProducts, sortKey, sortDir);
+
+  // A scan on the Products tab drops the code into the search box, which now
+  // matches name/SKU/barcode. Disabled while a dialog (add/edit, transfer,
+  // opname) is open so its own inputs keep the keyboard.
+  useBarcodeScanner({
+    enabled: activeTab === "products" && !isAddProductOpen && !isTransferOpen && !isOpnameOpen,
+    scanInput: scanSearchRef,
+    onScan: (code) => setSearchQuery(code),
   });
 
   const totalProducts = products.length;
@@ -1096,12 +1181,12 @@ export default function Inventory() {
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl lg:text-3xl font-bold">Inventory Produk</h1>
+            <h1 className="text-xl lg:text-2xl font-bold">Inventory Produk</h1>
             <p className="text-muted-foreground mt-1">
               Kelola stok produk di semua gudang
             </p>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-1.5">
             {/*
              * The whole row goes to the dialog: the rich export writes the
              * variant matrix and each variant's own packs, which a flat summary
@@ -1112,8 +1197,8 @@ export default function Inventory() {
               onImport={handleImport}
             />
             {can("manage_variants") && (
-              <Button className="gap-2" onClick={() => setIsAddProductOpen(true)}>
-                <Plus className="w-4 h-4" />
+              <Button size="sm" className="gap-1.5" onClick={() => setIsAddProductOpen(true)}>
+                <Plus className="w-3.5 h-3.5" />
                 Tambah Produk
               </Button>
             )}
@@ -1121,48 +1206,48 @@ export default function Inventory() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-card rounded-xl border p-4 animate-fade-in">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="bg-card rounded-xl border p-3 animate-fade-in">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-primary/10">
                 <Package className="w-5 h-5 text-primary" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Total Produk</p>
-                <p className="text-2xl font-bold">{totalProducts}</p>
+                <p className="text-xs text-muted-foreground">Total Produk</p>
+                <p className="text-lg font-bold">{totalProducts}</p>
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl border p-4 animate-fade-in">
+          <div className="bg-card rounded-xl border p-3 animate-fade-in">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-warning/10">
                 <AlertTriangle className="w-5 h-5 text-warning" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Stok Rendah</p>
-                <p className="text-2xl font-bold text-warning">{lowStockProducts}</p>
+                <p className="text-xs text-muted-foreground">Stok Rendah</p>
+                <p className="text-lg font-bold text-warning">{lowStockProducts}</p>
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl border p-4 animate-fade-in">
+          <div className="bg-card rounded-xl border p-3 animate-fade-in">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-success/10">
                 <TrendingUp className="w-5 h-5 text-success" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Nilai Inventory</p>
-                <p className="text-xl font-bold">{formatCurrency(totalValue)}</p>
+                <p className="text-xs text-muted-foreground">Nilai Inventory</p>
+                <p className="text-base font-bold">{formatCurrency(totalValue)}</p>
               </div>
             </div>
           </div>
-          <div className="bg-card rounded-xl border p-4 animate-fade-in">
+          <div className="bg-card rounded-xl border p-3 animate-fade-in">
             <div className="flex items-center gap-3">
               <div className="p-2.5 rounded-lg bg-info/10">
                 <BarChart3 className="w-5 h-5 text-info" />
               </div>
               <div>
-                <p className="text-sm text-muted-foreground">Avg. Margin</p>
-                <p className="text-2xl font-bold">{avgMargin.toFixed(1)}%</p>
+                <p className="text-xs text-muted-foreground">Avg. Margin</p>
+                <p className="text-lg font-bold">{avgMargin.toFixed(1)}%</p>
               </div>
             </div>
           </div>
@@ -1197,7 +1282,8 @@ export default function Inventory() {
               <div className="relative flex-1 max-w-md">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
-                  placeholder="Cari produk atau SKU..."
+                  ref={scanSearchRef}
+                  placeholder="Cari nama, SKU, atau barcode..."
                   className="pl-10"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -1242,11 +1328,12 @@ export default function Inventory() {
               {stockFilter === "low" && canRequestStock && (
                 <Button
                   variant="outline"
-                  className="gap-2 shrink-0"
+                  size="sm"
+                  className="gap-1.5 shrink-0"
                   onClick={() => navigate("/backoffice/branches/orders")}
                 >
-                  <ClipboardList className="w-4 h-4" />
-                  Buat Pesanan Cabang
+                  <ClipboardList className="w-3.5 h-3.5" />
+                  Buat Pesanan Outlet
                 </Button>
               )}
             </div>
@@ -1256,18 +1343,18 @@ export default function Inventory() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Produk</TableHead>
-                    <TableHead>Kategori</TableHead>
-                    <TableHead className="text-right">Harga Jual</TableHead>
-                    <TableHead className="text-right">Harga Modal</TableHead>
-                    <TableHead className="text-center">Total Stok</TableHead>
+                    <SortableHead label="Produk" columnKey="name" activeKey={sortKey} direction={sortDir} onSort={toggleSort} />
+                    <SortableHead label="Kategori" columnKey="category" activeKey={sortKey} direction={sortDir} onSort={toggleSort} />
+                    <SortableHead label="Harga Jual" columnKey="price" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right" />
+                    <SortableHead label="Harga Modal" columnKey="cost" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="right" />
+                    <SortableHead label="Total Stok" columnKey="stock" activeKey={sortKey} direction={sortDir} onSort={toggleSort} align="center" />
                     {selectedWarehouse === "all" && warehouses.map((warehouse) => (
                       <TableHead key={warehouse.id} className="text-center">{warehouseLabel(warehouse)}</TableHead>
                     ))}
                     {selectedWarehouse !== "all" && (
                       <TableHead className="text-center">Stok Gudang</TableHead>
                     )}
-                    <TableHead>Supplier</TableHead>
+                    <SortableHead label="Supplier" columnKey="supplier" activeKey={sortKey} direction={sortDir} onSort={toggleSort} />
                     <TableHead className="text-center">Status</TableHead>
                     <TableHead className="w-12"></TableHead>
                   </TableRow>
@@ -1284,7 +1371,7 @@ export default function Inventory() {
                       </TableCell>
                     </TableRow>
                   )}
-                  {!isLoading && filteredProducts.length === 0 && (
+                  {!isLoading && visibleProducts.length === 0 && (
                     <TableRow>
                       <TableCell
                         colSpan={8 + (selectedWarehouse === "all" ? warehouses.length : 1)}
@@ -1294,7 +1381,7 @@ export default function Inventory() {
                       </TableCell>
                     </TableRow>
                   )}
-                  {filteredProducts.map((product) => {
+                  {visibleProducts.map((product) => {
                     const isLowStock = product.stock <= product.minStock;
                     const margin = ((product.price - product.cost) / product.price) * 100;
                     const locationStock = selectedWarehouse !== "all" ? (product.warehouses[selectedWarehouse] || 0) : null;
@@ -1543,10 +1630,12 @@ export default function Inventory() {
             id: variant.id,
             label: variantLabel(variant.attributes, product.variantGroups),
             sku: variant.sku || product.sku,
+            barcode: variant.barcode,
             warehouses: variant.warehouses,
             units: variant.units.map((unit) => ({
               name: unit.name,
               conversion_factor: unit.conversion_factor,
+              barcode: unit.barcode,
             })),
           })),
         }))}
