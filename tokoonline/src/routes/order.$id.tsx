@@ -1,18 +1,20 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { toast } from "sonner";
 import { buttonVariants } from "@/components/ui/button";
 import { formatDateID, formatIDR } from "@/lib/format";
 import { SHOP, waLink } from "@/lib/shop";
-import { useShop, sellerGroups, type OrderStatus } from "@/lib/store";
+import {
+  API_BASE,
+  submitOrderToServer,
+  useShop,
+  sellerGroups,
+  type OrderStatus,
+} from "@/lib/store";
 import { usePaymentConfigs, type PaymentBank } from "@/lib/payment-config";
 
 export const Route = createFileRoute("/order/$id")({ component: OrderPage });
-
-/** Where the back-office API listens (same origin logic as `catalog.ts`). */
-const API_BASE = (
-  (import.meta.env.VITE_CATALOG_API_URL as string | undefined) ?? "http://localhost:3000"
-).replace(/\/+$/, "");
 
 const STATUS: Record<OrderStatus, string> = {
   pending_payment: "Menunggu pembayaran",
@@ -38,6 +40,7 @@ function OrderPage() {
   const { id } = Route.useParams();
   const order = useShop((s) => s.orders.find((o) => o.id === id));
   const [copied, setCopied] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [serverStatuses, setServerStatuses] = useState<ServerOrderStatus[]>([]);
   const paymentConfigs = usePaymentConfigs();
   const parentId = order?.parentId;
@@ -116,6 +119,26 @@ function OrderPage() {
     setTimeout(() => setCopied(false), 1600);
   }
 
+  // The checkout POST failed before — resend the exact same order. Guard:
+  // only while no parentId exists, so a retry can never duplicate a row.
+  // `order` itself is still `Order | undefined` inside a hoisted function
+  // declaration, so the narrowed row is captured first.
+  const currentOrder = order;
+  async function retrySend() {
+    setRetrying(true);
+    try {
+      await submitOrderToServer(currentOrder);
+      toast.success("Pesanan terkirim ke toko.");
+    } catch (error) {
+      toast.error(
+        `Masih belum terkirim. ${error instanceof Error ? error.message : ""}`,
+        { duration: 8000 }
+      );
+    } finally {
+      setRetrying(false);
+    }
+  }
+
   const isWaitingPayment =
     effectiveStatus === "pending_payment" || effectiveStatus === "waiting_payment";
 
@@ -192,6 +215,30 @@ function OrderPage() {
       {(effectiveStatus === "cancelled" || effectiveStatus === "void") && (
         <p className="rounded-xl bg-destructive/10 px-4 py-3 text-[13px] text-destructive shadow-[var(--shadow-border)]">
           Pesanan ini telah dibatalkan.
+        </p>
+      )}
+
+      {!order.synced && (
+        <section className="flex flex-col gap-2 rounded-xl bg-destructive/10 px-4 py-3 shadow-[var(--shadow-border)]">
+          <p className="text-[13px] text-destructive">
+            Pesanan ini belum terkirim ke toko. Cek koneksi lalu kirim ulang,
+            atau kabari CS lewat WhatsApp.
+          </p>
+          <button
+            type="button"
+            onClick={retrySend}
+            disabled={retrying}
+            className={buttonVariants({ size: "sm", className: "w-fit" })}
+          >
+            {retrying ? "Mengirim ulang…" : "Kirim ulang pesanan"}
+          </button>
+        </section>
+      )}
+
+      {order.synced && order.whatsapp === "failed" && (
+        <p className="rounded-xl bg-surface px-4 py-3 text-[13px] text-muted shadow-[var(--shadow-border)]">
+          Invoice WhatsApp gagal terkirim ke nomor {order.customer.phone}. Tenang,
+          pesanan tetap tercatat — kirim manual lewat tombol WhatsApp di bawah.
         </p>
       )}
 

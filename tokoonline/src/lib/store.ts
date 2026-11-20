@@ -64,6 +64,10 @@ export type Order = {
   parentId?: string;
   /** Seller slugs this order was sent to, for status polling. */
   sellerSlugs?: string[];
+  /** False while the order only exists on this device — the order page offers a retry. */
+  synced: boolean;
+  /** Outcome of the server-side WhatsApp invoice send; 'failed' nudges the shopper to CS. */
+  whatsapp?: 'sent' | 'failed' | 'skipped';
 };
 
 export type ChatMsg = {
@@ -183,6 +187,9 @@ export const useShop = create<State>()(
           subtotal,
           deliveryFee,
           total: subtotal + deliveryFee,
+          // Until `submitOrderToServer` patches the parent id in, this order
+          // only lives on the device — the order page shows a retry button.
+          synced: false,
         };
         set({ orders: [order, ...get().orders], cart: [] });
         return order;
@@ -199,9 +206,10 @@ export const useShop = create<State>()(
     }),
     {
       name: STORAGE_KEY,
-      version: 4,
+      version: 5,
       // v2 put the variant into the line key, v3 the seller, v4 aligned
-      // OrderStatus with the server enum (waiting_payment → pending_payment).
+      // OrderStatus with the server enum (waiting_payment → pending_payment),
+      // v5 added `synced` (an order without a parentId never reached the server).
       // Baskets saved before that keep their goods, but their keys are rebuilt
       // so the same product does not appear twice once the shopper adds it again.
       migrate: (persisted, version) => {
@@ -218,6 +226,13 @@ export const useShop = create<State>()(
           state.orders = state.orders.map((order) => ({
             ...order,
             status: order.status === "waiting_payment" ? "pending_payment" : order.status,
+          }));
+        }
+        // v4→v5: backfill `synced` from the presence of a server parent id.
+        if (version < 5 && Array.isArray(state.orders)) {
+          state.orders = state.orders.map((order) => ({
+            ...order,
+            synced: order.synced ?? Boolean(order.parentId),
           }));
         }
         return state as unknown as State;
@@ -237,6 +252,69 @@ export const useShop = create<State>()(
 
 export function cartCount(cart: CartItem[]) {
   return cart.reduce((sum, item) => sum + item.qty, 0);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Server hand-off — one payload shape for checkout submit AND retry           */
+/* -------------------------------------------------------------------------- */
+
+/** Where the back-office API listens (same origin logic as `catalog.ts`). */
+export const API_BASE = (
+  (import.meta.env.VITE_CATALOG_API_URL as string | undefined) ?? "http://localhost:3000"
+).replace(/\/+$/, "");
+
+/**
+ * POST a saved local order to the back office and patch the row with the
+ * server's parent id. Throws with an Indonesian-safe message when the server
+ * rejects or is unreachable — the caller keeps `synced: false` so the order
+ * page can retry. Retrying is safe: each attempt creates its own server rows,
+ * which is why the button only appears while NO parent id exists yet.
+ */
+export async function submitOrderToServer(order: Order): Promise<Order> {
+  const response = await fetch(`${API_BASE}/api/storefront/orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      items: order.items.map((item) => ({
+        tenant: item.tenant,
+        productId: item.productId,
+        variantId: item.variantId ?? null,
+        unitName: item.unitName,
+        qty: item.qty,
+      })),
+      customer: {
+        name: order.customer.name,
+        phone: order.customer.phone,
+        address: order.customer.address || null,
+      },
+      fulfillment: order.fulfillment,
+      slot: order.slot,
+      notes: order.notes || null,
+      paymentChannel: order.payment,
+      paymentBankId: order.payment === "transfer" ? (order.paymentBankId ?? null) : null,
+    }),
+  });
+  if (!response.ok) {
+    const errorBody = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(errorBody?.message ?? `HTTP ${response.status}`);
+  }
+  const result = (await response.json()) as {
+    parentId: string;
+    orders?: { whatsapp?: 'sent' | 'failed' | 'skipped' }[];
+  };
+  const synced: Order = {
+    ...order,
+    parentId: result.parentId,
+    synced: true,
+    // 'failed' on any seller row wins — the shopper should ping CS about it.
+    whatsapp: result.orders?.some((r) => r.whatsapp === "failed")
+      ? "failed"
+      : (result.orders?.[0]?.whatsapp ?? order.whatsapp),
+  };
+  useShop.setState({
+    orders: useShop.getState().orders.map((o) => (o.id === order.id ? synced : o)),
+  });
+  return synced;
 }
 
 export function cartTotal(cart: CartItem[]) {

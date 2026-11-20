@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/input";
 import { formatIDR, todayPlus } from "@/lib/format";
 import { SHOP, type Fulfillment, type PaymentMethod } from "@/lib/shop";
-import { cartTotal, sellerGroups, useShop } from "@/lib/store";
+import { cartTotal, sellerGroups, submitOrderToServer, useShop } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import {
   availableChannelsForSellers,
@@ -16,11 +16,6 @@ import {
 export const Route = createFileRoute("/checkout")({ component: Checkout });
 
 const SLOTS = ["10.00–12.00", "12.00–15.00", "15.00–18.00", "18.00–20.00"];
-
-/** Where the back-office API listens (same origin logic as `catalog.ts`). */
-const API_BASE = (
-  (import.meta.env.VITE_CATALOG_API_URL as string | undefined) ?? "http://localhost:3000"
-).replace(/\/+$/, "");
 
 function Checkout() {
   const cart = useShop((s) => s.cart);
@@ -104,43 +99,18 @@ function Checkout() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`${API_BASE}/api/storefront/orders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          items: cart.map((item) => ({
-            tenant: item.tenant,
-            productId: item.productId,
-            variantId: item.variantId ?? null,
-            unitName: item.unitName,
-            qty: item.qty,
-          })),
-          customer: { name: name.trim(), phone: phone.trim(), address: address.trim() || null },
-          fulfillment,
-          slot,
-          notes: notes.trim() || null,
-          paymentChannel: effectivePayment,
-          paymentBankId: effectivePayment === "transfer" ? effectiveBankId : null,
-        }),
-      });
-      if (!response.ok) {
-        const errorBody = await response.json().catch(() => null);
-        throw new Error(
-          (errorBody as { message?: string })?.message ?? `HTTP ${response.status}`
-        );
-      }
-      const result = (await response.json()) as { parentId: string };
-      // Patch the local order with the server parent id so the order page can
-      // poll for status updates.
-      useShop.setState({
-        orders: useShop.getState().orders.map((o) =>
-          o.id === order.id ? { ...o, parentId: result.parentId } : o
-        ),
-      });
+      // One payload shape for submit + retry, shared with the order page.
+      // On success the local row gets its parentId/`synced`; on failure it
+      // stays local-only and the order page offers a retry button.
+      const synced = await submitOrderToServer(order);
+      toast.success(
+        synced.whatsapp === "sent"
+          ? "Pesanan terkirim ke toko. Invoice juga dikirim ke WhatsApp Anda."
+          : "Pesanan terkirim ke toko."
+      );
     } catch (error) {
-      // The order is already saved locally; warn the shopper and let them retry.
       toast.error(
-        `Pesanan tersimpan lokal, tapi belum terkirim ke toko. ${error instanceof Error ? error.message : ""}`,
+        `Pesanan tersimpan lokal, tapi belum terkirim ke toko. Buka pesanan lalu ketuk Kirim ulang. ${error instanceof Error ? error.message : ""}`,
         { duration: 8000 }
       );
     } finally {
