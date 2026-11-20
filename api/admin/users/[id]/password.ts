@@ -38,18 +38,26 @@ function readUserId(req: ApiRequest): string {
 async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== 'POST') return methodNotAllowed(res, ['POST']);
 
-  const { tenant } = await requireAdminSession(req.headers);
+  const { user: actor, tenant } = await requireAdminSession(req.headers);
   const userId = readUserId(req);
 
   const control = getControlDb();
   const target = await control
     .selectFrom('user')
-    .select(['id', 'tenantId', 'email'])
+    .select(['id', 'tenantId', 'email', 'role'])
     .where('id', '=', userId)
     .executeTakeFirst();
 
   if (!target || target.tenantId !== tenant.id) {
     throw new HttpError(404, 'user_not_found', 'No such user in this company.');
+  }
+
+  // Employee resets must never lock out the caller or the company owner.
+  if (userId === actor.id) {
+    throw new HttpError(403, 'cannot_reset_yourself', 'Your own password cannot be reset from employee management.');
+  }
+  if (target.id === tenant.owner_user_id || target.role === 'tenant_owner' || target.role === 'platform_owner') {
+    throw new HttpError(403, 'cannot_reset_owner', 'An owner password cannot be reset from employee management.');
   }
 
   const body = await readJsonBody<PasswordBody>(req);

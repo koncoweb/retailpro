@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { BackOfficeLayout } from "@/components/layout/BackOfficeLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -173,6 +174,9 @@ export default function Employees() {
 
   // One-time password dialog (never a toast: it is the only copy of the password)
   const [generatedCredentials, setGeneratedCredentials] = useState<GeneratedCredentials | null>(null);
+  const [resetTarget, setResetTarget] = useState<Employee | null>(null);
+  const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const passwordResetInFlight = useRef(false);
 
   /**
    * The role picker's contents, read from the resolved matrix rather than from
@@ -502,9 +506,16 @@ export default function Employees() {
   };
 
   /** Server-generated password, shown once, exactly like the add-employee flow. */
-  const handleResetPassword = async (emp: Employee) => {
+  const handleResetPassword = async () => {
+    const emp = resetTarget;
+    if (!emp || passwordResetInFlight.current || emp.id === user?.id
+        || emp.role === "tenant_owner" || emp.role === "platform_owner") return;
+    passwordResetInFlight.current = true;
+    setIsResettingPassword(true);
     try {
       const payload = await identityRequest(`/${emp.id}/password`, "POST", {});
+      setResetTarget(null);
+      setGeneratedCredentials({ email: emp.email, password: payload?.tempPassword });
       await logAudit({
         action: "reset_employee_password",
         entity: "users",
@@ -512,10 +523,12 @@ export default function Employees() {
         userId: user?.id,
         details: { email: emp.email },
       });
-      setGeneratedCredentials({ email: emp.email, password: payload?.tempPassword });
     } catch (error) {
       console.error("Failed to reset password:", error);
       toast.error(error instanceof Error ? error.message : "Gagal mengubah password");
+    } finally {
+      passwordResetInFlight.current = false;
+      setIsResettingPassword(false);
     }
   };
 
@@ -666,15 +679,16 @@ export default function Employees() {
             <Shield className="w-4 h-4" />
           </Button>
         )}
-        {can("edit_employee") && (
+        {can("edit_employee") && !isSelf && emp.role !== "tenant_owner" && emp.role !== "platform_owner" && (
           <Button
             variant="ghost"
             size="iconTouch"
             aria-label={`Reset password ${emp.name || emp.email}`}
             title="Buat password baru"
+            disabled={isResettingPassword || !!generatedCredentials}
             onClick={(e) => {
               e.stopPropagation();
-              void handleResetPassword(emp);
+              setResetTarget(emp);
             }}
           >
             <KeyRound className="w-4 h-4" />
@@ -1192,6 +1206,35 @@ export default function Employees() {
         </AlertDialogContent>
       </AlertDialog>
 
+      <AlertDialog
+        open={!!resetTarget}
+        onOpenChange={(open) => {
+          if (!open && !passwordResetInFlight.current) setResetTarget(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset employee password?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will replace the password for {resetTarget?.email}. The old password will
+              stop working. Save the new password and share it securely with this employee.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isResettingPassword}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isResettingPassword}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleResetPassword();
+              }}
+            >
+              {isResettingPassword ? "Resetting…" : "Confirm password reset"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Temporary password: the server returns it exactly once. */}
       <Dialog open={!!generatedCredentials} onOpenChange={(open) => !open && setGeneratedCredentials(null)}>
         <DialogContent className="max-w-md">
@@ -1199,10 +1242,10 @@ export default function Employees() {
                 <DialogTitle>Password Sementara</DialogTitle>
             </DialogHeader>
             <div className="space-y-3 text-sm">
-                <p className="text-muted-foreground">
+                <DialogDescription>
                     Catat password ini sekarang. Password tidak dapat ditampilkan lagi dan harus
                     segera diganti oleh karyawan setelah login pertama.
-                </p>
+                </DialogDescription>
                 <div className="rounded-md border bg-muted/40 p-3 font-mono text-xs space-y-1">
                     <div className="break-all">
                         <span className="text-muted-foreground">Email: </span>
