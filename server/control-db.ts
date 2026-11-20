@@ -6,7 +6,7 @@
  * (`database: { db, type: 'sqlite' }`), so both share one connection pool and we
  * never pay for two clients.
  */
-import { Kysely } from 'kysely';
+import { ColumnType, Kysely } from 'kysely';
 import { LibsqlDialect } from '@libsql/kysely-libsql';
 import { optionalEnv, requiredEnv } from './env.js';
 
@@ -24,6 +24,27 @@ export interface TenantDatabaseRow {
   updated_at: string;
 }
 
+/**
+ * A GOWA webhook receipt logged by `POST /api/storefront/webhook`.
+ *
+ * `id` and `received_at` carry SQL DEFAULTs in `db/schema/control.sql`, and
+ * `ColumnType<..., insert: undefined>` is what tells Kysely they may be omitted on
+ * insert — a plain `?:` is not enough (its insert type still demands the key).
+ */
+export interface WhatsappEventRow {
+  id: ColumnType<string, string | undefined, never>;
+  event: string;
+  device_id: string | null;
+  message_id: string | null;
+  chat_jid: string | null;
+  sender_jid: string | null;
+  ack: string | null;
+  body: string | null;
+  outcome: string;
+  payload: string;
+  received_at: ColumnType<string, string | undefined, never>;
+}
+
 export interface ControlDatabase {
   user: Record<string, unknown> & {
     id: string;
@@ -38,6 +59,7 @@ export interface ControlDatabase {
   account: Record<string, unknown>;
   verification: Record<string, unknown>;
   tenant_databases: TenantDatabaseRow;
+  whatsapp_events: WhatsappEventRow;
 }
 
 export type ControlKysely = Kysely<ControlDatabase>;

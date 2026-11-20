@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 
 -- Fleet drift guard: `scripts/apply-schema-all.mjs` compares this row against
 -- the version it is about to apply.
-INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 15);
+INSERT OR IGNORE INTO schema_version (id, version) VALUES (1, 16);
 
 -- Tenant profile (single row). `settings` holds role_permissions, payroll_config,
 -- receipt/tax/bank/payment_channels settings as JSON text. `qris_image` holds the
@@ -378,6 +378,14 @@ CREATE TABLE IF NOT EXISTS storefront_orders (
   confirmed_by    TEXT,
   -- The `transactions` row written when this order's payment was confirmed.
   transaction_id  TEXT,
+  -- GOWA invoice delivery metadata (016): status of the WhatsApp send, the
+  -- message id the delivery webhook matches on, and the strongest receipt
+  -- seen. Never order state — `status` above stays the money-path truth.
+  wa_status       TEXT,
+  wa_message_id   TEXT,
+  wa_sent_at      TEXT,
+  wa_ack          TEXT,
+  wa_error        TEXT,
   created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -903,6 +911,7 @@ CREATE INDEX        IF NOT EXISTS idx_items_product        ON transaction_items(
 -- Storefront orders: the shopper reassembles a basket by parent; the seller's
 -- order screen lists newest-first by status.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_sf_orders_invoice    ON storefront_orders(invoice_number);
+CREATE INDEX        IF NOT EXISTS idx_sf_orders_wa_msg     ON storefront_orders(wa_message_id) WHERE wa_message_id IS NOT NULL;
 CREATE INDEX        IF NOT EXISTS idx_sf_orders_parent     ON storefront_orders(parent_id);
 CREATE INDEX        IF NOT EXISTS idx_sf_orders_status     ON storefront_orders(status, created_at);
 CREATE INDEX        IF NOT EXISTS idx_sf_orders_created    ON storefront_orders(created_at);

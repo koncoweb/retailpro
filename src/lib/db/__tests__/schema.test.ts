@@ -52,7 +52,7 @@ afterAll(() => {
 describe('tenant.sql', () => {
   it('applies cleanly and records a schema version', async () => {
     const rows = await run<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(rows[0].version).toBe(15);
+    expect(rows[0].version).toBe(16);
   });
 
   it('exposes every table the application queries', async () => {
@@ -677,7 +677,7 @@ describe('seed state', () => {
     // what upgrades an existing (v7) tenant. The fleet runner discovers
     // migrations by numeric prefix and its target version must match.
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*15/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*16/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '008_attendance_geo_face.sql'),
       'utf8'
@@ -1176,7 +1176,7 @@ describe('payment channels (012)', () => {
 
   it('ships the migration 012 file that upgrades a v11 tenant', async () => {
     const applyScript = readFileSync(path.join(root, 'scripts', 'apply-schema-all.mjs'), 'utf8');
-    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*15/);
+    expect(applyScript).toMatch(/CURRENT_SCHEMA_VERSION\s*=\s*16/);
     const migration = readFileSync(
       path.join(root, 'db', 'migrations', '012_payment_channels.sql'),
       'utf8'
@@ -1269,6 +1269,72 @@ describe('vendor PPN migration (013)', () => {
       await expect(
         migrationClient.execute(`UPDATE goods_receipts SET ppn_amount = -1 WHERE id = 'gr-old'`)
       ).rejects.toThrow();
+    } finally {
+      migrationClient.close();
+    }
+  });
+});
+
+describe('whatsapp invoice migration (016)', () => {
+  it('upgrades a v15 tenant with the wa_* delivery columns', async () => {
+    const migrationPath = path.join(root, 'db', 'migrations', '016_whatsapp_invoice.sql');
+    const migration = readFileSync(migrationPath, 'utf8');
+    for (const column of [
+      'wa_status',
+      'wa_message_id',
+      'wa_sent_at',
+      'wa_ack',
+      'wa_error',
+    ]) {
+      expect(migration).toMatch(new RegExp(`ALTER TABLE storefront_orders ADD COLUMN ${column}`, 'i'));
+    }
+    expect(migration).toMatch(/CREATE INDEX IF NOT EXISTS idx_sf_orders_wa_msg/i);
+    expect(migration).toMatch(/SET version = 16 WHERE id = 1/i);
+
+    // Run it for real against a hand-built v15 tenant, the way the fleet runner
+    // would: a legacy row survives with NULL delivery metadata, and a row
+    // keyed by a WhatsApp message id is findable the way the webhook looks it up.
+    const migrationDbPath = path.join(
+      os.tmpdir(),
+      `rp-migration-016-${process.pid}-${Date.now()}.db`
+    );
+    mkdirSync(path.dirname(migrationDbPath), { recursive: true });
+    const migrationClient = createClient({ url: `file:${migrationDbPath}` });
+    try {
+      await migrationClient.executeMultiple(`
+        CREATE TABLE schema_version (id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
+        INSERT INTO schema_version (id, version) VALUES (1, 15);
+        CREATE TABLE storefront_orders (
+          id TEXT PRIMARY KEY,
+          invoice_number TEXT NOT NULL,
+          customer_phone TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT
+        );
+        INSERT INTO storefront_orders (id, invoice_number, customer_phone, status)
+          VALUES ('o-old', 'SO/1/old', '0812345678', 'pending_payment');
+      `);
+      await migrationClient.executeMultiple(migration);
+
+      const version = await migrationClient.execute(
+        `SELECT version FROM schema_version WHERE id = 1`
+      );
+      expect(Number(version.rows[0].version)).toBe(16);
+
+      await migrationClient.execute({
+        sql: `UPDATE storefront_orders
+                SET wa_status = 'sent', wa_message_id = 'WA.123', wa_ack = 'delivered'
+              WHERE id = 'o-old'`,
+        args: [],
+      });
+      const rows = await migrationClient.execute(
+        `SELECT invoice_number, wa_status, wa_ack FROM storefront_orders WHERE wa_message_id = 'WA.123'`
+      );
+      expect(rows.rows[0]).toMatchObject({
+        invoice_number: 'SO/1/old',
+        wa_status: 'sent',
+        wa_ack: 'delivered',
+      });
     } finally {
       migrationClient.close();
     }

@@ -1,15 +1,20 @@
 /**
- * Storefront catch-all: handles /api/storefront/channels, /qris, and /orders.
+ * Storefront catch-all: handles /api/storefront/channels, /qris, /orders, /webhook.
  *
  * Consolidated into a single file to stay within the Vercel Hobby plan's
-j *
+ * 12-function limit. Mounting the GOWA webhook here (rather than a new
+ * function file) is that constraint in action.
+ *
  *   GET  /api/storefront/channels  — payment-channel readout (public)
  *   GET  /api/storefront/qris     — static QRIS image bytes (public)
  *   POST / GET /api/storefront/orders — checkout hand-off + status poll
+ *   GET  /api/storefront/webhook  — GOWA subscriber verification (hub.challenge)
+ *   POST /api/storefront/webhook  — GOWA webhook receipts (message.ack, replies)
  *
  * More-specific files (`catalog.ts`, `marketplace.ts`) keep their own routes;
  * Vercel resolves them before this catch-all.
  */
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { createClient } from '@libsql/client';
 import {
   HttpError,
@@ -30,6 +35,13 @@ import {
   type StorefrontPaymentConfig,
 } from '../../server/storefront-payments.js';
 import { createStorefrontOrders, readOrderStatuses } from '../../server/storefront-orders.js';
+import { optionalEnv } from '../../server/env.js';
+import { getControlDb } from '../../server/control-db.js';
+import {
+  applyWebhookToOrders,
+  parseWebhookEvent,
+  verifyWebhookSignature,
+} from '../../server/whatsapp-invoice.js';
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -174,6 +186,115 @@ async function handleOrders(req: ApiRequest, res: ApiResponse) {
 }
 
 // ---------------------------------------------------------------------------
+// /webhook — GOWA (WhatsApp) receipts
+// ---------------------------------------------------------------------------
+
+/** Read the request body verbatim: the HMAC is computed over the raw bytes. */
+async function readRawBody(req: ApiRequest): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  if (chunks.length > 0) return Buffer.concat(chunks);
+  // A platform-parsed body (`req.body`) is byte-faithful for JSON payloads.
+  if (typeof req.body === 'string') return Buffer.from(req.body, 'utf8');
+  if (req.body && typeof req.body === 'object') return Buffer.from(JSON.stringify(req.body), 'utf8');
+  return Buffer.alloc(0);
+}
+
+function constantTimeEquals(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ba.length === bb.length && timingSafeEqual(ba, bb);
+}
+
+async function handleWebhook(req: ApiRequest, res: ApiResponse) {
+  // Optional subscriber-URL handshake (`?hub.mode=subscribe&hub.verify_token=…`).
+  // GOWA itself only POSTs and never performs this check, so it stays here for
+  // other integrations and answers 403 while GOWA_WEBHOOK_VERIFY_TOKEN is unset.
+  if (req.method === 'GET') {
+    const params = new URL(req.url ?? '/', 'http://local').searchParams;
+    if (params.get('hub.mode') === 'subscribe') {
+      const secret = optionalEnv('GOWA_WEBHOOK_VERIFY_TOKEN');
+      const token = params.get('hub.verify_token') ?? '';
+      if (secret && constantTimeEquals(token, secret)) {
+        res.statusCode = 200;
+        res.end(params.get('hub.challenge') ?? '');
+        return;
+      }
+      res.statusCode = 403;
+      res.end();
+      return;
+    }
+    return methodNotAllowed(res, ['GET', 'POST', 'OPTIONS']);
+  }
+  if (req.method !== 'POST') return methodNotAllowed(res, ['GET', 'POST', 'OPTIONS']);
+
+  const raw = await readRawBody(req);
+
+  // Signature gate: without a configured secret the endpoint stays shut —
+  // accepting unauthenticated pushes would let anyone forge delivery receipts.
+  const secret = optionalEnv('GOWA_WEBHOOK_SECRET');
+  if (!secret) {
+    sendJson(res, 503, { error: 'webhook_not_configured', message: 'GOWA_WEBHOOK_SECRET belum diset.' });
+    return;
+  }
+  const signature = req.headers['x-hub-signature-256'];
+  if (!verifyWebhookSignature(raw, Array.isArray(signature) ? signature[0] : signature, secret)) {
+    sendJson(res, 401, { error: 'invalid_signature', message: 'Tanda tangan webhook tidak valid.' });
+    return;
+  }
+
+  let body: unknown;
+  try {
+    body = raw.length ? JSON.parse(raw.toString('utf8')) : null;
+  } catch {
+    throw new HttpError(400, 'invalid_payload', 'Body webhook bukan JSON.');
+  }
+  const parsed = body ? parseWebhookEvent(body as Record<string, unknown>) : null;
+  if (!parsed) {
+    sendJson(res, 200, { ok: true, outcome: 'ignored' });
+    return;
+  }
+
+  // Project onto tenant order rows first (the useful part), then log the raw
+  // receipt in the control DB; a telemetry failure must not make GOWA retry.
+  let outcome = 'ignored';
+  let hits: { invoiceNumber: string }[] = [];
+  try {
+    hits = await applyWebhookToOrders(parsed);
+    if (hits.length) outcome = 'matched';
+  } catch (error) {
+    console.error('[webhook] order projection failed:', error instanceof Error ? error.message : error);
+  }
+  try {
+    await getControlDb()
+      .insertInto('whatsapp_events')
+      .values({
+        // Written explicitly rather than left to the column DEFAULTs: Vercel's
+        // build-time type check treats these keys as required, and an ISO stamp
+        // costs us nothing.
+        id: randomUUID(),
+        event: parsed.event,
+        device_id: parsed.deviceId,
+        message_id: parsed.messageId,
+        chat_jid: parsed.chatJid,
+        sender_jid: parsed.senderJid,
+        ack: parsed.ack,
+        body: parsed.body,
+        outcome,
+        payload: JSON.stringify(body),
+        received_at: new Date().toISOString(),
+      })
+      .execute();
+  } catch (error) {
+    console.error('[webhook] whatsapp_events log failed:', error instanceof Error ? error.message : error);
+  }
+
+  sendJson(res, 200, { ok: true, outcome, orders: hits.map((h) => h.invoiceNumber) });
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -202,6 +323,8 @@ async function handler(req: ApiRequest, res: ApiResponse) {
       return handleQris(req, res);
     case 'orders':
       return handleOrders(req, res);
+    case 'webhook':
+      return handleWebhook(req, res);
     default:
       sendJson(res, 404, {
         error: 'not_found',

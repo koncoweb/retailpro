@@ -31,6 +31,11 @@ const routes: Route[] = [
     load: () => import('../api/storefront/marketplace.js'),
   },
   {
+    // channels / qris / orders / webhook — must stay after the specific routes.
+    pattern: /^\/api\/storefront\/(?:channels|qris|orders|webhook)\/?$/,
+    load: () => import('../api/storefront/[...all].js'),
+  },
+  {
     pattern: /^\/api\/auth(?:\/.*)?$/,
     load: () => import('../api/auth/[...all].js'),
   },
@@ -39,6 +44,12 @@ const routes: Route[] = [
   {
     pattern: /^\/api\/tenant\/provision\/?$/,
     load: () => import('../api/tenant/provision.js'),
+  },
+  {
+    // qris-image / orders / whatsapp-device — must stay after the specific
+    // tenant files above, exactly like Vercel's file-based routing does.
+    pattern: /^\/api\/tenant\/(?:qris-image|orders\/(?:confirm|status)|whatsapp-device)\/?$/,
+    load: () => import('../api/tenant/[...all].js'),
   },
   { pattern: /^\/api\/admin\/users\/?$/, load: () => import('../api/admin/users.js') },
   {
@@ -87,6 +98,6 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[dev-api] listening on http://localhost:${PORT}`);
   console.log(
-    '[dev-api] routes: /api/health, /api/auth/*, /api/tenant/*, /api/admin/users*, /api/storefront/{catalog,marketplace}'
+    '[dev-api] routes: /api/health, /api/auth/*, /api/tenant/*, /api/admin/users*, /api/storefront/{catalog,marketplace,channels,qris,orders,webhook} (termasuk catch-all tenant: qris-image, orders/*, whatsapp-device)'
   );
 });

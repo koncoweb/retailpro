@@ -108,7 +108,12 @@ curl -H "Authorization: Bearer $TURSO_API_TOKEN" \
 ## 4. Variabel lingkungan per proyek
 
 Diisi di **Vercel → Project → Settings → Environment Variables → Production**, bukan dari `.env`
-lokal. `vercel env add <NAME> production` membaca nilainya dari stdin.
+lokal. `vercel env add <NAME> production` membaca nilainya dari stdin, dengan dua jebakan yang
+terbukti memakan waktu: PowerShell **selalu** menempelkan `\r\n` pada apa pun yang di-pipe ke exe
+sehingga nilainya tersimpan ikut membawa newline, dan `--sensitive` membuat `vercel env pull`
+menampilkan `""` (nilainya ditutupi, bukan kosong) sehingga tulisannya tidak bisa diverifikasi.
+Tulis lewat `spawn(node, [vc.js, …])` dengan stdin tanpa newline terakhir, dan biarkan key ini
+plain (non-sensitive) supaya bisa dicek ulang.
 
 ### 4.1 `retailpro-thalia`
 
@@ -121,8 +126,13 @@ lokal. `vercel env add <NAME> production` membaca nilainya dari stdin.
 | `CONTROL_DB_URL` | host control DB cloud (`https://…turso.io`) |
 | `CONTROL_DB_TOKEN` | token control DB |
 | `BETTER_AUTH_SECRET` | secret produksi |
-| `BETTER_AUTH_URL` | `https://retailpro-thalia.vercel.app` — **harus** origin yang dibuka browser |
+| `BETTER_AUTH_URL` | `https://www.tokobahankuethalia.com` — **harus** origin yang dibuka browser |
 | `STOREFRONT_TENANT_SLUG` | `thalia` |
+| `WHATSAPP_INVOICE_ENABLED` | `true` (kirim invoice GOWA saat order dibuat) |
+| `GOWA_URL` | `https://gowa-0okaeivpkme2.durian.sumopod.my.id` |
+| `GOWA_USERNAME` / `GOWA_PASSWORD` | Basic Auth server GOWA |
+| `GOWA_DEVICE_ID` | **kosong** — perangkat dipilih otomatis dari daftar GOWA (lihat §4.4); diisi hanya bila server punya >1 device dan satu harus dipaksakan |
+| `GOWA_WEBHOOK_SECRET` | HMAC `X-Hub-Signature-256`; harus identik dengan `WHATSAPP_WEBHOOK_SECRET` di host GOWA |
 
 ### 4.2 `thalia-storefront`
 
@@ -133,11 +143,55 @@ lokal. `vercel env add <NAME> production` membaca nilainya dari stdin.
 Tidak ada variabel lain: toko tidak memegang kredensial database mana pun.
 
 `BETTER_AUTH_URL` yang salah adalah penyebab paling umum "login berhasil tetapi sesi hilang" di
-produksi, karena cookie `secure` dan trusted origin mengikuti nilai itu.
+produksi, karena cookie `secure` dan trusted origin mengikuti nilai itu. Sejak domain custom
+dipasang, nilai itu **wajib** `https://www.tokobahankuethalia.com`: `server/auth.ts` menurunkan
+origin terpercaya dari nilai tersebut (plus varian apex/`www.` dan `retailpro-thalia.vercel.app`),
+tetapi origin lain tetap ditolak Better Auth dengan `403 INVALID_ORIGIN` di layar login.
+
+### 4.3 Webhook GOWA (invoice WhatsApp)
+
+Endpoint: `POST /api/storefront/webhook` — sengaja ditumpangkan pada catch-all
+`api/storefront/[...all].ts` karena paket Hobby membatasi 12 function.
+
+| Nama | Nilai |
+|---|---|
+| URL produksi | `https://www.tokobahankuethalia.com/api/storefront/webhook` |
+| Env di host GOWA | `WHATSAPP_WEBHOOK=<url>`, `WHATSAPP_WEBHOOK_SECRET=<sama dengan GOWA_WEBHOOK_SECRET>`, `WHATSAPP_WEBHOOK_EVENTS=message,message.ack` |
+| Header tanda tangan | `X-Hub-Signature-256: sha256=<hmac(body, GOWA_WEBHOOK_SECRET)>` |
+| Tanpa secret terpasang | `503 webhook_not_configured` (endpoint menolak semua kirim) |
+| Tanda tangan salah | `401 invalid_signature` |
+
+GOWA **tidak** melakukan handshake verifikasi `hub.challenge` — ia hanya POST — jadi cabang `GET`
+pada endpoint ini (token `GOWA_WEBHOOK_VERIFY_TOKEN`) murni untuk integrasi lain; selama token itu
+tidak diisi, cabang tersebut menjawab `403`. `WHATSAPP_WEBHOOK_SECRET` yang kosong atau memakai nilai bawaan yang
+terdokumentasi (`secret`, `super-secret-key`, `your-private-key`) diganti GOWA dengan kunci acak per
+proses, sehingga semua kirim akan gagal di `401` — secret harus benar-benar di-set.
+
+Perilaku: receipt mentah selalu masuk tabel `whatsapp_events` di control DB; proyeksi per-order
+(kolom `wa_*`) terjadi di DB tenant lewat `wa_message_id` (ack) atau kecocokan nomor WA + status
+`pending_payment`/`confirmed` (pesan masuk). Balasan selalu `200` meskipun proyeksi gagal, supaya
+GOWA tidak membanjiri ulang endpoint.
 
 **Tidak** termasuk di sini: `E2E_AI_BASE_URL` / `E2E_AI_API_KEY` / `E2E_AI_MODEL` dan `APP_URL`. Variabel
 itu hanya dibaca `e2e.config.ts` di mesin operator (lihat [backend.md](backend.md) §2, serta §7.1 di bawah), jadi
 jangan ditambahkan ke dashboard Vercel — kunci model bukan milik runtime aplikasi.
+
+### 4.4 Menyambungkan nomor pengirim (scan QR)
+
+Nomor WhatsApp yang mengirim invoice dipasangkan langsung dari back office: **Pengaturan →
+WhatsApp → Tampilkan QR**, lalu pindai lewat *WhatsApp → Perangkat tertaut → Tautkan perangkat*.
+Layar itu memakai `GET/POST /api/tenant/whatsapp-device` (khusus admin) yang meneruskan
+`GET /devices`, `GET /devices/{id}/status`, `GET /devices/{id}/login`, dan
+`POST /devices/{id}/logout|reconnect` ke server GOWA — tidak ada kredensial GOWA yang turun ke browser.
+
+- QR diambil di server lalu dikirim sebagai `data:image/png;base64,…`: `qr_link` bawaan GOWA menunjuk
+  host internal container dengan `http://`, sehingga tidak akan pernah termuat di halaman https.
+- `GOWA_DEVICE_ID` boleh tetap kosong — yang dipilih adalah perangkat yang sudah punya JID, dan bila
+  belum ada, perangkat pertama dalam daftar `GET /devices`.
+- Pairing **tidak** menunggu `WHATSAPP_INVOICE_ENABLED=true`: layar ini hanya membaca `GOWA_URL`,
+  jadi nomor bisa ditautkan lebih dulu sebelum pengiriman invoice dinyalakan.
+- Jangan mencoba `POST /devices` dengan body kosong untuk "melihat-lihat": GOWA menerima permintaan
+  itu dan meninggalkan slot hantu tanpa JID yang kemudian muncul di daftar perangkat owner.
 
 ---
 

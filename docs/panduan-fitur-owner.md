@@ -35,7 +35,7 @@ CRM                       → Pelanggan
 Keuangan                  → Jurnal · Hutang/Piutang · Cash Flow · Pengeluaran
 Karyawan                  → Data Karyawan · Absensi · Wajah & Lokasi Absensi · Jadwal Shift · Payroll
 Laporan                   → 5 jenis laporan
-Pengaturan                → Umum · Perusahaan · Karyawan & Role · Inventori · Notifikasi · Keamanan
+Pengaturan                → Umum · Perusahaan · Pembayaran · WhatsApp · Karyawan & Role · Inventori · Notifikasi · Keamanan
 ```
 
 ---
@@ -354,11 +354,19 @@ Dipakai pengunjung, bukan staf. Menampilkan katalog **semua toko yang aktif** (m
 | Karyawan & Role | **Matriks izin** per peran (7 grup, 33 hak), **role buatan sendiri**, dan **pratinjau menu** — daftar menu yang akan dilihat tiap peran, diambil dari menu asli sehingga tidak bisa "berbohong" | ✓ Tersimpan, langsung berlaku tanpa muat ulang |
 | Inventori | **Metode pengeluaran stok**: FIFO (bawaan) / LIFO / FEFO — menentukan batch mana yang dipakai lebih dulu saat penjualan | ✓ Tersimpan |
 | Pembayaran | **Channel pembayaran**: aktifkan/nonaktifkan Tunai, Transfer Bank, QRIS per tenant; **biaya merchant** per channel (Flat Rp atau % dari total — dicatat internal, tidak menambah tagihan customer); **rekening bank** yang ditampilkan untuk channel Transfer (dari Pengaturan → Perusahaan → Rekening Bank); **gambar QRIS** statis (unggah ≤2 MB, resize 720px → webp) yang ditampilkan di kasir + checkout toko online | ✓ Tersimpan di `settings.payment_channels` + `tenants.qris_image` |
+| WhatsApp | **Nomor pengirim invoice**: status perangkat WhatsApp (nomor yang muncul di HP pelanggan), **sambungkan lewat scan QR**, putuskan / sambungkan ulang, dan pemilih perangkat bila server melayani lebih dari satu nomor | ✓ Tidak menyimpan apa pun — status dibaca langsung dari server WhatsApp; hasil scan tersimpan di server itu |
 | Notifikasi | Sakelar preferensi: stok minimum, transaksi baru, laporan harian, update sistem | ⚠️ Belum mengirim notifikasi apa pun |
 | Keamanan | Verifikasi 2 langkah, logout otomatis saat diam + durasinya, backup otomatis, unduhan/pemulihan data | ⚠️ Belum terhubung ke sistem — masa berlaku sesi mengikuti pengaturan bawaan login |
 
 - Aplikasi sendiri menampilkan catatan di bagian bawah layar: yang tersambung ke database hanyalah
   **pajak/diskon, struk, bank, metode pengeluaran stok, dan channel pembayaran** — semuanya tersimpan otomatis saat diubah.
+- **Menyambungkan nomor pengirim invoice (sekali per nomor)**: Pengaturan → WhatsApp → **Tampilkan QR**,
+  lalu di ponsel: WhatsApp → **Perangkat tertaut** → **Tautkan perangkat** → pindai QR di layar.
+  QR berlaku ±30 detik dan diperbarui otomatis; kartu berubah menjadi **Tertaut** begitu ponsel selesai memindai,
+  tanpa muat ulang halaman. Untuk ganti nomor: **Putuskan** dulu, lalu pindai dengan nomor yang baru.
+- Nomor pengirim ini **berbeda** dari nomor CS (`wa.me`) yang tampil di toko online — keduanya berdiri sendiri.
+- Tab WhatsApp hanya berfungsi untuk pemilik/admin, dan kredensial server WhatsApp tidak pernah dikirim ke
+  browser: QR diterima sebagai gambar dari server.
 - Bila peran hanya boleh melihat, seluruh tab memunculkan banner **"Hanya baca"** dan isian dikunci.
 - ⚠️ Pajak & diskon default **belum** dipakai otomatis di POS — masih dihitung saat transaksi.
 - ⚠️ Jejak audit tercatat di database, tapi **belum ada layar** untuk menelusuri siapa mengubah apa.

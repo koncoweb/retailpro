@@ -14,9 +14,17 @@
 import { createClient, type Client, type Transaction } from '@libsql/client';
 import { randomUUID } from 'node:crypto';
 import { HttpError } from './http.js';
+import { numberEnv } from './env.js';
 import { mintTenantToken } from './provision.js';
 import { browserDbUrl } from './turso-platform.js';
 import { parseJson } from '../src/lib/db/json.js';
+import {
+  gowaConfig,
+  readTenantQrisImage,
+  sendOrderInvoice,
+  type InvoiceLine,
+  type OrderInvoiceRow,
+} from './whatsapp-invoice.js';
 import {
   findActiveTenantBySlug,
   listActiveTenants,
@@ -253,6 +261,8 @@ export interface CreatedSellerOrder {
   shopName: string;
   total: number;
   status: string;
+  /** Outcome of the automatic WhatsApp invoice send (fail-soft, may be absent). */
+  whatsapp?: 'sent' | 'failed' | 'skipped';
   payment: {
     channel: string | null;
     banks: StorefrontBank[];
@@ -304,15 +314,27 @@ async function runWriteTx(
 }
 
 /**
+ * Platform delivery fee (ongkir), flat per parent order. `tokoonline` shows the
+ * same number (SHOP.deliveryFee); the server owns the amount that gets stored
+ * and invoiced. Revenue stays the goods subtotal — see confirmStorefrontOrder.
+ */
+const DELIVERY_FEE_ENV = 'STOREFRONT_DELIVERY_FEE';
+const DEFAULT_DELIVERY_FEE = 20_000;
+
+/**
  * Persist one `storefront_orders` row per seller for a validated payload.
  *
  * Each seller resolves to its own tenant database; an unknown/inactive slug fails
  * the whole request (a half-placed marketplace order is worse than none). No
- * stock moves here — that is the confirm step's job.
+ * stock moves here — that is the confirm step's job. When GOWA is enabled the
+ * buyer also gets a WhatsApp invoice per seller row; that send is fail-soft and
+ * its outcome is recorded on the row (`wa_*`, migration 016), never fatal.
  */
 export async function createStorefrontOrders(body: unknown): Promise<CreateOrdersResult> {
   const order = groupOrderPayload(body);
   const orders: CreatedSellerOrder[] = [];
+  const deliveryFee =
+    order.fulfillment === 'delivery' ? numberEnv(DELIVERY_FEE_ENV, DEFAULT_DELIVERY_FEE) : 0;
 
   for (const group of order.groups) {
     const tenant = await findActiveTenantBySlug(group.tenant);
@@ -322,6 +344,8 @@ export async function createStorefrontOrders(body: unknown): Promise<CreateOrder
         priced.push(await priceOneItem(client, item));
       }
       const subtotal = priced.reduce((sum, item) => sum + item.subtotal, 0);
+      const shipping = group === order.groups[0] ? deliveryFee : 0;
+      const total = subtotal + shipping;
 
       const orderId = randomUUID();
       const invoiceNumber = `SO/${Date.now()}/${orderId.slice(0, 8)}`;
@@ -330,7 +354,7 @@ export async function createStorefrontOrders(body: unknown): Promise<CreateOrder
                 (id, parent_id, invoice_number, shop_name, customer_name, customer_phone,
                  customer_address, fulfillment, slot, notes, payment_channel, payment_bank_id,
                  items, subtotal, shipping, total, status, created_at)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending_payment', ?)`,
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_payment', ?)`,
         args: [
           orderId,
           order.parent,
@@ -355,13 +379,65 @@ export async function createStorefrontOrders(body: unknown): Promise<CreateOrder
             }))
           ),
           subtotal,
-          subtotal,
+          shipping,
+          total,
           new Date().toISOString(),
         ],
       });
 
       const paymentConfig = await readPaymentConfig(client, tenant);
-      return { subtotal, paymentConfig, orderId };
+
+      // WhatsApp invoice — opt-in (gowaConfig), fail-soft, deduped via wa_status.
+      const cfg = gowaConfig();
+      let whatsapp: CreatedSellerOrder['whatsapp'];
+      if (cfg) {
+        try {
+          const transferChannel = paymentConfig.channels.find((c) => c.id === 'transfer');
+          const banks = transferChannel?.banks ?? paymentConfig.banks;
+          const bank =
+            order.paymentChannel === 'transfer'
+              ? banks.find((b) => b.id === order.paymentBankId) ?? banks[0] ?? null
+              : null;
+          const invoiceRow: OrderInvoiceRow = {
+            orderId,
+            invoiceNumber,
+            shopName: tenant.company_name,
+            customerName: order.customer.name,
+            customerPhone: order.customer.phone,
+            fulfillment: order.fulfillment,
+            notes: order.notes,
+            paymentChannel: order.paymentChannel,
+            lines: priced.map<InvoiceLine>((p) => ({
+              name: p.product_name,
+              qty: p.qty,
+              unitName: p.unit_name,
+              total: p.subtotal,
+            })),
+            subtotal,
+            shipping,
+            total,
+            bank: bank
+              ? { name: bank.name, accountNumber: bank.accountNumber, accountName: bank.accountName }
+              : null,
+            qris:
+              order.paymentChannel === 'qris' && paymentConfig.qrisAvailable
+                ? await readTenantQrisImage(client)
+                : null,
+            waStatus: null,
+          };
+          whatsapp = await sendOrderInvoice(client, cfg, invoiceRow);
+        } catch (error) {
+          // Belt & braces: sendOrderInvoice never throws, but a broken payment
+          // read must not fail the order either.
+          console.error(
+            `[wa] invoice send for order ${invoiceNumber} skipped:`,
+            error instanceof Error ? error.message : error
+          );
+          whatsapp = 'failed';
+        }
+      }
+
+      return { subtotal, shipping, total, paymentConfig, orderId, whatsapp };
     });
 
     const transferChannel = config.paymentConfig.channels.find((c) => c.id === 'transfer');
@@ -369,8 +445,9 @@ export async function createStorefrontOrders(body: unknown): Promise<CreateOrder
       tenant: group.tenant,
       orderId: config.orderId,
       shopName: tenant.company_name,
-      total: config.subtotal,
+      total: config.total,
       status: 'pending_payment',
+      ...(config.whatsapp ? { whatsapp: config.whatsapp } : {}),
       payment: {
         channel: order.paymentChannel,
         banks: transferChannel?.banks ?? config.paymentConfig.banks,

@@ -103,3 +103,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_slug      ON tenant_databases(slug)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_db_name   ON tenant_databases(db_name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_owner     ON tenant_databases(owner_user_id);
 CREATE INDEX        IF NOT EXISTS idx_tenant_status    ON tenant_databases(status);
+
+-- --- WhatsApp (GOWA) webhook log -------------------------------------------
+
+-- One row per event GOWA pushes to /api/storefront/webhook. The webhook is
+-- global (one device serves every tenant), so the raw receipt lands here first
+-- and is only projected onto a tenant's `storefront_orders` row when the event
+-- matches a known `wa_message_id`. This is operational telemetry — the order
+-- itself never lives here.
+CREATE TABLE IF NOT EXISTS whatsapp_events (
+  id           TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||substr(hex(randomblob(2)),2)||'-'||substr('89ab',1+(abs(random())%4),1)||substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6)))),
+  -- GOWA event name: 'message' | 'message.ack' | 'presence' | ...
+  event        TEXT NOT NULL,
+  device_id    TEXT,
+  -- WhatsApp message id the event refers to (ack/receipt key).
+  message_id   TEXT,
+  -- Chat/participant JID, e.g. 628123456789@s.whatsapp.net.
+  chat_jid     TEXT,
+  sender_jid   TEXT,
+  -- For message.ack: server | delivered | read (highest seen wins on the order).
+  ack          TEXT,
+  -- Message text for incoming 'message' events, truncated; NULL otherwise.
+  body         TEXT,
+  -- 'stored' | 'matched' | 'ignored' (duplicate or unmatched).
+  outcome      TEXT NOT NULL DEFAULT 'stored',
+  payload      TEXT NOT NULL DEFAULT '{}',
+  received_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_wa_events_msg  ON whatsapp_events(message_id) WHERE message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_wa_events_time ON whatsapp_events(received_at);
+

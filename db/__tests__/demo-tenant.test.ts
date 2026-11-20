@@ -64,10 +64,10 @@ describe('demo tenant: Thalia Toko Bahan Kue', () => {
   });
 
   it('provisions the v8 attendance geo/face data and reinstalls the today-only guard', async () => {
-    // The schema is now at v13; the attendance geo/face columns still originate
+    // The schema is now at v16; the attendance geo/face columns still originate
     // from v8 and must survive every later additive migration.
     const version = await rows<{ version: number }>(`SELECT version FROM schema_version WHERE id = 1`);
-    expect(Number(version[0].version)).toBe(14);
+    expect(Number(version[0].version)).toBe(16);
 
     // every branch carries coordinates so the geofence screens have a target
     const noGeo = await scalar(

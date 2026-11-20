@@ -57,6 +57,8 @@ api/tenant/qris-image.ts  POST  /api/tenant/qris-image  (terautentikasi, unggah 
                            DELETE /api/tenant/qris-image  (terautentikasi, hapus gambar QRIS)
 api/tenant/orders/confirm.ts POST /api/tenant/orders/confirm  (terautentikasi, konfirmasi pembayaran order online)
 api/tenant/orders/status.ts  POST /api/tenant/orders/status  (terautentikasi, transisi status order online)
+                             GET  /api/tenant/whatsapp-device  (owner/admin, status device GOWA pengirim invoice)
+                             POST /api/tenant/whatsapp-device  {action: qr|logout|reconnect}  (QR pairing sebagai data URL)
 
 scripts/bootstrap-control.mjs   Membuat/menyiapkan control DB
 scripts/apply-schema-all.mjs    Terapkan migrasi tertunda + tenant.sql (cek schema_version)
